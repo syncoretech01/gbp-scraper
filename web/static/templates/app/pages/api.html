@@ -1,0 +1,16 @@
+{{define "app/page/api"}}{{template "app/layout" .}}{{end}}
+
+{{define "app/page-actions"}}<div class="page-actions"><a class="button button-primary" href="/api/openapi.json" download>Download OpenAPI JSON</a></div>{{end}}
+
+{{define "app/content"}}
+<div class="section-stack">
+    {{if .Page.ExposedBeyondLoopback}}<div class="notice notice-warning" role="alert"><div><strong>The server is bound beyond loopback</strong><p>The current API has no login or API-key middleware. Return to a 127.0.0.1 binding or place it behind authentication before using an untrusted network.</p></div></div>{{end}}
+    <section class="grid grid-2">
+        <article class="card"><div class="card-header"><div><h2>Base URL</h2><p>Versioned local REST API</p></div></div><div class="card-body section-stack"><div class="input-group"><input class="input code-input" id="api-base-url" value="{{.Page.BaseURL}}/api/v1" readonly aria-label="API base URL"><button class="button" type="button" data-action="copy" data-copy-target="#api-base-url">Copy</button></div><dl class="key-value"><dt>Authentication</dt><dd>{{.Page.AuthenticationSummary}}</dd><dt>Response format</dt><dd>JSON envelopes; CSV for job downloads; SSE for events</dd></dl></div></article>
+        <article class="card"><div class="card-header"><div><h2>Working example</h2><p>Search the normalized local database</p></div></div><div class="card-body"><pre class="code-block" id="curl-example">curl "{{.Page.BaseURL}}/api/v1/results?q=dentist&amp;filter_field=city&amp;filter_operator=eq&amp;filter_value=San%20Francisco"</pre><button class="button button-small" type="button" data-action="copy" data-copy-target="#curl-example">Copy cURL</button></div></article>
+    </section>
+
+    <section class="card"><div class="card-header"><div><h2>Registered endpoints</h2><p>Only routes backed by the running application are listed</p></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead><tbody>{{range .Page.Endpoints}}<tr><td><code>{{.Method}}</code></td><td><code>{{.Path}}</code></td><td>{{.Description}}</td></tr>{{end}}</tbody></table></div></section>
+    <div class="notice notice-info"><div><strong>Security scope</strong><p>CSRF protects UI mutations. API-key authentication, user accounts, and remote rate limiting are deliberately not advertised until implemented; keep the service on localhost.</p></div></div>
+</div>
+{{end}}

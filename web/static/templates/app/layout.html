@@ -1,0 +1,48 @@
+{{/*
+The application loader should parse this file, every file in app/partials, and
+exactly one app/pages file. Page files define app/content and app/page/<name>.
+*/}}
+{{define "app/layout"}}
+<!doctype html>
+<html lang="en" data-theme="{{if .Theme}}{{.Theme}}{{else}}system{{end}}">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="Local-first Google Maps research workspace">
+    <title>{{if .Title}}{{.Title}} · {{end}}Google Maps Scraper</title>
+    <link rel="stylesheet" href="/static/css/app.css">
+    <script defer src="/static/js/app.js"></script>
+    {{template "app/head" .}}
+</head>
+<body data-active-nav="{{.ActiveNav}}">
+    <a class="skip-link" href="#main-content">Skip to main content</a>
+    <div class="app-shell" data-app-shell>
+        {{template "app/sidebar" .}}
+        <div class="app-frame">
+            {{template "app/topbar" .}}
+            <main class="app-main" id="main-content" tabindex="-1">
+                {{template "app/flash" .}}
+                <header class="page-heading">
+                    <div>
+                        <p class="eyebrow">Local workspace</p>
+                        <h1>{{.Title}}</h1>
+                        {{if .Subtitle}}<p class="page-subtitle">{{.Subtitle}}</p>{{end}}
+                    </div>
+                    {{template "app/page-actions" .}}
+                </header>
+                {{template "app/content" .}}
+            </main>
+        </div>
+    </div>
+
+    {{template "app/command-palette" .}}
+    <div class="toast-region" data-toast-region role="status" aria-live="polite" aria-atomic="true"></div>
+    {{template "app/scripts" .}}
+</body>
+</html>
+{{end}}
+
+{{define "app/head"}}{{end}}
+{{define "app/page-actions"}}{{end}}
+{{define "app/scripts"}}{{end}}

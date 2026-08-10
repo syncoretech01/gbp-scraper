@@ -1,0 +1,233 @@
+(function () {
+    "use strict";
+
+    const root = document.documentElement;
+    const shell = document.querySelector("[data-app-shell]");
+    const palette = document.getElementById("command-palette");
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+    function safeStorageGet(key) {
+        try { return window.localStorage.getItem(key); } catch (_) { return null; }
+    }
+
+    function safeStorageSet(key, value) {
+        try { window.localStorage.setItem(key, value); } catch (_) { /* local storage may be disabled */ }
+    }
+
+    function applyTheme(theme) {
+        const allowed = ["light", "dark", "system"];
+        const value = allowed.includes(theme) ? theme : "system";
+        root.dataset.theme = value;
+        safeStorageSet("gmaps-theme", value);
+        document.querySelectorAll("[data-theme-icon]").forEach((icon) => {
+            icon.textContent = value === "light" ? "☀" : value === "dark" ? "☾" : "◐";
+        });
+    }
+
+    function cycleTheme() {
+        const order = ["system", "light", "dark"];
+        const current = root.dataset.theme || "system";
+        applyTheme(order[(order.indexOf(current) + 1) % order.length]);
+        toast("Appearance set to " + root.dataset.theme + ".");
+    }
+
+    function toggleSidebar() {
+        if (!shell) return;
+        if (window.matchMedia("(max-width: 56rem)").matches) {
+            const open = shell.dataset.mobileNav !== "open";
+            shell.dataset.mobileNav = open ? "open" : "closed";
+            document.querySelectorAll('[data-action="toggle-sidebar"]').forEach((button) => button.setAttribute("aria-expanded", String(open)));
+            return;
+        }
+        const collapsed = shell.dataset.sidebar !== "collapsed";
+        shell.dataset.sidebar = collapsed ? "collapsed" : "expanded";
+        safeStorageSet("gmaps-sidebar", shell.dataset.sidebar);
+        document.querySelectorAll('[data-action="toggle-sidebar"]').forEach((button) => button.setAttribute("aria-expanded", String(!collapsed)));
+    }
+
+    function toast(message, level) {
+        const region = document.querySelector("[data-toast-region]");
+        if (!region || !message) return;
+        const item = document.createElement("div");
+        item.className = "toast" + (level ? " notice-" + level : "");
+        item.textContent = message;
+        region.appendChild(item);
+        window.setTimeout(() => item.remove(), reducedMotion.matches ? 1000 : 5000);
+    }
+
+    function openPalette() {
+        if (!palette) return;
+        if (typeof palette.showModal === "function") palette.showModal();
+        else palette.setAttribute("open", "");
+        const input = palette.querySelector("[data-command-query]");
+        if (input) window.setTimeout(() => input.focus(), 0);
+    }
+
+    function closePalette() {
+        if (!palette) return;
+        if (typeof palette.close === "function") palette.close();
+        else palette.removeAttribute("open");
+    }
+
+    function openDialog(selector) {
+        const dialog = selector ? document.querySelector(selector) : null;
+        if (!dialog) return;
+        if (typeof dialog.showModal === "function") dialog.showModal();
+        else dialog.setAttribute("open", "");
+    }
+
+    function closeDialog(selector, trigger) {
+        const dialog = selector ? document.querySelector(selector) : trigger && trigger.closest("dialog");
+        if (!dialog) return;
+        if (typeof dialog.close === "function") dialog.close();
+        else dialog.removeAttribute("open");
+    }
+
+    function copyValue(trigger) {
+        const selector = trigger.dataset.copyTarget;
+        const target = selector ? document.querySelector(selector) : null;
+        const value = target ? (target.value || target.textContent || "") : trigger.dataset.copyValue;
+        if (!value || !navigator.clipboard) return;
+        navigator.clipboard.writeText(value).then(() => toast("Copied to clipboard.", "success"), () => toast("Could not copy the value.", "error"));
+    }
+
+    function selectTab(trigger) {
+        const tablist = trigger.closest('[role="tablist"]');
+        if (!tablist) return;
+        tablist.querySelectorAll('[role="tab"]').forEach((tab) => {
+            const selected = tab === trigger;
+            tab.setAttribute("aria-selected", String(selected));
+            tab.tabIndex = selected ? 0 : -1;
+            const panel = document.getElementById(tab.getAttribute("aria-controls"));
+            if (panel) panel.hidden = !selected;
+        });
+    }
+
+    async function enhanceForm(form) {
+        const submitter = document.activeElement;
+        const endpoint = (submitter && submitter.dataset.endpoint) || form.dataset.endpoint || form.action;
+        if (!endpoint) return;
+        const body = new FormData(form);
+        const method = (submitter && submitter.dataset.method) || form.method || "POST";
+        const csrf = form.querySelector('[name="csrf_token"]');
+        const headers = { "Accept": "application/json" };
+        if (csrf && csrf.value) headers["X-CSRF-Token"] = csrf.value;
+
+        form.setAttribute("aria-busy", "true");
+        try {
+            const response = await fetch(endpoint, { method: method.toUpperCase(), body, headers, credentials: "same-origin" });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.message || payload.error || "Request failed with status " + response.status);
+            toast(payload.message || form.dataset.success || "Saved.", "success");
+            if (payload.redirect) window.location.assign(payload.redirect);
+            document.dispatchEvent(new CustomEvent("app:form-success", { detail: { form, payload } }));
+        } catch (error) {
+            toast(error.message || "The request could not be completed.", "error");
+            const errors = form.querySelector("[data-form-errors]");
+            if (errors) { errors.hidden = false; errors.textContent = error.message; errors.focus(); }
+        } finally {
+            form.removeAttribute("aria-busy");
+        }
+    }
+
+    let searchController;
+    let searchTimer;
+    function setupGlobalSearch() {
+        const form = document.querySelector(".global-search");
+        const input = form && form.querySelector("input");
+        const results = form && form.querySelector("[data-search-results]");
+        if (!form || !input || !results) return;
+
+        input.addEventListener("input", () => {
+            window.clearTimeout(searchTimer);
+            const query = input.value.trim();
+            if (query.length < 2) { results.hidden = true; input.setAttribute("aria-expanded", "false"); return; }
+            searchTimer = window.setTimeout(async () => {
+                if (searchController) searchController.abort();
+                searchController = new AbortController();
+                try {
+                    const endpoint = new URL(form.dataset.endpoint || "/api/v1/search", window.location.origin);
+                    endpoint.searchParams.set("q", query);
+                    endpoint.searchParams.set("limit", "8");
+                    const response = await fetch(endpoint, { headers: { Accept: "application/json" }, signal: searchController.signal });
+                    if (!response.ok) return;
+                    const payload = await response.json();
+                    const items = payload.items || (payload.data && payload.data.items) || [];
+                    results.replaceChildren();
+                    items.forEach((item) => {
+                        const link = document.createElement("a");
+                        link.href = item.url;
+                        link.dataset.action = "navigate";
+                        link.dataset.endpoint = item.url;
+                        link.textContent = item.type + " · " + item.title;
+                        results.appendChild(link);
+                    });
+                    if (!items.length) results.textContent = "No matching local records.";
+                    results.hidden = false;
+                    input.setAttribute("aria-expanded", "true");
+                } catch (error) {
+                    if (error.name !== "AbortError") results.hidden = true;
+                }
+            }, 180);
+        });
+        input.addEventListener("blur", () => window.setTimeout(() => { results.hidden = true; input.setAttribute("aria-expanded", "false"); }, 150));
+    }
+
+    function setupCommandFilter() {
+        const input = palette && palette.querySelector("[data-command-query]");
+        if (!input) return;
+        input.addEventListener("input", () => {
+            const query = input.value.trim().toLowerCase();
+            palette.querySelectorAll("[data-command]").forEach((item) => {
+                item.hidden = query && !item.dataset.command.includes(query);
+            });
+        });
+    }
+
+    document.addEventListener("click", (event) => {
+        const trigger = event.target.closest("[data-action]");
+        if (!trigger) return;
+        const action = trigger.dataset.action;
+        if (action === "toggle-sidebar") { event.preventDefault(); toggleSidebar(); }
+        else if (action === "cycle-theme") { event.preventDefault(); cycleTheme(); }
+        else if (action === "open-command-palette") { event.preventDefault(); openPalette(); }
+        else if (action === "close-command-palette") { closePalette(); }
+        else if (action === "open-dialog") { event.preventDefault(); openDialog(trigger.dataset.target); }
+        else if (action === "close-dialog") { event.preventDefault(); closeDialog(trigger.dataset.target, trigger); }
+        else if (action === "copy") { event.preventDefault(); copyValue(trigger); }
+        else if (action === "select-tab") { event.preventDefault(); selectTab(trigger); }
+    });
+
+    document.addEventListener("submit", (event) => {
+        const form = event.target;
+        if (!(form instanceof HTMLFormElement)) return;
+        if (form.dataset.confirm && !window.confirm(form.dataset.confirm)) { event.preventDefault(); return; }
+        if (form.dataset.enhance === "json") { event.preventDefault(); enhanceForm(form); }
+    });
+
+    document.addEventListener("keydown", (event) => {
+        const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement && document.activeElement.tagName);
+        if (event.key === "Escape") {
+            if (palette && palette.open) closePalette();
+            if (shell) shell.dataset.mobileNav = "closed";
+            return;
+        }
+        if (typing || event.ctrlKey || event.metaKey || event.altKey) return;
+        if (event.key === "/") { event.preventDefault(); const search = document.getElementById("global-search"); if (search) search.focus(); }
+        else if (event.key.toLowerCase() === "n") window.location.assign("/app/scrapes/new");
+        else if (event.key.toLowerCase() === "j") window.location.assign("/app/jobs");
+        else if (event.key.toLowerCase() === "r") window.location.assign("/app/results");
+        else if (event.key.toLowerCase() === "p") {
+            const pause = document.querySelector('[data-action="pause-job"]');
+            if (pause) { event.preventDefault(); pause.click(); }
+        }
+    });
+
+    applyTheme(safeStorageGet("gmaps-theme") || root.dataset.theme || "system");
+    if (shell && safeStorageGet("gmaps-sidebar") === "collapsed" && !window.matchMedia("(max-width: 56rem)").matches) shell.dataset.sidebar = "collapsed";
+    setupGlobalSearch();
+    setupCommandFilter();
+    document.querySelectorAll("[data-flash]").forEach((item) => toast(item.dataset.flash, item.classList.contains("notice-error") ? "error" : "success"));
+
+    window.GMapsApp = { toast, openDialog, closeDialog };
+})();

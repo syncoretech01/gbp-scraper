@@ -1,0 +1,12 @@
+{{define "app/flash"}}
+{{if .Flash}}
+<section class="notice-stack" aria-label="Notifications">
+    {{range .Flash}}
+    <div class="notice notice-{{.Level}}" role="{{if eq .Level "error"}}alert{{else}}status{{end}}" data-flash="{{.Message}}">
+        <span aria-hidden="true">{{if eq .Level "success"}}✓{{else if eq .Level "warning"}}!{{else if eq .Level "error"}}×{{else}}i{{end}}</span>
+        <div><strong>{{.Title}}</strong>{{if .Message}}<p>{{.Message}}</p>{{end}}</div>
+    </div>
+    {{end}}
+</section>
+{{end}}
+{{end}}

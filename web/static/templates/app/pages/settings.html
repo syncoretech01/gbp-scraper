@@ -1,0 +1,29 @@
+{{define "app/page/settings"}}{{template "app/layout" .}}{{end}}
+
+{{define "app/page-actions"}}<div class="page-actions"><a class="button" href="/app/scrapes/new">Preview in New Scrape</a></div>{{end}}
+
+{{define "app/content"}}
+<div class="section-stack">
+    {{if .Page.Notice}}<div class="notice notice-success" role="status"><div><strong>{{.Page.Notice}}</strong></div></div>{{end}}
+    <form class="section-stack" action="/api/v1/settings" method="post">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <section class="card"><div class="card-header"><div><h2>New scrape defaults</h2><p>These values are loaded into new jobs; each job keeps its own immutable configuration snapshot.</p></div></div><div class="card-body grid grid-4">
+            <div class="field"><label for="setting-language">Maps language</label><input class="input" id="setting-language" name="language" value="{{.Page.Defaults.Language}}" minlength="2" maxlength="2" required></div>
+            <div class="field"><label for="setting-zoom">Zoom</label><input class="input" id="setting-zoom" name="zoom" type="number" min="1" max="21" value="{{.Page.Defaults.Zoom}}" required></div>
+            <div class="field"><label for="setting-depth">Depth</label><input class="input" id="setting-depth" name="depth" type="number" min="1" max="100" value="{{.Page.Defaults.Depth}}" required></div>
+            <div class="field"><label for="setting-runtime">Maximum runtime</label><input class="input" id="setting-runtime" name="max_runtime" value="{{.Page.Defaults.MaxTime}}" pattern="[0-9]+(s|m|h)" required></div>
+            <div class="field"><label for="setting-concurrency">Concurrency</label><input class="input" id="setting-concurrency" name="concurrency" type="number" min="1" max="64" value="{{.Page.Defaults.Concurrency}}" required></div>
+            <div class="field"><label for="setting-browser-pool">Browser pool</label><input class="input" id="setting-browser-pool" name="browser_pool_size" type="number" min="1" max="32" value="{{.Page.Defaults.BrowserPool}}" required></div>
+            <div class="field"><label for="setting-pages">Pages per browser</label><input class="input" id="setting-pages" name="pages_per_browser" type="number" min="1" max="16" value="{{.Page.Defaults.PagesBrowser}}" required></div>
+            <div class="field"><label for="setting-radius">Coverage extent (metres)</label><input class="input" id="setting-radius" name="radius" type="number" min="100" max="100000" value="{{.Page.Defaults.Radius}}" required></div>
+            <div class="field"><label for="setting-grid">Grid-cell size (km)</label><input class="input" id="setting-grid" name="grid_cell_km" type="number" min="0.1" max="50" step="0.1" value="{{.Page.Defaults.GridCellKM}}" required></div>
+            <label class="check-row"><input name="email" type="checkbox" value="on" {{if .Page.Defaults.Email}}checked{{end}}><span>Enable website email extraction by default</span></label>
+            <label class="check-row"><input name="extra_reviews" type="checkbox" value="on" {{if .Page.Defaults.ExtraReviews}}checked{{end}}><span>Collect extra reviews by default</span></label>
+        </div></section>
+
+        <section class="card"><div class="card-header"><div><h2>Appearance and privacy</h2><p>The theme is stored locally in SQLite and can still be changed temporarily from the top bar.</p></div></div><div class="card-body grid grid-3"><div class="field"><label for="setting-theme">Theme</label><select class="select" id="setting-theme" name="theme"><option value="system" {{if eq .Page.Theme "system"}}selected{{end}}>System</option><option value="light" {{if eq .Page.Theme "light"}}selected{{end}}>Light</option><option value="dark" {{if eq .Page.Theme "dark"}}selected{{end}}>Dark</option></select></div><div class="notice notice-success"><div><strong>Telemetry disabled</strong><p>The provided Docker Compose configuration sets DISABLE_TELEMETRY=1.</p></div></div><div class="notice notice-info"><div><strong>Secrets are redacted</strong><p>Runtime logs and local API job responses mask proxy credentials and token-like fields.</p></div></div></div></section>
+
+        <div class="form-actions"><button class="button button-primary" type="submit">Save settings</button></div>
+    </form>
+</div>
+{{end}}

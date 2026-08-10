@@ -1,0 +1,24 @@
+services:
+  scraper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command:
+      - -web
+      - -addr
+      - 0.0.0.0:8080
+      - -data-folder
+      - /gmapsdata
+    environment:
+      DISABLE_TELEMETRY: "1"
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./webdata:/gmapsdata
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s

@@ -1,0 +1,43 @@
+{{define "app/page/map"}}{{template "app/layout" .}}{{end}}
+
+{{define "app/head"}}<script defer src="/static/js/app-map.js"></script>{{end}}
+
+{{define "app/page-actions"}}
+<div class="page-actions">
+    {{if .Page.CanExportArea}}<a class="button" href="/api/v1/maps/areas/export{{if .Page.AreaID}}?area_id={{.Page.AreaID}}{{end}}" download data-endpoint="/api/v1/maps/areas/export{{if .Page.AreaID}}?area_id={{.Page.AreaID}}{{end}}">Export GeoJSON</a>{{end}}
+    {{if .Page.CanUseArea}}<a class="button button-primary" href="/app/scrapes/new{{if .Page.AreaID}}?area_id={{.Page.AreaID}}{{end}}" data-endpoint="/app/scrapes/new{{if .Page.AreaID}}?area_id={{.Page.AreaID}}{{end}}">Use area in scrape</a>{{else}}<a class="button button-primary" href="/app/scrapes/new" data-endpoint="/app/scrapes/new">Configure scrape</a>{{end}}
+</div>
+{{end}}
+
+{{define "app/content"}}
+<div class="card map-layout" data-map-explorer data-mode="{{.Page.Mode}}">
+    <aside class="map-panel section-stack" aria-label="Map controls">
+        <form class="section-stack" action="/app/map" method="get">
+            <input type="hidden" name="geometry_type" value="{{.Page.GeometryType}}" data-geometry-type>
+            <fieldset class="fieldset"><legend>Mode</legend><div class="segmented map-mode-switch"><input id="map-planning" name="mode" type="radio" value="planning" {{if eq .Page.Mode "planning"}}checked{{end}}><label for="map-planning">Planning</label><input id="map-live" name="mode" type="radio" value="live" {{if eq .Page.Mode "live"}}checked{{end}}><label for="map-live">Job view</label><input id="map-results" name="mode" type="radio" value="results" {{if eq .Page.Mode "results"}}checked{{end}}><label for="map-results">Results</label></div></fieldset>
+            <div class="field"><label for="map-job">Job or result set</label><select class="select" id="map-job" name="job_id"><option value="">New area</option>{{range .Page.Jobs}}<option value="{{.ID}}" {{if .Selected}}selected{{end}}>{{.Name}} &mdash; {{.State}}</option>{{end}}</select></div>
+            <p class="field-hint">The preview covers a circle around the centre. Existing grid jobs retain their saved bounding box.</p>
+            <div class="field"><label for="map-place">Centre or place</label><input class="input" id="map-place" name="place" value="{{.Page.Place}}" placeholder="San Francisco, CA" autocomplete="street-address"></div>
+            <div class="grid grid-2"><div class="field"><label for="map-latitude">Latitude</label><input class="input" id="map-latitude" name="latitude" type="number" step="any" value="{{.Page.Latitude}}"></div><div class="field"><label for="map-longitude">Longitude</label><input class="input" id="map-longitude" name="longitude" type="number" step="any" value="{{.Page.Longitude}}"></div></div>
+            <div class="grid grid-2"><div class="field"><label for="map-radius">Radius (km)</label><input class="input" id="map-radius" name="radius_km" type="number" min="0.1" max="500" step="0.1" value="{{.Page.RadiusKM}}"></div><div class="field"><label for="map-grid-cell">Grid cell (km)</label><input class="input" id="map-grid-cell" name="grid_cell_km" type="number" min="0.1" max="50" step="0.1" value="{{.Page.GridCellKM}}"></div></div>
+            <div class="field"><label for="map-keyword-group">Keyword group</label><select class="select" id="map-keyword-group" name="keyword_group_id"><option value="">All configured keywords</option>{{range .Page.KeywordGroups}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select></div>
+            <div class="estimate" aria-label="Grid estimate"><div><span class="field-hint">Cells</span><strong data-map-cell-count>{{.Page.Estimate.Cells}}</strong></div><div><span class="field-hint">Queries</span><strong>{{.Page.Estimate.Queries}}</strong></div><div><span class="field-hint">Tasks</span><strong>{{.Page.Estimate.Tasks}}</strong></div><div><span class="field-hint">Runtime</span><strong>{{.Page.Estimate.Runtime}}</strong></div></div>
+            <div class="form-actions">{{if .Page.CanSaveArea}}<button class="button" type="submit" name="action" value="save">Save area</button>{{end}}<button class="button button-primary" type="submit" name="action" value="preview">Preview grid</button></div>
+        </form>
+
+        <details class="disclosure"><summary>Filter result markers</summary><form class="section-stack nested-form" action="/app/map" method="get"><input type="hidden" name="mode" value="results"><input type="hidden" name="job_id" value="{{.Page.SelectedJobID}}"><div class="field"><label for="map-filter">Search markers</label><input class="input" id="map-filter" name="q" type="search" value="{{.Page.Query}}" placeholder="Name, category, or address"></div><button class="button" type="submit" data-endpoint="/app/map">Apply to map</button></form></details>
+
+        {{if and .Page.CanMutateCells .Page.SelectedCells}}<form class="section-stack" action="/api/v1/maps/cells/actions" method="post"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><input type="hidden" name="cell_ids" value="{{.Page.SelectedCellIDs}}"><strong>{{.Page.SelectedCells}} selected cells</strong><div class="grid grid-2"><button class="button button-small" type="submit" name="action" value="retry" data-endpoint="/api/v1/maps/cells/actions">Retry failed/empty</button><button class="button button-small" type="submit" name="action" value="remove" data-endpoint="/api/v1/maps/cells/actions">Remove from area</button></div><div class="field"><label for="cell-keyword">Run keyword in selected cells</label><div class="input-group"><input class="input" id="cell-keyword" name="keyword"><button class="button" type="submit" name="action" value="run_keyword" data-endpoint="/api/v1/maps/cells/actions">Run</button></div></div><button class="button" type="submit" name="action" value="export_results" data-endpoint="/api/v1/results/export">Export businesses inside cells</button></form>{{end}}
+    </aside>
+
+    <section class="map-canvas" id="map-canvas" data-map-canvas tabindex="0" aria-label="Interactive area and coverage preview">
+        <div class="map-controls" aria-label="Map view controls"><button class="icon-button" type="button" data-action="map-zoom-in" data-endpoint="#map-canvas" aria-label="Zoom in">+</button><button class="icon-button" type="button" data-action="map-zoom-out" data-endpoint="#map-canvas" aria-label="Zoom out">&minus;</button><button class="button button-small" type="button" data-action="map-fit" data-endpoint="#map-canvas">Fit area</button></div>
+        <svg viewBox="0 0 1000 620" role="img" aria-label="Server-rendered grid coverage preview">
+            {{range .Page.Cells}}<rect x="{{.X}}" y="{{.Y}}" width="{{.Width}}" height="{{.Height}}" rx="4" class="map-cell map-cell-{{.State}}" data-cell-id="{{.ID}}"><title>Planned cell {{.Number}}; per-cell worker status is not available</title></rect>{{end}}
+            {{range .Page.Markers}}<g class="map-marker" transform="translate({{.X}} {{.Y}})" tabindex="0" role="link" aria-label="{{.Name}}, {{.Category}}, rating {{.Rating}}"><circle r="8"></circle><title>{{.Name}} &mdash; {{.Category}} &mdash; {{.Rating}} stars &mdash; {{.Email}} &mdash; {{.Phone}}</title></g>{{end}}
+        </svg>
+        <div class="map-fallback"><div><strong>Local map preview</strong><p>Draw or import an area, then preview its numbered search grid. Base tiles are cached locally when available; grid planning works without a paid map API.</p></div></div>
+        <div class="map-legend" aria-label="Coverage legend"><span><i class="legend-swatch cell-waiting"></i>Planned grid cell</span><span><i class="legend-swatch cell-running"></i>Committed result marker</span></div>
+    </section>
+</div>
+{{end}}

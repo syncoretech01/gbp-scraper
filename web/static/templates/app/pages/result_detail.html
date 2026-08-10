@@ -1,0 +1,5 @@
+{{define "app/page/result-detail"}}{{template "app/layout" .}}{{end}}
+
+{{define "app/page-actions"}}<div class="page-actions"><a class="button" href="/app/results">Back to results</a>{{if .Page.Business.MapsURL}}<a class="button button-primary" href="{{.Page.Business.MapsURL}}" target="_blank" rel="noopener noreferrer">Open Maps</a>{{end}}</div>{{end}}
+
+{{define "app/content"}}<section class="card card-body">{{template "app/result-drawer" .Page}}</section>{{end}}

@@ -68,6 +68,8 @@
                     <details class="expandable-section">
                         <summary>Location Settings</summary>
                         <fieldset>
+                            <p class="field-help">Latitude and longitude anchor a normal search. A strict radius is applied only in Fast Mode. For broad, repeatable city coverage, use the grid fields below.</p>
+                            <button type="button" class="secondary-button" id="san-francisco-preset">Use San Francisco city area</button>
                             <div class="form-group">
                                 <label for="zoom">Zoom:</label>
                                 <input type="number" id="zoom" name="zoom" value="{{.Zoom}}">
@@ -80,6 +82,15 @@
                                 <label for="longitude">Longitude:</label>
                                 <input type="number" step="0.000000000000001" id="longitude" name="longitude" value="{{.Lon}}">
                             </div>
+                            <div class="form-group">
+                                <label for="grid_bbox">Grid bounding box <span class="label-hint">(min latitude, min longitude, max latitude, max longitude)</span>:</label>
+                                <input type="text" id="grid_bbox" name="grid_bbox" value="{{.GridBBox}}" placeholder="37.708,-122.515,37.833,-122.354">
+                            </div>
+                            <div class="form-group">
+                                <label for="grid_cell_km">Grid cell size (km):</label>
+                                <input type="number" min="0.25" max="25" step="0.25" id="grid_cell_km" name="grid_cell_km" value="{{.GridCellKM}}">
+                                <p class="field-help">Smaller cells improve coverage but create more searches. Start with 2–3 km for San Francisco.</p>
+                            </div>
                         </fieldset>
                     </details>
                     
@@ -91,8 +102,9 @@
                                 <input type="checkbox" id="fastmode" name="fastmode" {{if .FastMode}}checked{{end}}>
                             </div>
                             <div class="form-group">
-                                    <label for="radius">Radius (BETA):</label>
+                                    <label for="radius">Fast Mode radius (metres):</label>
                                     <input type="number" id="radius" name="radius" value="{{.Radius}}">
+                                    <p class="field-help">This is not a result-count setting. It filters by distance only when Fast Mode is checked; Fast Mode returns up to roughly 21 results per query.</p>
                             </div>
                             <div class="form-group">
                                 <label for="depth">Depth:</label>
@@ -105,6 +117,7 @@
                             <div class="form-group">
                                 <label for="maxtime">Max job time:</label>
                                 <input type="text" id="maxtime" name="maxtime" value="{{.MaxTime}}">
+                                <p class="field-help">Email crawling can take 30 seconds per website. Use at least 30–60 minutes for a city-wide job, or first scrape without email and enrich later.</p>
                             </div>
                         </fieldset>
                     </details>
@@ -155,6 +168,15 @@ function hideSponsor() {
         sponsorSection.style.display = 'none';
     }
 }
+
+document.getElementById('san-francisco-preset')?.addEventListener('click', function () {
+    document.getElementById('latitude').value = '37.7749';
+    document.getElementById('longitude').value = '-122.4194';
+    document.getElementById('zoom').value = '14';
+    document.getElementById('radius').value = '10000';
+    document.getElementById('grid_bbox').value = '37.708,-122.515,37.833,-122.354';
+    document.getElementById('grid_cell_km').value = '2.5';
+});
 </script>
 </body>
 </html>

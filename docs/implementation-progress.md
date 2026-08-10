@@ -1,0 +1,887 @@
+# Local Improvement Implementation Progress
+
+Last updated: 2026-08-07
+
+## Source and status
+
+- [x] Restored the authoritative specification from the user's local Downloads folder to `docs/Google_Maps_Scraper_Local_Improvement_Specification.md`.
+- [x] Verified the repository copy matches the 1,385-line source after line-ending normalization.
+- [x] Read the complete specification and mapped its explicit list/table requirements below.
+- [ ] Complete implementation of every aspirational item in the specification is not claimed.
+- [x] Completed requirement reconciliation: working paths are recorded here and every remaining group has a specific boundary in `docs/technical-limitations.md`.
+
+## Status legend
+
+- `[ ]` not implemented/proven; its section-level technical boundary is recorded in `docs/technical-limitations.md`.
+- `[x]` implemented and verified.
+- A requirement may only be checked after code, tests, and runtime evidence establish it.
+
+## Upgrade evidence summary
+
+- [x] Durable lifecycle, partial outcomes, pause/resume/cancel/retry, redacted events, SSE, and restart recovery.
+- [x] Safe schema v0-to-v5 migration with verified pre-migration backups, forward-schema refusal, rollback tests, and an existing-data copy smoke test.
+- [x] Retry-safe compatible CSV output plus normalized SQLite import, FTS5, exact and conservative fuzzy deduplication, provenance, versions, and change records.
+- [x] Local application routes for dashboard, wizard, jobs/monitor, map, results/detail, saved views/templates, schedules, proxies, exports, API, settings, system, and onboarding.
+- [x] Auditable result tags, reviewed state, and notes; all unsupported bulk mutations stay hidden.
+- [x] Persistent settings, verified backups, integrity/VACUUM, multi-format atomic exports, schedules, and encrypted proxy pools.
+- [x] Strict local-app CSP/security headers, CSRF, bounded request/upload sizes, path containment, secret redaction, and localhost publishing.
+- [x] Focused tests, the full race suite, vet, production build, Docker build/readiness, final-image restart, and live existing-data checks pass.
+
+## Baseline before implementation
+
+- [x] Confirmed the worktree was clean before baseline testing.
+- [x] Recorded baseline commit: `a75a157` (`v1.17.3`).
+- [x] Node skill tests: 9 passed, 0 failed.
+- [x] Go race tests passed in `golang:1.26.5-trixie` with `go test -v -race -timeout 5m ./...`.
+- [ ] Bash skill helper baseline has an existing Windows-specific failure: `proxy file permissions are not 600`.
+
+## Field issue reproduced
+
+- [x] Inspected job `ba78441f-a048-4c9d-a8de-d0589e66f132` without modifying its database or CSV.
+- [x] Confirmed the generated sheet contains one header plus 36 unique business rows (36 unique Place IDs).
+- [x] Confirmed the job used three queries, a 10-minute runtime limit, depth 10, and synchronous website/email crawling.
+- [x] Confirmed logs reported at least 60 candidate places before the deadline, but only 36 detail rows were committed.
+- [x] Confirmed the legacy worker incorrectly projected its deadline-limited outcome as `ok`; lifecycle work must classify it as `partial` and retain its committed rows.
+- [x] Added backward-compatible grid fields to the web/API job configuration and a San Francisco city-area preset to the legacy UI; focused validation tests pass.
+
+## Cross-cutting constraints and completion gates
+
+- [x] Preserve existing standalone scraper behavior and all existing CLI flags/run modes.
+- [x] Preserve current REST routes and response/data compatibility while adding versioned capabilities.
+- [x] Preserve Docker startup behavior and provide a local-only default bind.
+- [x] Preserve existing `webdata/jobs.db`, UUID CSV files, legacy status values, and nanosecond `time.Duration` JSON values.
+- [x] Use safe, idempotent migrations with backup, rollback/error safety, and legacy-database tests.
+- [x] Keep all required functionality local-first and free of mandatory paid APIs/SaaS.
+- [x] Keep optional local AI removable and disabled by default.
+- [x] Treat SMTP/mailbox verification as low-confidence and document its limitations.
+- [x] Support useful operation without proxies; document that reliable proxy acquisition may cost money.
+- [x] Include responsible-use/rate-policy guidance and operator compliance notice.
+- [x] Ensure every displayed functional UI control has a working backend path and relevant test/runtime coverage; unavailable actions are capability-gated.
+- [x] Pass full tests, production build, Docker build/startup/readiness, restart persistence, and existing-data smoke checks.
+- [x] Document every unmet requirement group with a specific technical limitation and evidence in `docs/technical-limitations.md`.
+
+## Specification requirement checklist
+
+## 01 Product Vision and Guiding Principles
+
+- [ ] Section complete and verified against the specification.
+
+### Goals
+
+- [ ] Expose the scraper engine’s existing advanced capabilities through a polished graphical interface.
+- [x] Keep business data, proxy credentials, exports, logs, and configuration on the local machine; screenshot storage is explicitly not implemented.
+- [ ] Support small one-off searches and large geographic collection projects from the same application.
+- [x] Make long-running jobs observable, controllable, safely restartable, and auditable within the checkpoint boundary documented in `technical-limitations.md`.
+- [x] Provide clean, deduplicated, filterable, and exportable results rather than only raw CSV output.
+- [x] Avoid mandatory dependence on paid APIs, hosted databases, commercial enrichment providers, or cloud workers.
+
+### Guiding principles
+
+- [ ] **Local-first:** Bind to localhost by default; store application data in local SQLite or optional local PostgreSQL.
+- [x] **Open-source components:** The implemented local stack uses the existing open-source Go/SQLite/browser components and embedded first-party assets.
+- [ ] **Progressive disclosure:** Offer simple presets for normal users and advanced controls for technical operators.
+- [x] **Recoverability:** Persist durable lifecycle state, committed partial results, retry files, and restart recovery so interruptions do not destroy completed writes.
+- [x] **Auditability:** Record source query, source URL, grid cell, extraction time, versions, changes, and core field provenance.
+- [ ] **Performance safety:** Measure local CPU, RAM, disk, browser count, and block rate before increasing concurrency.
+- [ ] **No hidden lock-in:** Allow configuration and result export in open formats such as JSON, CSV, SQLite, and GeoJSON.
+
+## 02 Application Structure and Navigation
+
+- [ ] Section complete and verified against the specification.
+
+### Primary navigation
+
+- [x] **Dashboard:** Overview of jobs, results, data quality, storage, and recent activity; unreported resource metrics are labelled.
+- [x] **New Scrape:** Guided multi-step job configuration.
+- [x] **Jobs:** Durable FIFO queue, history, status, safe controls, redacted logs, and documented checkpoint boundary.
+- [x] **Results:** Paginated business database with workflow actions.
+- [x] **Map Explorer:** Local grid/coverage and geographic result inspection; drawing limitations are documented.
+- [x] **Saved Searches:** Reusable result views and complete implemented scrape templates.
+- [x] **Schedules:** Recurring durable local jobs; incremental mode is documented as unavailable.
+- [x] **Proxies:** Encrypted proxy pools, testing, health, usage, cooldown, and implemented rotation ordering.
+- [x] **Exports:** Create, manage, download, and delete reproducible local exports.
+- [x] **API:** Local endpoint inventory, examples, and downloadable OpenAPI subset; keys/request logs are documented as unavailable.
+- [x] **System:** Database/storage diagnostics, backups, maintenance, versions, binding, and self-test.
+- [x] **Settings:** Implemented scrape defaults, appearance, and telemetry state.
+
+### Global interface features
+
+- [x] Collapsible left sidebar and sticky top bar.
+- [ ] Global search across jobs, businesses, tags, templates, and exports.
+- [x] Command palette for keyboard-driven navigation.
+- [x] Persistent job activity indicator visible from every local-app screen.
+- [x] Light, dark, and system appearance modes.
+- [x] Toast notifications, confirmations, helpful empty states, and actionable errors on implemented paths.
+
+## 03 Dashboard
+
+- [ ] Section complete and verified against the specification.
+
+### Summary metrics
+
+- [x] Total raw records and total unique businesses.
+- [x] Businesses collected today, this week, and this month.
+- [x] Running, queued, paused, completed, partial, failed, and cancelled jobs.
+- [ ] Websites, phone numbers, emails, and social profiles discovered.
+- [x] Duplicate candidates detected and exact stable-identity records merged.
+- [x] Average places per minute and average job duration when recorded evidence exists.
+- [ ] Proxy success rate, block rate, and number of healthy proxies.
+- [ ] Local database size, export storage, screenshot storage, and remaining disk capacity.
+
+### Charts and analysis
+
+- [x] Results collected by date.
+- [ ] Businesses by city, category, status, and rating band.
+- [ ] Website, email, phone, and social-profile availability rates.
+- [ ] Job success and failure trends.
+- [ ] Scraping speed and block rate over time.
+- [ ] Proxy latency and reliability distribution.
+- [ ] Website-active versus website-inactive results.
+
+### Recent activity cards
+
+- [ ] Job name, state, progress percentage, current stage, records found, unique records, emails found, runtime, and estimated completion time.
+- [ ] Quick actions: open, pause, resume, stop, download partial results, retry failures, and duplicate configuration.
+
+## 04 New Scrape Wizard
+
+- [ ] Section complete and verified against the specification.
+
+### Step 1 — Business search
+
+- [x] Single keyword, multiple keywords, and upstream-supported direct Google Maps URLs through the query input.
+- [ ] Business category picker and reusable category groups.
+- [ ] Include and exclude keywords.
+- [x] Upload keywords from CSV or TXT; paste one query per line.
+- [ ] Generate category × location combinations automatically.
+- [x] Preview/count generated query lines before launch.
+- [x] Detect and remove exact case-insensitive duplicates; fuzzy warning is documented as unavailable.
+- [ ] Save keyword sets for reuse.
+
+### Step 2 — Location and geographic scope
+
+- [x] Configure a location label and exact coordinates; automatic geocoding of text locations is not claimed.
+- [ ] Select multiple cities or upload locations from a file.
+- [ ] Draw a circle, polygon, or bounding box on a map.
+- [x] Set radius, zoom, bounding box, and grid-cell size with explicit mode semantics.
+- [x] Preview estimated grid-cell and task counts.
+- [ ] Remove individual cells or define excluded areas.
+- [ ] Save geographic areas for future jobs.
+
+### Step 3 — Data fields
+
+- [ ] Choose which Maps fields to retain, display, and export.
+- [ ] Core details: name, category, address, phone, website, domain, coordinates, rating, reviews, and business status.
+- [ ] Identifiers: Place ID, CID, Data ID, input ID, source query, and source grid cell.
+- [ ] Extended details: opening hours, popular times, descriptions, price range, images, reservations, ordering links, menus, owner information, and reviews.
+
+### Step 4 — Local enrichment
+
+- [ ] Visit the business website and detect active/inactive status.
+- [ ] Extract emails, visible phone numbers, contact pages, about pages, and social links.
+- [ ] Collect page title, meta description, language, CMS, analytics tools, SSL state, HTTP status, redirect chain, and response time.
+- [ ] Choose crawl scope: homepage only; homepage + contact; homepage + contact + about; or maximum page count.
+- [ ] Set page timeout, URL patterns, and whether to save screenshots on errors.
+
+### Step 5 — Filters
+
+- [ ] Rating and review-count ranges.
+- [ ] Included and excluded business categories.
+- [ ] Open, temporarily closed, and permanently closed status.
+- [ ] Claimed or unclaimed listing status where available.
+- [ ] Business name contains/does not contain conditions.
+- [ ] Post-scrape filters for website, email, phone, social profile, city, ZIP, website status, and quality score.
+
+### Step 6 — Performance and browser settings
+
+- [x] **Fast:** Low depth, higher concurrency, no website crawl by default; intended for quick validation.
+- [x] **Balanced:** Moderate depth and concurrency; optional website/email extraction.
+- [x] **Deep:** Higher depth, conservative concurrency, durable partial writes, and optional enrichment.
+- [ ] Advanced settings: depth, concurrency, browser-pool size, pages per browser, maximum runtime, maximum records, retry count, retry delay, page timeout, random delay, fast mode, extra reviews, visible/headless browser, and proxy pool.
+- [ ] Resource controls: disable images, fonts, or video where safe; cap memory usage; save failure screenshots; pause on low disk space.
+
+### Step 7 — Review and estimate
+
+- [x] Summarize keywords, location/coverage, generated queries, grid cells, estimated task count, enrichment, proxy pool, output, and runtime.
+- [x] Display implemented warnings for duplicates, small cells, aggressive concurrency, direct connection, and unrealistic runtime; low-disk measurement is documented as unavailable.
+- [x] Save configuration as a reusable template before starting.
+
+## 05 Interactive Map Explorer
+
+- [ ] Section complete and verified against the specification.
+
+### Planning mode
+
+- [ ] Leaflet map with OpenStreetMap tiles.
+- [ ] Draw circles, polygons, and bounding boxes.
+- [ ] Preview search grids, cell numbering, estimated queries, and expected task count.
+- [ ] Select, remove, resize, or group cells.
+- [ ] Assign different keyword groups to different areas.
+- [ ] Import or export geographic definitions as GeoJSON.
+
+### Live coverage mode
+
+- [ ] **Grey:** Waiting or not searched
+- [ ] **Blue:** Currently running
+- [ ] **Green:** Completed successfully
+- [ ] **Amber:** Completed with partial results or warnings
+- [ ] **Red:** Failed or blocked
+- [ ] **Purple:** Paused
+
+### Results mode
+
+- [ ] Marker clustering for large datasets.
+- [ ] Business popup with name, category, rating, reviews, website status, email, phone, and links.
+- [ ] Heatmaps for result density, failed cells, empty cells, and duplicate-heavy cells.
+- [ ] Filter markers using the same rules as the Results Explorer.
+- [ ] Export businesses inside a drawn area.
+- [ ] Retry selected failed/empty cells or run a new keyword only in selected cells.
+
+## 06 Job Management
+
+- [ ] Section complete and verified against the specification.
+
+### Job lifecycle
+
+- [x] **Draft:** Configuration saved but not submitted.
+- [x] **Queued:** Waiting in a durable FIFO queue for local worker capacity.
+- [x] **Starting:** Worker has claimed the job and is preparing execution.
+- [x] **Running:** Actively collecting or enriching records.
+- [x] **Paused:** Intentionally stopped at the engine boundary with committed results preserved.
+- [x] **Cancelling:** Safely requesting shutdown of active work.
+- [x] **Completed:** Finished normally.
+- [x] **Partial:** Finished with timeout, record limit, pause/shutdown, or incomplete work.
+- [x] **Failed:** Could not continue because of an error.
+- [x] **Cancelled:** Stopped by the operator with committed results retained.
+
+### Controls
+
+- [ ] Start, pause, resume, cancel, delete, archive, rename, duplicate, and restart.
+- [ ] Add runtime, change concurrency, switch proxy pool, and retry failed tasks.
+- [x] Restart safely from committed output/retry files without replacing earlier results; per-task cursor limitations are documented.
+- [x] Download committed partial CSV results at any time.
+- [ ] Apply tags, folders, notes, and ownership labels.
+
+### Job detail data
+
+- [ ] Configuration snapshot and exact scraper version.
+- [ ] Queries, geographic cells, completed tasks, remaining tasks, raw records, unique records, websites, emails, and duplicates.
+- [ ] Average records per minute, runtime, ETA, CPU, memory, browser processes, active pages, proxy performance, retries, warnings, and errors.
+
+## 07 Live Job Monitor
+
+- [ ] Section complete and verified against the specification.
+
+### Pipeline view
+
+- [ ] **Preparing queries:** Keyword expansion, validation, duplicate removal, and generated search count.
+- [ ] **Generating grid:** Cells created, cells excluded, geographic coverage, and task estimate.
+- [ ] **Searching Maps:** Current query, coordinates, cell, results found, speed, and block rate.
+- [ ] **Extracting details:** Listings opened, fields parsed, retries, and browser health.
+- [ ] **Crawling websites:** Current domain, pages visited, HTTP status, and response time.
+- [ ] **Extracting contacts:** Emails, phones, and social links discovered.
+- [ ] **Deduplicating:** Raw records, matches, merges, and conflicts.
+- [ ] **Saving/exporting:** Rows committed, output files, and storage usage.
+
+### Real-time controls and diagnostics
+
+- [ ] Pause, resume, cancel, reduce/increase concurrency, change proxy pool, add runtime, retry current task, and download partial results.
+- [ ] Show current keyword, location, cell, active proxy, browser count, pages, places per minute, CPU, RAM, database writes, website queue, and ETA.
+- [x] Use durable Server-Sent Events with cursor replay, plus bounded progress fallback.
+
+### Human-readable logs
+
+- [ ] Severity levels: information, warning, rate limit, proxy failure, browser failure, website timeout, parsing failure, duplicate, maximum runtime, and system error.
+- [ ] Search, severity filters, auto-scroll control, copy details, download logs, and link errors to the affected query/cell/record.
+
+## 08 Results Explorer
+
+- [ ] Section complete and verified against the specification.
+
+### Data table capabilities
+
+- [x] Indexed server pagination, FTS5 search, sorting, and bounded column filters; virtual scrolling is not claimed.
+- [ ] Resize, reorder, hide, freeze, and group columns.
+- [ ] Inline editing, multi-row selection, keyboard navigation, copy cells/rows, and saved table layouts.
+- [ ] Table-only, map-only, and split table/map views.
+- [ ] Saved views tied to filters, visible columns, sorting, and grouping.
+
+### Core columns
+
+- [ ] **Business:** Name, primary category, additional categories, description, claimed status, business status.
+- [ ] **Location:** Full address, street, city, state, postal code, country, latitude, longitude, plus code.
+- [ ] **Contacts:** Phone, normalized phone, phone type, website, domain, emails, email type, email status.
+- [ ] **Social:** Facebook, Instagram, LinkedIn, X/Twitter, YouTube, TikTok, WhatsApp.
+- [ ] **Reputation:** Rating, review count, ratings breakdown, user reviews, popular times.
+- [ ] **Identifiers:** Place ID, CID, Data ID, Maps URL, source query, source cell, input ID.
+- [ ] **Quality:** Website status, response time, technology, quality score, confidence, last checked.
+- [ ] **Workflow:** Tags, notes, reviewed flag, scrape date, last update, change status.
+
+### Bulk actions
+
+- [ ] Export, delete, tag, untag, mark reviewed, add to saved list, re-enrich, recheck website, recheck emails, merge duplicates, and open selected websites.
+- [ ] Copy selected domains, emails, phone numbers, addresses, or Maps URLs.
+
+### Record detail drawer
+
+- [ ] Complete structured record, map location, source links, website preview or screenshot, social profiles, provenance, raw JSON, notes, tags, change history, and duplicate matches.
+
+## 09 Advanced Filtering
+
+- [ ] Section complete and verified against the specification.
+
+### Filter operators
+
+- [ ] AND, OR, and nested groups.
+- [ ] Contains, does not contain, starts with, ends with, equals, not equal, empty, and not empty.
+- [ ] Numeric minimum, maximum, between, greater than, and less than.
+- [ ] Date ranges, boolean fields, category membership, and geographic radius/polygon filters.
+
+### Example reusable views
+
+- [ ] Businesses without websites.
+- [ ] Businesses with an active website but no visible email.
+- [ ] Highly rated businesses with low-quality websites.
+- [ ] Businesses with phone but no website.
+- [ ] Businesses with email and LinkedIn.
+- [ ] Open listings with more than 50 reviews.
+- [ ] New or changed businesses since the last scrape.
+- [ ] Permanently closed listings.
+
+## 10 Deduplication Engine
+
+- [ ] Section complete and verified against the specification.
+
+### Exact matching keys
+
+- [x] Place ID.
+- [x] CID.
+- [x] Data ID.
+- [x] Normalized phone.
+- [x] Normalized website domain.
+- [x] Exact normalized address.
+
+### Fuzzy and composite matching
+
+- [x] Similar normalized business name creates a conservative review candidate.
+- [x] Name + postal code or name + city contributes bounded candidate evidence.
+- [x] Name + geographic proximity contributes bounded candidate evidence.
+- [x] Similar address with coordinate proximity contributes bounded candidate evidence while requiring a meaningful name/identity signal.
+- [x] Shared phone or domain with a modified display name contributes strong candidate evidence.
+
+### Duplicate review and merge
+
+- [x] Show raw count, unique count, duplicate candidates, exact auto-merged count, and items needing review.
+- [ ] Side-by-side comparison of conflicting records.
+- [ ] Keep both, merge, ignore match, or establish a permanent non-match rule.
+- [ ] Choose preferred value by source confidence, recency, or completeness.
+- [ ] Preserve all source queries, cells, timestamps, and historical values after merging.
+
+## 11 Data Cleaning and Normalization
+
+- [ ] Section complete and verified against the specification.
+- [x] Normalize phone numbers while preserving the original value.
+- [x] Canonicalize website URLs, strip common tracking parameters, derive host domain, and normalize protocols; public-suffix limits are documented.
+- [x] Lowercase and trim emails; remove duplicates and invalid syntax.
+- [x] Normalize business names, whitespace, punctuation, Unicode width, and common legal suffixes for matching.
+- [x] Parse full addresses into street, city, state, postal code, and country where possible.
+- [ ] Normalize country/state labels and category names.
+- [ ] Standardize social URLs and remove share/tracking variants.
+- [x] Convert rating and review counts into numeric fields.
+- [x] Use consistent nullable database fields and display-safe missing-value handling.
+- [ ] Flag suspicious placeholder values, malformed URLs, and mismatched domains.
+
+## 12 Local Email Handling
+
+- [ ] Section complete and verified against the specification.
+
+### Extraction
+
+- [ ] Visible email text, mailto links, contact/about pages, footer/header, and structured data.
+- [ ] Simple de-obfuscation such as name \[at\] domain and name (at) domain.
+- [ ] Record source page and extraction method for every address.
+
+### Classification and local checks
+
+- [ ] Syntax validation and domain normalization.
+- [ ] DNS/MX existence checks.
+- [ ] Generic role classification: info, sales, support, contact, admin, owner, billing, and careers.
+- [ ] Personal-looking address classification using local heuristics.
+- [ ] Disposable-domain detection using a locally maintained list.
+- [ ] Relevance ranking when multiple emails are found.
+
+## 13 Website Analysis
+
+- [ ] Section complete and verified against the specification.
+
+### Availability and technical health
+
+- [ ] Reachability, HTTP status, final URL, redirect chain, HTTPS state, certificate errors, and response time.
+- [ ] Parked domain, coming-soon page, placeholder page, and inaccessible website detection.
+- [ ] Homepage screenshot and optional error screenshot.
+
+### Basic website quality audit
+
+- [ ] Page title and meta description presence.
+- [ ] Contact page, about page, visible phone, visible email, address, and social links.
+- [ ] Mobile viewport tag, basic page-size measurement, broken internal links, mixed content, and old copyright year.
+- [ ] Obvious template/default text and incomplete setup indicators.
+
+### Technology detection
+
+- [ ] WordPress, WooCommerce, Shopify, Wix, Squarespace, Webflow, Joomla, Drupal, Magento, React, Next.js, and common page builders.
+- [ ] Google Analytics, Google Tag Manager, Meta Pixel, and other visible script signatures.
+- [ ] Detection should be signature-based and show confidence rather than claiming certainty.
+
+## 14 Business Quality Scoring
+
+- [ ] Section complete and verified against the specification.
+
+### Configurable score components
+
+- [ ] Business is open.
+- [ ] Active website and HTTPS.
+- [ ] Phone number available.
+- [ ] Email available and domain passes local checks.
+- [ ] Social profiles available.
+- [ ] Rating and review count thresholds.
+- [ ] Listing completeness and data freshness.
+- [ ] Website quality and response time.
+
+### Explainable scoring
+
+- [ ] Display total score from 0–100.
+- [ ] Show each positive and negative contribution.
+- [ ] Allow users to edit weights, thresholds, and exclusion rules.
+- [ ] Store the scoring-rule version used so historical scores remain reproducible.
+
+## 15 Field Provenance and Auditability
+
+- [ ] Section complete and verified against the specification.
+- [ ] Source type: Google Maps, website homepage, contact page, about page, footer, structured data, or manual edit.
+- [ ] Source URL, source query, source grid cell, extraction timestamp, extraction method, and confidence.
+- [ ] Original value, normalized value, current preferred value, and previous values.
+- [ ] Manual edits should record the operator, date, and reason when local user accounts are enabled.
+- [ ] Exports may optionally include provenance columns or a companion JSON file.
+
+## 16 Change Tracking and Incremental Scraping
+
+- [ ] Section complete and verified against the specification.
+
+### Tracked changes
+
+- [ ] New business discovered.
+- [ ] Listing removed, closed, reopened, or status changed.
+- [ ] Phone, website, address, category, rating, review count, opening hours, or email changed.
+- [ ] Website became active/inactive or redirected to another domain.
+- [ ] New social profile or contact information discovered.
+
+### Incremental modes
+
+- [ ] Collect only new listings.
+- [ ] Collect new and changed listings.
+- [ ] Recheck only fields likely to change.
+- [ ] Re-enrich only businesses whose website or contact data is missing/stale.
+- [ ] Retain configurable version history and show before/after comparisons.
+
+## 17 Scheduling
+
+- [ ] Section complete and verified against the specification.
+- [x] One-time, hourly, daily, weekly, monthly, and bounded five-field custom cron schedules.
+- [x] Selected days and times with embedded IANA timezone handling; a separate run-on-start switch is not implemented.
+- [ ] Skip, queue, or replace when the previous run is still active.
+- [ ] Automatic retries with retry limits and backoff.
+- [ ] Incremental-only mode for recurring jobs.
+- [ ] Automatic export or local webhook after completion.
+- [ ] Retention rules for old runs, logs, screenshots, and exports.
+- [x] Missed-run queue-one or skip handling after the machine was offline.
+
+## 18 Saved Searches and Templates
+
+- [ ] Section complete and verified against the specification.
+- [x] Save complete implemented job configurations including keywords, geography, enrichment flags, performance, and proxy pool; unsupported filter/output automation is documented.
+- [ ] Duplicate, rename, tag, organize into folders, pin favourites, and add notes.
+- [x] Export and import validated templates as JSON without accepting inline proxy credentials.
+- [ ] Parameterised templates such as one category applied to many cities.
+- [ ] Track last run, use count, average result count, and average duration.
+- [ ] Starter templates: businesses without websites, high-rated businesses, closed-business monitor, new local businesses, and website audit prospects.
+
+## 19 Proxy Manager
+
+- [ ] Section complete and verified against the specification.
+
+### Import and organisation
+
+- [x] Paste up to 5,000 bounded proxy URLs; multipart TXT/CSV upload is documented as unavailable.
+- [x] Support HTTP, HTTPS, SOCKS5, authentication, and named pools.
+- [x] Encrypt credentials at rest and mask them in the interface, errors, and logs.
+- [x] Assign pools to templates and individual jobs without persisting decrypted credentials in job data.
+
+### Testing and health
+
+- [ ] Connection success, Google access, response latency, exit IP, country, last success, failure count, block count, and usage count.
+- [ ] Statuses: healthy, slow, rate-limited, blocked, authentication failed, offline, and cooling down.
+
+### Rotation strategies
+
+- [ ] Round robin, random, least recently used, lowest failure rate, fastest, sticky per query, and sticky per grid cell.
+- [ ] Automatically disable repeated failures, cool down rate-limited proxies, retest disabled proxies, and cap tasks per proxy.
+
+## 20 Adaptive Performance
+
+- [ ] Section complete and verified against the specification.
+- [ ] Reduce concurrency when block/failure rate rises.
+- [ ] Increase concurrency cautiously after a stable success window.
+- [ ] Reduce browser count or pages per browser when RAM pressure rises.
+- [ ] Pause new tasks when disk space becomes low.
+- [ ] Retry failed pages with another proxy or a fresh browser context.
+- [ ] Restart crashed browser processes automatically.
+- [ ] Pause the job when all proxies fail and resume after recovery.
+- [ ] Adjust website timeout using recent response history.
+- [ ] Display every automatic change and the reason it occurred.
+
+## 21 Checkpoints and Recovery
+
+- [ ] Section complete and verified against the specification.
+- [ ] Persist completed queries, grid cells, listing IDs, enrichment tasks, and deduplication state.
+- [ ] Save checkpoints at configurable intervals and after each meaningful stage.
+- [ ] Resume after application or computer restart.
+- [ ] Detect abandoned “running” jobs at startup and offer recovery.
+- [x] Preserve partial CSV/database results and durable redacted lifecycle logs.
+- [ ] Continue from last completed query or grid cell.
+- [x] Create and verify local backups before database migrations.
+- [ ] Expose recovery status and last checkpoint time in the UI.
+
+## 22 Export Centre
+
+- [ ] Section complete and verified against the specification.
+
+### Formats
+
+- [x] CSV.
+- [ ] XLSX.
+- [x] JSON.
+- [x] JSONL.
+- [ ] SQLite.
+- [x] PostgreSQL-compatible insert transaction (not a native server backup).
+- [x] MySQL/MariaDB-compatible insert transaction.
+- [ ] Parquet.
+- [x] GeoJSON.
+- [x] KML.
+- [x] VCard.
+- [x] Plain text lists.
+
+### Export builder
+
+- [ ] Export all, selected, filtered, or saved-view records.
+- [ ] Choose, rename, and reorder columns.
+- [x] Export normalized preferred businesses by default, with an explicit source-row duplicate view.
+- [ ] Split by city, category, job, or maximum row count.
+- [ ] Include raw JSON, source data, provenance, or change history.
+- [ ] Compress multiple files into ZIP.
+
+### Export history
+
+- [x] File name, format, record count, source job, filters, date, size, checksum, repeat download, and delete; saved-view identity is represented by persisted filters.
+- [ ] Save export presets for repeated delivery formats.
+
+## 23 Local API
+
+- [ ] Section complete and verified against the specification.
+
+### Endpoint groups
+
+- [ ] **Jobs:** Create, validate, start, pause, resume, cancel, delete, duplicate, status, progress, checkpoints, and logs.
+- [ ] **Results:** List, search, filter, retrieve, edit, tag, deduplicate, enrich, and bulk actions.
+- [ ] **Maps:** Saved areas, grid preview, cell status, and geographic result queries.
+- [ ] **Proxies:** Import, test, pool, enable/disable, health, and usage.
+- [ ] **Schedules:** Create, update, enable, disable, run now, and history.
+- [ ] **Exports:** Create, status, list, download, repeat, and delete.
+- [ ] **System:** Health, resource metrics, database statistics, version, maintenance, and diagnostics.
+
+### API experience
+
+- [ ] OpenAPI/Swagger documentation.
+- [ ] Examples in cURL, Python, JavaScript, and Go.
+- [ ] Local API keys with read-only or full-access permissions.
+- [ ] Request logs, configurable local rate limits, and secret masking.
+- [x] Server-Sent Events with durable event IDs for live job progress.
+
+## 24 Local Integrations
+
+- [ ] Section complete and verified against the specification.
+- [ ] n8n self-hosted and Activepieces self-hosted through local webhooks or API calls.
+- [ ] Local PostgreSQL, MySQL/MariaDB, or another SQLite database.
+- [ ] File-system watch folder for completed exports.
+- [ ] Run a local shell command or Python script after completion.
+- [ ] Send result batches or completion events to a local webhook.
+- [ ] Optional Google Sheets sync using the user’s own Google credentials and quotas.
+- [ ] Custom plugin hooks for enrichment, validation, scoring, and export.
+
+## 25 Optional Local AI
+
+- [ ] Section complete and verified against the specification.
+
+### Possible Ollama-powered features
+
+- [ ] Generate keyword and category variations.
+- [ ] Convert a natural-language request into a scrape configuration.
+- [ ] Convert natural language into result filters.
+- [ ] Classify businesses and website quality.
+- [ ] Explain quality scores and duplicate matches.
+- [ ] Summarize business descriptions or change history.
+- [ ] Suggest missing cities, categories, or exclusion keywords.
+
+## 26 Database and Storage
+
+- [ ] Section complete and verified against the specification.
+
+### Default database
+
+- [x] SQLite with WAL mode, busy timeout, foreign keys, and one serialized writer for safe concurrent reads/writes.
+- [x] FTS5 for fast search across names, categories, addresses, emails, domains, and notes.
+- [ ] Batch inserts, indexed filters, integrity checks, VACUUM, migrations, backups, and retention policies.
+- [ ] Optional local PostgreSQL for larger datasets or multiple local workers.
+
+### Recommended tables
+
+- [x] **jobs:** Compatible job configuration plus durable runtime state, counters, timestamps, and schema/config versions.
+- [ ] **job_tasks:** Schema exists, but the upstream runner does not emit complete query/cell/listing/website task cursors; see technical limitations.
+- [x] **businesses:** Current preferred normalized business record.
+- [x] **business_versions:** Immutable historical snapshots and field changes.
+- [x] **business_sources:** Query, cell, Maps/source URL, raw snapshot, timestamp, and provenance.
+- [ ] **websites:** Availability, metadata, technologies, screenshots, and audit results.
+- [ ] **emails / phones / social_profiles:** Contact values, source, confidence, and status.
+- [x] **proxies / proxy_health:** Pools, encrypted credentials, tests, usage, failures, disable state, and cooldown.
+- [x] **schedules:** Recurrence/cron expression, template, policies, next/last run, and execution history.
+- [x] **exports:** Filters, files, counts, timestamps, sizes, state, and checksums; presets are not populated.
+- [x] **tags / notes / audit_logs:** Local result organisation, workflow history, and traceability.
+- [x] **settings:** Versioned application defaults and local preferences with audit entries.
+
+### Storage directories
+
+- [ ] Database, exports, screenshots, logs, cache/browser profiles, backups, and temporary files should be separate and configurable.
+- [ ] Display size and retention settings for each directory.
+
+## 27 System and Diagnostics
+
+- [ ] Section complete and verified against the specification.
+
+### System information
+
+- [ ] Application, scraper, database, Go, and browser versions.
+- [ ] CPU, RAM, disk, database size, queue length, active browsers/pages, running jobs, log size, screenshot storage, and export storage.
+- [ ] Worker heartbeat, last successful browser launch, last database write, and proxy-pool status.
+
+### Maintenance actions
+
+- [ ] Restart worker, stop all jobs, clear cache, clean old screenshots/exports/logs, VACUUM database, integrity check, create backup, restore backup, export diagnostics, check for updates, and run self-test.
+
+### Self-test checks
+
+- [ ] Database writable.
+- [ ] Output directories writable.
+- [ ] Browser can launch.
+- [ ] Internet reachable.
+- [ ] Maps page reachable.
+- [ ] Proxy credentials accepted.
+- [ ] Sufficient disk and memory.
+- [ ] Scheduled worker active.
+
+## 28 Settings and Preferences
+
+- [ ] Section complete and verified against the specification.
+
+### Scraping defaults
+
+- [ ] Language, location, zoom, depth, runtime, concurrency, browser-pool size, pages per browser, enrichment, reviews, browser visibility, and proxy pool.
+
+### Storage and retention
+
+- [ ] Data, export, screenshot, log, backup, and temporary directories.
+- [ ] Maximum storage, automatic cleanup, number of backups, and record/version retention.
+
+### Privacy and appearance
+
+- [ ] Disable telemetry; redact secrets from logs; clear browser profiles; encrypt sensitive settings.
+- [ ] Light/dark/system mode, compact table, sidebar default, date/time format, number format, language, reduced motion, and font size.
+
+## 29 Security and Privacy
+
+- [ ] Section complete and verified against the specification.
+- [x] Bind the native server and published Compose port to 127.0.0.1 by default and warn clearly for wildcard server binds.
+- [ ] Optional local login with strong password hashing and session timeout.
+- [ ] CSRF protection, secure cookies, API-key protection, and local rate limiting.
+- [x] Encrypt proxy URLs/passwords with AES-256-GCM under a separate local key; no other secret setting is currently stored.
+- [x] Mask credentials and tokens in the implemented UI, errors, lifecycle/proxy logs, and exports.
+- [x] Validate implemented upload types, bounded body/file sizes, and contained output paths; archive extraction is not implemented.
+- [x] Prevent arbitrary file reads/writes through validated IDs, safe relative paths, and fixed local directories.
+- [x] Audit lifecycle controls, settings, backups, proxy imports, exports, and result workflow changes.
+- [ ] Offer encrypted backups and a privacy-scrubbed diagnostics bundle.
+
+## 30 UI, Accessibility and Onboarding
+
+- [ ] Section complete and verified against the specification.
+
+### Visual design
+
+- [x] Clean collapsible sidebar, sticky header, wide operational tables, restrained cards, consistent controls, and clear hierarchy.
+- [x] Status colours plus persistent text labels so state is never communicated by colour alone.
+- [ ] Progress bars, skeleton loaders, empty states, tooltips, inline validation, and actionable error messages.
+- [x] **Draft:** Grey
+- [x] **Queued:** Slate
+- [x] **Running:** Blue
+- [x] **Paused:** Purple
+- [x] **Completed:** Green
+- [x] **Partial:** Amber
+- [x] **Failed:** Red
+- [x] **Cancelled:** Dark grey
+
+### Keyboard and accessibility
+
+- [x] Keyboard navigation, command palette, visible focus, skip links, labelled forms, and ARIA live regions for progress; full WCAG audit remains a limitation.
+- [x] High-contrast tokens, scalable layout, reduced motion, logical source order, and semantic tables/dialogs; full conformance testing remains a limitation.
+- [ ] Suggested shortcuts: N new scrape, J jobs, R results, / search, P pause current job, Esc close panel, Ctrl/Cmd+E export.
+
+### Help and first-run experience
+
+- [ ] Setup wizard that checks browser, database, data directory, internet access, disk capacity, and optional proxies.
+- [x] Guided San Francisco sample job and contextual explanations for depth, zoom, radius, grid cells, concurrency, runtime, proxies, and email crawling.
+- [x] Embedded queue/partial troubleshooting, export/API guidance, and links to job logs/System diagnostics.
+
+## 31 Recommended Technology Stack
+
+- [ ] Section complete and verified against the specification.
+- [ ] **Backend:** Existing Go backend — Retains current scraper engine and avoids a full rewrite.
+- [ ] **Server-rendered UI:** Go templates + HTMX — Small local footprint and straightforward integration.
+- [ ] **Client-side helpers:** Alpine.js — Lightweight state for modals, forms, and local interactions.
+- [ ] **Styling:** Tailwind CSS or a small custom design system — Fast, consistent local UI without a heavy SPA requirement.
+- [ ] **Data table:** Tabulator — Virtual scrolling, editing, filtering, grouping, and export support.
+- [ ] **Maps:** Leaflet + OpenStreetMap — Open-source map interface and drawing ecosystem.
+- [ ] **Charts:** Apache ECharts — Rich dashboards and large-data performance.
+- [ ] **Database:** SQLite + FTS5 — Simple local deployment with strong search and indexing.
+- [ ] **Large local DB:** PostgreSQL — Optional scale and multi-worker coordination.
+- [ ] **Scheduling:** robfig/cron — Mature local cron support for Go.
+- [ ] **XLSX export:** Excelize — Native Go spreadsheet generation.
+- [ ] **Local AI:** Ollama — Optional local inference without recurring API charges.
+- [ ] **Packaging:** Docker Compose — One-command local app, database, and optional services.
+- [ ] **Logging:** Go slog or Zerolog — Structured logs with efficient local storage.
+- [ ] **API docs:** OpenAPI / Swagger — Browsable contract and generated examples.
+
+## 32 Implementation Roadmap
+
+- [ ] Section complete and verified against the specification.
+
+### Release 1 — Professional local scraper
+
+- [ ] Create the navigation shell, dashboard, and consistent design system.
+- [ ] Implement the multi-step New Scrape Wizard and expose existing advanced settings.
+- [ ] Move jobs and results into SQLite with migrations and indexes.
+- [ ] Build job detail, progress, logs, pause/resume/cancel, partial download, and checkpoint recovery.
+- [ ] Build the Results Explorer with search, filters, saved views, inline detail drawer, and CSV/XLSX/JSON exports.
+- [ ] Implement normalization and exact/fuzzy deduplication.
+- [ ] Add system health, storage usage, backups, and settings.
+
+### Release 2 — Advanced local collection
+
+- [ ] Add interactive map drawing, bounding boxes, grid preview, and live coverage states.
+- [ ] Add persistent proxy pools, testing, rotation, and health management.
+- [ ] Add website/email/social enrichment and website-status analysis.
+- [ ] Add saved templates, schedules, incremental runs, and change tracking.
+- [ ] Add quality scoring, provenance, and export presets.
+- [ ] Expand the REST API and add local integration hooks.
+
+### Release 3 — Best-in-class local edition
+
+- [ ] Add adaptive concurrency, browser recovery, proxy cooldown, and low-resource safeguards.
+- [ ] Add coverage heatmaps, missing-area retry, and selected-cell re-scraping.
+- [ ] Add advanced version history and field-level confidence.
+- [ ] Add optional local AI through Ollama.
+- [ ] Add plugin interfaces, complete diagnostics, accessibility polish, and advanced retention controls.
+
+### Recommended first four screens
+
+- [ ] **1:** New Scrape Wizard — Makes advanced configuration approachable.
+- [ ] **2:** Live Job Monitor — Creates trust and control during long jobs.
+- [ ] **3:** Results Explorer — Turns raw output into usable local data.
+- [ ] **4:** Proxy Manager — Supports repeated and heavier collection safely.
+
+## 33 Acceptance Criteria and Limitations
+
+- [ ] Section complete and verified against the specification.
+
+### Release 1 acceptance criteria
+
+- [x] A user can configure and start a validated draft or queued job without using CLI flags.
+- [ ] The UI shows meaningful progress, current stage, records, errors, resources, and ETA.
+- [x] Jobs can be paused, resumed, cancelled, recovered safely after restart, and downloaded/exported with committed partial rows.
+- [x] Results persist in a searchable local database and can be filtered and exported.
+- [x] Duplicate records are detected using stable IDs, normalized fallback keys, and conservative fuzzy candidates.
+- [x] Stored proxy secrets are encrypted/masked and the server/published port bind to localhost by default.
+- [ ] Database backup and restore are available from the UI.
+
+### Performance and reliability criteria
+
+- [x] No loss of committed records after simulated interrupted retry-file recovery/restart and the final Docker restart smoke.
+- [ ] Large tables remain responsive using virtualisation and indexed queries.
+- [ ] Browser crashes do not automatically fail the entire job.
+- [x] Timeout/record-limit/incomplete completion is labelled Partial rather than Completed.
+- [x] Every exported record retains source job/query/cell and scrape timestamp in the standard export schema.
+
+### Not reliably free in practice
+
+- [x] Large, stable residential/mobile proxy networks are documented as not reliably free/included.
+- [x] CAPTCHA-solving services are documented as not included.
+- [x] High-confidence mailbox verification is documented as not included or implied by syntax checks.
+- [x] Commercial company/person databases and phone enrichment are documented as not included.
+- [x] Cloud-hosted workers and remote storage are not required by the local build.
+- [x] Paid geocoding, SERP, or Maps APIs are not required by the implemented local workflow.
+
+## 34 Appendices
+
+- [ ] Section complete and verified against the specification.
+
+### Appendix A — Complete feature checklist
+
+- [ ] **Foundation:** Navigation shell • Dashboard • SQLite storage • Migrations • Settings • System health • Backups
+- [ ] **Scrape configuration:** Keywords • Categories • Exclusions • CSV/TXT upload • Locations • Radius • Polygon • Bounding box • Grid • Field selection • Enrichment • Filters • Performance presets • Advanced settings • Review/estimate
+- [ ] **Operations:** Queue • Pause/resume/cancel • Live pipeline • Logs • ETA • Resource monitoring • Partial download • Checkpoints • Recovery • Retry failures
+- [ ] **Data:** Results table • Map view • Saved views • Bulk actions • Record drawer • Advanced filters • Normalization • Deduplication • Scoring • Provenance • Change history
+- [ ] **Enrichment:** Website reachability • HTTP/HTTPS • Redirects • Screenshots • Email extraction • MX checks • Social profiles • CMS/technology detection • Basic website audit
+- [ ] **Automation:** Templates • Schedules • Incremental runs • Export presets • Webhooks • Post-run scripts • Local API
+- [ ] **Scale:** Proxy pools • Proxy testing • Rotation • Adaptive concurrency • Browser recovery • Low-resource safeguards
+- [ ] **Experience:** Dark mode • Keyboard shortcuts • Accessibility • Onboarding • Embedded help • Diagnostics
+
+### Appendix B — Suggested local directory layout
+
+
+### Appendix C — Suggested API endpoint inventory
+
+- [x] **POST /api/v1/jobs:** Create a validated queued job; the wizard additionally creates drafts.
+- [x] **POST /api/v1/jobs/{id}/start:** Start a draft through the durable lifecycle transition.
+- [x] **POST /api/v1/jobs/{id}/pause:** Request a safe pause while preserving committed output.
+- [x] **POST /api/v1/jobs/{id}/resume:** Resume/requeue a paused job.
+- [x] **POST /api/v1/jobs/{id}/cancel:** Cancel and preserve partial data.
+- [x] **GET /api/v1/jobs/{id}/progress:** Live state, committed counters, stage, rate, and ETA; unavailable resource telemetry is explicit.
+- [x] **GET /api/v1/jobs/{id}/events:** Durable SSE progress/event stream.
+- [x] **GET /api/v1/results:** Search and filter local business records.
+- [ ] **POST /api/v1/results/export:** Create an export from a filter or selection.
+- [ ] **POST /api/v1/proxies/test:** Test selected proxies or pools.
+- [x] **GET /api/v1/system/health:** Database/integrity/schema/job/result/export/backup health; browser/disk/worker telemetry limits are documented.
+- [ ] **POST /api/v1/system/backup:** Create local database/configuration backup.
+
+### Appendix D — Suggested job configuration object
+
+
+### Appendix E — Product completion definition
+
+
+## Implementation log
+
+- 2026-08-06: Completed clean baseline, restored and verified specification, and generated the initial exhaustive checklist.
+- 2026-08-07: Implemented the durable local lifecycle/result foundation, local UI modules, settings, exports, saved views/templates, scheduler, encrypted proxy manager, maintenance/backups, onboarding, result workflow actions, and conservative fuzzy duplicate candidates.
+- 2026-08-07: Reconciled every remaining specification group to `docs/technical-limitations.md`; unsupported controls are hidden rather than presented as placeholders.
+- 2026-08-07: `go test -race -timeout 7m ./...`, `go vet ./...`, and `go build ./...` completed successfully in Go 1.26.5 containers.
+- 2026-08-07: `docker compose build scraper` completed successfully; Compose started healthy on `127.0.0.1:8080`, every application/API smoke route returned 200, and the final rebuilt image remained healthy after restart.
+- 2026-08-07: The live legacy database migrated from schema v0 to v5 with a verified SHA-256 pre-migration backup. After recreate and restart it retained one job, 36 normalized businesses, 36 source records, SQLite `integrity_check=ok`, and the original CSV SHA-256 `D11CFD4D2511E2E12D8BAA09080FF34B43475E6E2DA3D49652E20D93343BDE62`.
+- 2026-08-07: The repository's full opinionated `golangci-lint` profile was also run. Its actionable type-assertion, dynamic-backup-SQL, proxy-order SQL, credential-fixture, blank-import, built-in-shadow, loop-copy, and no-body findings were addressed. It remains non-zero on documented style/complexity debt (for example `goconst`, `gocyclo`, `gocritic`, `testpackage`, `exhaustive`, and `wsl`); this is not represented as a passed gate.

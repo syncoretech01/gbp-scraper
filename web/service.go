@@ -2,11 +2,22 @@ package web
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/gosom/google-maps-scraper/web/jobruntime"
 )
+
+// ErrLifecycleUnsupported is returned when a non-queued state is requested
+// from a repository that only implements the legacy four-state job contract.
+var ErrLifecycleUnsupported = errors.New("job lifecycle storage is unavailable")
+
+type lifecycleJobCreator interface {
+	CreateWithState(context.Context, *Job, jobruntime.State) error
+}
 
 type Service struct {
 	repo       JobRepository
@@ -21,6 +32,24 @@ func NewService(repo JobRepository, dataFolder string) *Service {
 }
 
 func (s *Service) Create(ctx context.Context, job *Job) error {
+	return s.repo.Create(ctx, job)
+}
+
+// CreateWithState persists a job and its canonical lifecycle state atomically
+// when the backing repository supports the upgraded local schema.
+func (s *Service) CreateWithState(ctx context.Context, job *Job, state jobruntime.State) error {
+	if !state.Valid() {
+		return fmt.Errorf("%w: %s", jobruntime.ErrInvalidState, state)
+	}
+
+	if creator, ok := s.repo.(lifecycleJobCreator); ok {
+		return creator.CreateWithState(ctx, job, state)
+	}
+
+	if state != jobruntime.StateQueued {
+		return ErrLifecycleUnsupported
+	}
+
 	return s.repo.Create(ctx, job)
 }
 
@@ -74,7 +103,7 @@ func (s *Service) GetCSV(_ context.Context, id string) (string, error) {
 	}
 
 	if _, err := os.Stat(datapath); os.IsNotExist(err) {
-		return "", fmt.Errorf("csv file not found for job %s", id)
+		return "", fmt.Errorf("%w for job %s", ErrPlacesNotFound, id)
 	}
 
 	return datapath, nil

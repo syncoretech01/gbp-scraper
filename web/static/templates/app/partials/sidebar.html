@@ -1,0 +1,38 @@
+{{define "app/sidebar"}}
+<aside class="app-sidebar" id="app-sidebar" aria-label="Primary navigation">
+    <div class="brand-row">
+        <a class="brand" href="/app/dashboard" data-action="navigate" data-endpoint="/app/dashboard">
+            <span class="brand-mark" aria-hidden="true">G</span>
+            <span class="brand-copy"><strong>Maps Scraper</strong><small>Local edition</small></span>
+        </a>
+        <button class="icon-button sidebar-collapse" type="button" data-action="toggle-sidebar" aria-controls="app-sidebar" aria-expanded="true">
+            <span aria-hidden="true">&lsaquo;</span><span class="sr-only">Collapse navigation</span>
+        </button>
+    </div>
+
+    <nav class="primary-nav" aria-label="Workspace">
+        <a href="/app/dashboard" data-action="navigate" data-endpoint="/app/dashboard" data-nav="dashboard" {{if eq .ActiveNav "dashboard"}}aria-current="page"{{end}}><span aria-hidden="true">D</span><span>Dashboard</span></a>
+        <a href="/app/scrapes/new" data-action="navigate" data-endpoint="/app/scrapes/new" data-nav="new-scrape" {{if eq .ActiveNav "new-scrape"}}aria-current="page"{{end}}><span aria-hidden="true">+</span><span>New Scrape</span></a>
+        <a href="/app/jobs" data-action="navigate" data-endpoint="/app/jobs" data-nav="jobs" {{if eq .ActiveNav "jobs"}}aria-current="page"{{end}}><span aria-hidden="true">J</span><span>Jobs</span></a>
+        <a href="/app/results" data-action="navigate" data-endpoint="/app/results" data-nav="results" {{if eq .ActiveNav "results"}}aria-current="page"{{end}}><span aria-hidden="true">R</span><span>Results</span></a>
+        <a href="/app/map" data-action="navigate" data-endpoint="/app/map" data-nav="map" {{if eq .ActiveNav "map"}}aria-current="page"{{end}}><span aria-hidden="true">M</span><span>Map Explorer</span></a>
+
+        {{if or .Features.SavedSearches .Features.Schedules .Features.Proxies .Features.Exports}}
+        <p class="nav-section">Automate</p>
+        {{if .Features.SavedSearches}}<a href="/app/saved-searches" data-action="navigate" data-endpoint="/app/saved-searches" data-nav="saved-searches" {{if eq .ActiveNav "saved-searches"}}aria-current="page"{{end}}><span aria-hidden="true">S</span><span>Saved Searches</span></a>{{end}}
+        {{if .Features.Schedules}}<a href="/app/schedules" data-action="navigate" data-endpoint="/app/schedules" data-nav="schedules" {{if eq .ActiveNav "schedules"}}aria-current="page"{{end}}><span aria-hidden="true">C</span><span>Schedules</span></a>{{end}}
+        {{if .Features.Proxies}}<a href="/app/proxies" data-action="navigate" data-endpoint="/app/proxies" data-nav="proxies" {{if eq .ActiveNav "proxies"}}aria-current="page"{{end}}><span aria-hidden="true">P</span><span>Proxies</span></a>{{end}}
+        {{if .Features.Exports}}<a href="/app/exports" data-action="navigate" data-endpoint="/app/exports" data-nav="exports" {{if eq .ActiveNav "exports"}}aria-current="page"{{end}}><span aria-hidden="true">E</span><span>Exports</span></a>{{end}}
+        {{end}}
+
+        {{if or .Features.API .Features.System .Features.Settings}}
+        <p class="nav-section">Manage</p>
+        {{if .Features.API}}<a href="/app/api" data-action="navigate" data-endpoint="/app/api" data-nav="api" {{if eq .ActiveNav "api"}}aria-current="page"{{end}}><span aria-hidden="true">A</span><span>API</span></a>{{end}}
+        {{if .Features.System}}<a href="/app/system" data-action="navigate" data-endpoint="/app/system" data-nav="system" {{if eq .ActiveNav "system"}}aria-current="page"{{end}}><span aria-hidden="true">H</span><span>System</span></a>{{end}}
+        {{if .Features.Settings}}<a href="/app/settings" data-action="navigate" data-endpoint="/app/settings" data-nav="settings" {{if eq .ActiveNav "settings"}}aria-current="page"{{end}}><span aria-hidden="true">T</span><span>Settings</span></a>{{end}}
+        {{end}}
+    </nav>
+
+    {{if .Features.Onboarding}}<a class="sidebar-help" href="/app/onboarding" data-action="navigate" data-endpoint="/app/onboarding"><span aria-hidden="true">?</span><span><strong>Setup &amp; help</strong><small>Checks and guided tour</small></span></a>{{end}}
+</aside>
+{{end}}

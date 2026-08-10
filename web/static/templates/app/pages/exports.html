@@ -1,0 +1,28 @@
+{{define "app/page/exports"}}{{template "app/layout" .}}{{end}}
+
+{{define "app/content"}}
+<div class="section-stack">
+    {{if .Page.Notice}}<div class="notice notice-success" role="status"><div><strong>{{.Page.Notice}}</strong></div></div>{{end}}
+    <section class="card" id="export-builder" aria-labelledby="export-builder-title">
+        <div class="card-header"><div><h2 id="export-builder-title">Create results export</h2><p>Exports stream indexed normalized rows to a temporary file, then atomically publish and checksum it.</p></div></div>
+        <form class="card-body section-stack" action="/api/v1/exports" method="post">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <input type="hidden" name="sort" value="{{.Page.Sort}}"><input type="hidden" name="include_duplicates" value="{{.Page.IncludeDuplicates}}">{{range .Page.Filters}}<input type="hidden" name="filter_field" value="{{.Field}}"><input type="hidden" name="filter_operator" value="{{.Operator}}"><input type="hidden" name="filter_value" value="{{.Value}}">{{end}}
+            <div class="grid grid-4">
+                <div class="field"><label for="export-name">Name</label><input class="input" id="export-name" name="name" value="business-results" maxlength="120" required></div>
+                <div class="field"><label for="export-format">Format</label><select class="select" id="export-format" name="format" required><option value="csv">CSV</option><option value="json">JSON</option><option value="jsonl">JSON Lines</option><option value="geojson">GeoJSON</option><option value="kml">KML</option><option value="vcard">VCard</option><option value="txt">Plain text</option><option value="postgresql_sql">PostgreSQL-compatible SQL</option><option value="mysql_sql">MySQL-compatible SQL</option></select></div>
+                <div class="field"><label for="export-query">Search text</label><input class="input" id="export-query" name="q" value="{{.Page.Query}}" placeholder="Optional name, category, address or contact text"></div>
+                <div class="field"><label for="export-job">Source job</label><select class="select" id="export-job" name="job_id"><option value="">All jobs</option>{{range .Page.Jobs}}<option value="{{.ID}}" {{if .Selected}}selected{{end}}>{{.Name}}</option>{{end}}</select></div>
+            </div>
+            <div class="notice notice-info"><div><strong>Repeatable source</strong><p>The search text, source job, fixed column set, record count, size, SHA-256 checksum, and creation time are stored with the export.</p></div></div>
+            <div class="form-actions"><button class="button button-primary" type="submit">Create export</button></div>
+        </form>
+    </section>
+
+    <section class="card" aria-labelledby="export-history-title">
+        <div class="card-header"><div><h2 id="export-history-title">Export history</h2><p>Download completed local deliveries again or explicitly remove their file and database record.</p></div></div>
+        {{if .Page.Exports}}<div class="table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>State</th><th>Format</th><th>Rows</th><th>Created</th><th>Size</th><th>SHA-256</th><th>Actions</th></tr></thead><tbody>{{range .Page.Exports}}<tr><td><strong>{{.Name}}</strong>{{if .Error}}<small class="cell-subtitle">{{.Error}}</small>{{end}}</td><td><span class="status status-{{.State}}">{{.State}}</span></td><td>{{.Format}}</td><td>{{.Rows}}</td><td>{{.CreatedAt}}</td><td>{{.Size}}</td><td><code>{{.Checksum}}</code></td><td><div class="table-actions">{{if .CanDownload}}<a class="button button-small button-primary" href="/api/v1/exports/{{.ID}}/download" download>Download</a>{{end}}<form action="/api/v1/exports/{{.ID}}/delete" method="post" data-confirm="Delete this generated file and its history entry?"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-small button-danger" type="submit">Delete</button></form></div></td></tr>{{end}}</tbody></table></div>{{else}}<div class="empty-state"><div><strong>No exports yet</strong><span>Create a local delivery above or start from a filtered Results view.</span></div></div>{{end}}
+    </section>
+    <div class="notice notice-info"><div><strong>Format boundary</strong><p>XLSX, Parquet, a standalone SQLite subset, ZIP splitting, and export presets are not shown because their generators are not implemented in this build. CSV, JSON, JSONL, GeoJSON, KML, VCard, text, and SQL are complete working paths.</p></div></div>
+</div>
+{{end}}

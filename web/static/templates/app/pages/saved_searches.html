@@ -1,0 +1,22 @@
+{{define "app/page/saved-searches"}}{{template "app/layout" .}}{{end}}
+
+{{define "app/page-actions"}}<div class="page-actions"><a class="button button-primary" href="/app/scrapes/new">Create from wizard</a></div>{{end}}
+
+{{define "app/content"}}
+<div class="section-stack">
+    {{if .Page.Notice}}<div class="notice notice-success" role="status"><div><strong>{{.Page.Notice}}</strong></div></div>{{end}}
+    <nav class="tabs" aria-label="Reusable configurations"><a href="/app/saved-searches?tab=templates" {{if eq .Page.ActiveTab "templates"}}aria-current="page"{{end}}>Scrape templates</a><a href="/app/saved-searches?tab=views" {{if eq .Page.ActiveTab "views"}}aria-current="page"{{end}}>Result views</a></nav>
+    <form class="table-toolbar" action="/app/saved-searches" method="get" role="search"><input type="hidden" name="tab" value="{{.Page.ActiveTab}}"><div class="field toolbar-grow"><label for="saved-search-q">Find by name or description</label><input class="input" id="saved-search-q" name="q" type="search" value="{{.Page.Query}}"></div><button class="button" type="submit">Search</button></form>
+
+    {{if eq .Page.ActiveTab "templates"}}
+    <section class="grid grid-3" aria-label="Scrape templates">
+        {{range .Page.Templates}}<article class="card saved-item"><div class="card-header"><div><h2>{{.Name}}</h2><p>{{if .Pinned}}Pinned &middot; {{end}}updated {{.UpdatedAt}}</p></div></div><div class="card-body section-stack"><p>{{.Description}}</p><dl class="key-value"><dt>Queries</dt><dd>{{.Keywords}}</dd><dt>Geography</dt><dd>{{.Geography}}</dd><dt>Execution</dt><dd>{{.Performance}}</dd><dt>Uses</dt><dd>{{.UseCount}}</dd></dl></div><div class="card-footer table-actions"><a class="button button-small button-primary" href="/app/scrapes/new?template={{.ID}}">Use template</a><a class="button button-small" href="/api/v1/templates/{{.ID}}/export" download>JSON</a><form action="/api/v1/templates/{{.ID}}/pin" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-small" type="submit">{{if .Pinned}}Unpin{{else}}Pin{{end}}</button></form><form action="/api/v1/templates/{{.ID}}/duplicate" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-small" type="submit">Duplicate</button></form><form action="/api/v1/templates/{{.ID}}/delete" method="post" data-confirm="Delete this template? Existing jobs and results are kept."><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-small button-danger" type="submit">Delete</button></form></div></article>{{else}}<article class="card empty-state grid-span-full"><div><strong>No templates match</strong><span>Enable Save as reusable template on the final New Scrape step.</span></div></article>{{end}}
+    </section>
+    <details class="card disclosure"><summary>Import a validated template JSON file</summary><form class="card-body section-stack" action="/api/v1/templates/import" method="post"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><div class="field"><label for="template-json">Template JSON</label><textarea class="textarea code-input" id="template-json" name="template_json" rows="8" required maxlength="1000000"></textarea><p class="field-hint">Paste a JSON file previously downloaded from this page. A new local ID is assigned.</p></div><button class="button button-primary" type="submit">Import template</button></form></details>
+    {{else}}
+    <section class="grid grid-3" aria-label="Saved result views">
+        {{range .Page.Views}}<article class="card saved-item"><div class="card-header"><div><h2>{{.Name}}</h2><p>updated {{.UpdatedAt}}</p></div></div><div class="card-body"><p>{{.Summary}}</p></div><div class="card-footer table-actions"><a class="button button-small button-primary" href="{{.ResultURL}}">Open results</a><form action="/api/v1/saved-views/{{.ID}}/delete" method="post" data-confirm="Delete this saved view? Results are kept."><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-small button-danger" type="submit">Delete</button></form></div></article>{{else}}<article class="card empty-state grid-span-full"><div><strong>No result views match</strong><span>Open Results, apply filters, and use Save view.</span><p><a class="button button-primary" href="/app/results">Open Results</a></p></div></article>{{end}}
+    </section>
+    {{end}}
+</div>
+{{end}}

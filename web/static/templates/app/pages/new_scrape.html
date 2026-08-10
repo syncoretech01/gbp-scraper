@@ -1,0 +1,127 @@
+{{define "app/page/new-scrape"}}{{template "app/layout" .}}{{end}}
+
+{{define "app/head"}}<script defer src="/static/js/app-wizard.js"></script>{{end}}
+
+{{define "app/page-actions"}}
+<div class="page-actions">
+    {{if .Features.SavedSearches}}<a class="button" href="/app/saved-searches?tab=templates" data-endpoint="/app/saved-searches?tab=templates">Use a template</a>{{end}}
+    {{if .Features.Onboarding}}<a class="button" href="/app/onboarding#scrape-help" data-endpoint="/app/onboarding#scrape-help">Field guide</a>{{end}}
+</div>
+{{end}}
+
+{{define "app/content"}}
+<div class="wizard" data-wizard>
+    <aside class="card wizard-steps" aria-label="Scrape configuration steps">
+        <progress class="sr-only" data-wizard-progress max="7" value="1">1 of 7</progress>
+        <ol>
+            <li><button type="button" data-action="wizard-step" data-step-target="1" aria-current="step"><span class="step-number">1</span><span>Business search</span></button></li>
+            <li><button type="button" data-action="wizard-step" data-step-target="2"><span class="step-number">2</span><span>Location</span></button></li>
+            <li><button type="button" data-action="wizard-step" data-step-target="3"><span class="step-number">3</span><span>Data fields</span></button></li>
+            <li><button type="button" data-action="wizard-step" data-step-target="4"><span class="step-number">4</span><span>Enrichment</span></button></li>
+            <li><button type="button" data-action="wizard-step" data-step-target="5"><span class="step-number">5</span><span>Filters</span></button></li>
+            <li><button type="button" data-action="wizard-step" data-step-target="6"><span class="step-number">6</span><span>Performance</span></button></li>
+            <li><button type="button" data-action="wizard-step" data-step-target="7"><span class="step-number">7</span><span>Review</span></button></li>
+        </ol>
+    </aside>
+
+    <form class="card wizard-card" action="/app/scrapes" method="post" enctype="multipart/form-data">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <input type="hidden" name="template_id" value="{{.Page.TemplateID}}">
+
+        <section class="card-body wizard-panel" id="wizard-step-1" data-wizard-panel="1" aria-labelledby="wizard-step-1-title">
+            <div class="card-header"><div><h2 id="wizard-step-1-title">What should Maps find?</h2><p>Enter one Maps search or direct Google Maps URL per line. Exact duplicate lines are removed before launch.</p></div><button class="button button-small" type="button" data-action="use-san-francisco-preset">San Francisco dentist preset</button></div>
+            <div class="grid grid-2">
+                <div class="section-stack">
+                    <div class="field"><label for="scrape-name">Job name</label><input class="input" id="scrape-name" name="name" value="{{.Page.Initial.Name}}" maxlength="120" required autocomplete="off"></div>
+                    <div class="field"><label for="keywords">Queries or Maps URLs</label><textarea class="textarea" id="keywords" name="keywords" rows="9" required>{{.Page.Initial.Keywords}}</textarea><p class="field-hint">Specific category + city queries usually produce cleaner coverage.</p></div>
+                    <div class="field"><label for="keywords-file">Add TXT or CSV queries</label><input class="input" id="keywords-file" name="keywords_file" type="file" accept=".txt,.csv,text/plain,text/csv" data-keywords-file><p class="field-hint">The first CSV column is used; maximum file size is 2 MB.</p></div>
+                </div>
+                <div class="card"><div class="card-header"><div><h3>Query preview</h3><p><span data-query-count>0</span> unique; <span data-duplicate-count>0</span> duplicates removed</p></div></div><div class="card-body"><ol class="query-preview" data-query-preview></ol></div></div>
+            </div>
+            <div class="form-actions"><button class="button button-primary" type="button" data-action="wizard-next">Set location &rarr;</button></div>
+        </section>
+
+        <section class="card-body wizard-panel" id="wizard-step-2" data-wizard-panel="2" aria-labelledby="wizard-step-2-title">
+            <h2 id="wizard-step-2-title">Location and coverage</h2>
+            <p>The default covers San Francisco with a grid. Grid mode searches many coordinates and is the recommended way to go beyond a single Maps result set.</p>
+            <input type="hidden" name="geography_mode" value="bbox">
+            <input type="hidden" name="locations" value="{{.Page.Initial.LocationLabel}}">
+            <div class="grid grid-3">
+                <div class="field"><label for="location-label">Location label</label><input class="input" id="location-label" name="location_label" value="{{.Page.Initial.LocationLabel}}" required></div>
+                <div class="field"><label for="latitude">Centre latitude</label><input class="input" id="latitude" name="latitude" type="number" min="-90" max="90" step="0.000001" value="{{.Page.Initial.Latitude}}" required></div>
+                <div class="field"><label for="longitude">Centre longitude</label><input class="input" id="longitude" name="longitude" type="number" min="-180" max="180" step="0.000001" value="{{.Page.Initial.Longitude}}" required></div>
+                <div class="field"><label for="radius">Coverage extent (metres)</label><input class="input" id="radius" name="radius" type="number" min="100" max="100000" step="100" value="{{.Page.Defaults.Radius}}" required><p class="field-hint">In grid mode this creates a bounding area around the centre. In Fast Mode it becomes a strict radius.</p></div>
+                <div class="field"><label for="zoom">Maps zoom</label><input class="input" id="zoom" name="zoom" type="number" min="1" max="21" value="{{.Page.Defaults.Zoom}}" required></div>
+                <div class="field"><label for="grid-cell">Grid-cell size (km)</label><input class="input" id="grid-cell" name="grid_cell_km" type="number" min="0.1" max="50" step="0.1" value="{{.Page.Defaults.GridCellKM}}" required><p class="field-hint">2.5 km is a practical first pass; smaller cells create more tasks.</p></div>
+                <div class="field"><label for="lang">Maps language</label><input class="input" id="lang" name="lang" value="{{.Page.Defaults.Language}}" minlength="2" maxlength="2" required></div>
+            </div>
+            <div class="estimate"><div><span>Locations</span><strong data-estimate-locations>1</strong></div><div><span>Cells</span><strong data-estimate-cells>0</strong></div><div><span>Queries</span><strong data-estimate-queries>0</strong></div><div><span>Tasks</span><strong data-estimate-tasks>0</strong></div></div>
+            <div class="form-actions"><button class="button" type="button" data-action="wizard-back">Back</button><button class="button button-primary" type="button" data-action="wizard-next">Review fields &rarr;</button></div>
+        </section>
+
+        <section class="card-body wizard-panel" id="wizard-step-3" data-wizard-panel="3" aria-labelledby="wizard-step-3-title">
+            <h2 id="wizard-step-3-title">Data fields retained</h2>
+            <p>The scraper stores every field returned by its selected mode so the original CSV stays compatible and future filters do not discard source data.</p>
+            <div class="grid grid-3">
+                <article class="card"><div class="card-body"><h3>Business</h3><p>Name, categories, status, description, rating, reviews, hours, price and identifiers when Maps exposes them.</p></div></article>
+                <article class="card"><div class="card-body"><h3>Location and contacts</h3><p>Address components, coordinates, phone, website, domain and emails when website crawling is enabled.</p></div></article>
+                <article class="card"><div class="card-body"><h3>Audit trail</h3><p>Source query, source URL, input identifier, extraction time, raw record, normalized value and field provenance.</p></div></article>
+            </div>
+            <div class="notice notice-info"><div><strong>Fast Mode returns fewer fields.</strong><p>Use the normal browser/grid mode when complete listing details matter more than speed.</p></div></div>
+            <div class="form-actions"><button class="button" type="button" data-action="wizard-back">Back</button><button class="button button-primary" type="button" data-action="wizard-next">Choose enrichment &rarr;</button></div>
+        </section>
+
+        <section class="card-body wizard-panel" id="wizard-step-4" data-wizard-panel="4" aria-labelledby="wizard-step-4-title">
+            <h2 id="wizard-step-4-title">Optional local enrichment</h2>
+            <p>Email extraction visits business websites and can substantially increase runtime. For the broadest first pass, leave it off and run a targeted second job later.</p>
+            <div class="check-grid">
+                <label class="check-row"><input id="email" name="email" type="checkbox" value="on" {{if .Page.Defaults.Email}}checked{{end}}><span>Visit websites and extract emails<small>Uses the scraper's built-in local website crawler; no paid API is required.</small></span></label>
+                <label class="check-row"><input id="extra-reviews" name="extra_reviews" type="checkbox" value="on" {{if .Page.Defaults.ExtraReviews}}checked{{end}}><span>Collect extra reviews<small>Opens additional Maps detail views and increases browser work.</small></span></label>
+            </div>
+            <div class="form-actions"><button class="button" type="button" data-action="wizard-back">Back</button><button class="button button-primary" type="button" data-action="wizard-next">Plan filtering &rarr;</button></div>
+        </section>
+
+        <section class="card-body wizard-panel" id="wizard-step-5" data-wizard-panel="5" aria-labelledby="wizard-step-5-title">
+            <h2 id="wizard-step-5-title">Keep source data, filter safely</h2>
+            <p>All collected rows are preserved. After records commit, use Results to search and filter by rating, review count, category, city, status, website, email, phone, job and quality fields. This avoids losing data because of an overly strict scrape-time filter.</p>
+            <div class="notice notice-info"><div><strong>Why there is no destructive pre-filter here</strong><p>Google can omit or change fields between list and detail views. Applying filters to the normalized local database is repeatable and auditable.</p></div></div>
+            <div class="form-actions"><button class="button" type="button" data-action="wizard-back">Back</button><button class="button button-primary" type="button" data-action="wizard-next">Tune performance &rarr;</button></div>
+        </section>
+
+        <section class="card-body wizard-panel" id="wizard-step-6" data-wizard-panel="6" aria-labelledby="wizard-step-6-title">
+            <h2 id="wizard-step-6-title">Performance and browser capacity</h2>
+            <p>These values are saved with this job and applied by the local worker. Balanced is the safest starting point.</p>
+            <fieldset class="fieldset"><legend>Preset</legend><div class="preset-grid">
+                <label class="preset-option"><input name="performance_preset" type="radio" value="custom" checked><strong>Saved defaults</strong><span>Values configured in Settings.</span></label>
+                <label class="preset-option"><input name="performance_preset" type="radio" value="fast"><strong>Quick validation</strong><span>Depth 3, concurrency 6, 15-minute limit.</span></label>
+                <label class="preset-option"><input name="performance_preset" type="radio" value="balanced"><strong>Balanced</strong><span>Depth 10, concurrency 4, 60-minute limit.</span></label>
+                <label class="preset-option"><input name="performance_preset" type="radio" value="deep"><strong>Deep</strong><span>Depth 20, concurrency 2, 120-minute limit.</span></label>
+            </div></fieldset>
+            <div class="grid grid-4">
+                <div class="field"><label for="depth">Search depth</label><input class="input" id="depth" name="depth" type="number" min="1" max="100" value="{{.Page.Defaults.Depth}}" required></div>
+                <div class="field"><label for="concurrency">Concurrency</label><input class="input" id="concurrency" name="concurrency" type="number" min="1" max="64" value="{{.Page.Defaults.Concurrency}}" required></div>
+                <div class="field"><label for="browser-pool">Browser pool</label><input class="input" id="browser-pool" name="browser_pool_size" type="number" min="1" max="32" value="{{.Page.Defaults.BrowserPool}}" required></div>
+                <div class="field"><label for="pages-browser">Pages per browser</label><input class="input" id="pages-browser" name="pages_per_browser" type="number" min="1" max="16" value="{{.Page.Defaults.PagesBrowser}}" required></div>
+                <div class="field"><label for="maxtime">Maximum runtime</label><input class="input" id="maxtime" name="maxtime" value="{{.Page.Defaults.MaxTime}}" pattern="[0-9]+(s|m|h)" required><p class="field-hint">If reached, the job becomes Partial and keeps committed rows.</p></div>
+                <div class="field"><label for="proxy-pool">Proxy pool</label><select class="select" id="proxy-pool" name="proxy_pool_id"><option value="">Direct connection</option>{{range .Page.ProxyPools}}<option value="{{.ID}}">{{.Name}} ({{.HealthyCount}} healthy/testable)</option>{{end}}</select><p class="field-hint">Credentials are decrypted only in worker memory.</p></div>
+                <label class="check-row"><input id="fastmode" name="fastmode" type="checkbox" value="on"><span>Fast HTTP mode<small>Uses the radius strictly, skips grid coverage, and returns fewer fields.</small></span></label>
+            </div>
+            <div class="form-actions"><button class="button" type="button" data-action="wizard-back">Back</button><button class="button button-primary" type="button" data-action="wizard-next">Review job &rarr;</button></div>
+        </section>
+
+        <section class="card-body wizard-panel" id="wizard-step-7" data-wizard-panel="7" aria-labelledby="wizard-step-7-title">
+            <h2 id="wizard-step-7-title">Review and launch</h2>
+            <p>The task and runtime estimates are directional. Result volume, blocking, browser load, and website response times vary.</p>
+            <div class="notice notice-warning" data-estimate-warning role="status" hidden></div>
+            <div class="estimate" aria-live="polite"><div><span>Queries</span><strong data-estimate-queries>0</strong></div><div><span>Grid cells</span><strong data-estimate-cells>0</strong></div><div><span>Total tasks</span><strong data-estimate-tasks>0</strong></div><div><span>Estimated runtime</span><strong data-estimate-runtime>Calculating...</strong></div></div>
+            <div class="grid grid-2">
+                <article class="card"><div class="card-header"><h3>Search and geography</h3></div><div class="card-body"><dl class="key-value"><dt>Job</dt><dd data-review-name>San Francisco dentists</dd><dt>Location</dt><dd data-review-location>San Francisco, California</dd><dt>Centre</dt><dd data-review-coordinates>37.7749, -122.4194</dd><dt>Coverage</dt><dd data-review-radius>10,000 m grid extent</dd><dt>Grid</dt><dd data-review-grid>2.5 km</dd></dl></div></article>
+                <article class="card"><div class="card-header"><h3>Execution</h3></div><div class="card-body"><dl class="key-value"><dt>Tasks</dt><dd data-review-tasks>0</dd><dt>Runtime limit</dt><dd data-review-runtime>60m</dd><dt>Output</dt><dd>Normalized local SQLite plus compatible CSV</dd><dt>Recovery</dt><dd>Committed rows are retained; retries merge without replacing earlier results.</dd></dl></div></article>
+            </div>
+            {{if .Features.SavedSearches}}<div class="grid grid-2"><label class="check-row"><input id="save-template" name="save_template" type="checkbox" value="on"><span>Save as reusable template</span></label><div class="field"><label for="template-name">Template name</label><input class="input" id="template-name" name="template_name" placeholder="San Francisco dental coverage"></div></div>{{end}}
+            <label class="check-row"><input id="responsible-use" name="responsible_use" type="checkbox" value="accepted" required><span>I will use this scraper responsibly and comply with applicable terms, laws, privacy obligations, and outreach rules.</span></label>
+            <div class="form-actions"><button class="button" type="button" data-action="wizard-back">Back</button><button class="button" type="submit" name="_action" value="draft">Save draft</button><button class="button button-primary" type="submit" name="_action" value="start">Start scraping</button></div>
+        </section>
+    </form>
+</div>
+{{end}}

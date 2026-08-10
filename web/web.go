@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,22 +26,35 @@ import (
 var static embed.FS
 
 type Server struct {
-	tmpl map[string]*template.Template
-	srv  *http.Server
-	svc  *Service
+	tmpl      map[string]*template.Template
+	srv       *http.Server
+	svc       *Service
+	csrfToken string
 }
 
 func New(svc *Service, addr string) (*Server, error) {
+	if wildcardBind(addr) {
+		log.Printf("WARNING: web server is listening on all interfaces at %s; use a firewall and authentication outside a trusted local machine", addr)
+	}
+
+	csrfToken, err := newCSRFToken()
+	if err != nil {
+		return nil, err
+	}
+
 	ans := Server{
-		svc:  svc,
-		tmpl: make(map[string]*template.Template),
+		svc:       svc,
+		tmpl:      make(map[string]*template.Template),
+		csrfToken: csrfToken,
 		srv: &http.Server{
 			Addr:              addr,
 			ReadHeaderTimeout: 10 * time.Second,
 			ReadTimeout:       60 * time.Second,
-			WriteTimeout:      60 * time.Second,
-			IdleTimeout:       120 * time.Second,
-			MaxHeaderBytes:    1 << 20,
+			// Streaming job events can remain open for the life of a scrape.
+			// Individual non-streaming handlers still bound their own work.
+			WriteTimeout:   0,
+			IdleTimeout:    120 * time.Second,
+			MaxHeaderBytes: 1 << 20,
 		},
 	}
 
@@ -70,10 +84,34 @@ func New(svc *Service, addr string) (*Server, error) {
 
 		ans.viewJob(w, r)
 	})
-	mux.HandleFunc("/", ans.index)
+	mux.HandleFunc("/legacy", ans.index)
+	mux.HandleFunc("GET /{$}", ans.dashboardPage)
+	mux.HandleFunc("GET /app/dashboard", ans.dashboardPage)
+	mux.HandleFunc("GET /app/scrapes/new", ans.newScrapePage)
+	mux.HandleFunc("POST /app/scrapes", ans.createScrapeFromWizard)
+	mux.HandleFunc("GET /app/jobs", ans.jobsPage)
+	mux.HandleFunc("GET /app/jobs/{id}", func(w http.ResponseWriter, r *http.Request) {
+		r = requestWithID(r)
+
+		ans.jobMonitorPage(w, r)
+	})
+	mux.HandleFunc("GET /app/map", ans.mapPage)
+	mux.HandleFunc("GET /app/results", ans.resultsPage)
+	mux.HandleFunc("GET /app/results/{id}", ans.businessDetailPage)
+	mux.HandleFunc("GET /app/results/{id}/drawer", ans.businessDetailDrawer)
+	mux.HandleFunc("GET /app/system", ans.systemPage)
+	mux.HandleFunc("GET /app/api", ans.apiWorkspacePage)
+	mux.HandleFunc("GET /app/settings", ans.settingsPage)
+	mux.HandleFunc("GET /app/exports", ans.exportsPage)
+	mux.HandleFunc("GET /app/saved-searches", ans.reusablePage)
+	mux.HandleFunc("GET /app/schedules", ans.schedulesPage)
+	mux.HandleFunc("GET /app/proxies", ans.proxiesPage)
+	mux.HandleFunc("GET /app/onboarding", ans.onboardingPage)
 
 	// api routes
 	mux.HandleFunc("/api/docs", ans.redocHandler)
+	mux.HandleFunc("GET /api/openapi.json", ans.apiOpenAPI)
+	mux.HandleFunc("/api/v1/dashboard", ans.apiDashboard)
 	mux.HandleFunc("/api/v1/jobs", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPost:
@@ -124,6 +162,49 @@ func New(svc *Service, addr string) (*Server, error) {
 
 		ans.download(w, r)
 	})
+	mux.HandleFunc("/api/v1/jobs/{id}/progress", func(w http.ResponseWriter, r *http.Request) {
+		r = requestWithID(r)
+
+		ans.apiJobProgress(w, r)
+	})
+	mux.HandleFunc("/api/v1/jobs/{id}/events", func(w http.ResponseWriter, r *http.Request) {
+		r = requestWithID(r)
+
+		ans.apiJobEvents(w, r)
+	})
+	mux.HandleFunc("GET /api/v1/jobs/{id}/logs", func(w http.ResponseWriter, r *http.Request) {
+		r = requestWithID(r)
+
+		ans.jobLogsDownload(w, r)
+	})
+	ans.registerLifecycleRoutes(mux)
+	ans.registerResultRoutes(mux)
+	mux.HandleFunc("GET /api/v1/system/health", ans.apiSystemHealth)
+	mux.HandleFunc("POST /api/v1/system/integrity", ans.apiSystemIntegrity)
+	mux.HandleFunc("POST /api/v1/system/vacuum", ans.apiSystemVacuum)
+	mux.HandleFunc("POST /api/v1/system/backups", ans.apiSystemBackup)
+	mux.HandleFunc("GET /api/v1/system/backups/{id}/download", ans.downloadSystemBackup)
+	mux.HandleFunc("POST /api/v1/settings", ans.saveSettings)
+	mux.HandleFunc("POST /api/v1/exports", ans.createResultsExport)
+	mux.HandleFunc("GET /api/v1/exports/{id}/download", ans.downloadExport)
+	mux.HandleFunc("POST /api/v1/exports/{id}/delete", ans.deleteExport)
+	mux.HandleFunc("POST /api/v1/saved-views", ans.saveResultView)
+	mux.HandleFunc("POST /api/v1/saved-views/{id}/delete", ans.deleteSavedResultView)
+	mux.HandleFunc("POST /api/v1/templates/import", ans.importScrapeTemplate)
+	mux.HandleFunc("GET /api/v1/templates/{id}/export", ans.exportScrapeTemplate)
+	mux.HandleFunc("POST /api/v1/templates/{id}/pin", ans.pinScrapeTemplate)
+	mux.HandleFunc("POST /api/v1/templates/{id}/duplicate", ans.duplicateScrapeTemplate)
+	mux.HandleFunc("POST /api/v1/templates/{id}/delete", ans.deleteScrapeTemplate)
+	mux.HandleFunc("POST /api/v1/schedules", ans.createSchedule)
+	mux.HandleFunc("POST /api/v1/schedules/{id}/run", ans.runScheduleNow)
+	mux.HandleFunc("POST /api/v1/schedules/{id}/{action}", ans.toggleSchedule)
+	mux.HandleFunc("POST /api/v1/schedules/{id}/delete", ans.deleteSchedule)
+	mux.HandleFunc("POST /api/v1/proxy-pools/import", ans.importProxyPool)
+	mux.HandleFunc("POST /api/v1/proxy-pools/{id}/delete", ans.deleteProxyPool)
+	mux.HandleFunc("POST /api/v1/proxies/{id}/test", ans.testProxy)
+	mux.HandleFunc("POST /api/v1/proxies/{id}/{action}", ans.mutateProxy)
+	mux.HandleFunc("POST /api/v1/onboarding/complete", ans.completeOnboarding)
+	mux.HandleFunc("POST /api/v1/onboarding/self-test", ans.runOnboardingSelfTest)
 
 	handler := securityHeaders(mux)
 	ans.srv.Handler = handler
@@ -145,7 +226,20 @@ func New(svc *Service, addr string) (*Server, error) {
 		ans.tmpl[key] = tmp
 	}
 
+	if err := ans.loadAppTemplates(); err != nil {
+		return nil, err
+	}
+
 	return &ans, nil
+}
+
+func wildcardBind(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return strings.HasPrefix(addr, ":")
+	}
+
+	return host == "" || host == "0.0.0.0" || host == "::"
 }
 
 func (s *Server) Start(ctx context.Context) error {
@@ -173,18 +267,20 @@ func (s *Server) Start(ctx context.Context) error {
 }
 
 type formData struct {
-	Name     string
-	MaxTime  string
-	Keywords []string
-	Language string
-	Zoom     int
-	FastMode bool
-	Radius   int
-	Lat      string
-	Lon      string
-	Depth    int
-	Email    bool
-	Proxies  []string
+	Name       string
+	MaxTime    string
+	Keywords   []string
+	Language   string
+	Zoom       int
+	FastMode   bool
+	Radius     int
+	Lat        string
+	Lon        string
+	Depth      int
+	Email      bool
+	Proxies    []string
+	GridBBox   string
+	GridCellKM float64
 }
 
 type ctxKey string
@@ -236,17 +332,18 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := formData{
-		Name:     "",
-		MaxTime:  "10m",
-		Keywords: []string{},
-		Language: "en",
-		Zoom:     15,
-		FastMode: false,
-		Radius:   10000,
-		Lat:      "0",
-		Lon:      "0",
-		Depth:    10,
-		Email:    false,
+		Name:       "",
+		MaxTime:    "30m",
+		Keywords:   []string{},
+		Language:   "en",
+		Zoom:       15,
+		FastMode:   false,
+		Radius:     10000,
+		Lat:        "0",
+		Lon:        "0",
+		Depth:      10,
+		Email:      false,
+		GridCellKM: 1,
 	}
 
 	_ = tmpl.Execute(w, data)
@@ -339,6 +436,16 @@ func (s *Server) scrape(w http.ResponseWriter, r *http.Request) {
 	}
 
 	newJob.Data.Email = r.Form.Get("email") == "on"
+	newJob.Data.GridBBox = strings.TrimSpace(r.Form.Get("grid_bbox"))
+
+	if newJob.Data.GridBBox != "" {
+		newJob.Data.GridCellKM, err = strconv.ParseFloat(r.Form.Get("grid_cell_km"), 64)
+		if err != nil {
+			http.Error(w, "invalid grid cell size", http.StatusUnprocessableEntity)
+
+			return
+		}
+	}
 
 	proxies := strings.Split(r.Form.Get("proxies"), "\n")
 	if len(proxies) > 0 {
@@ -477,15 +584,8 @@ type apiScrapeResponse struct {
 	ID string `json:"id"`
 }
 
-func (s *Server) redocHandler(w http.ResponseWriter, _ *http.Request) {
-	tmpl, ok := s.tmpl["static/templates/redoc.html"]
-	if !ok {
-		http.Error(w, "missing tpl", http.StatusInternalServerError)
-
-		return
-	}
-
-	_ = tmpl.Execute(w, nil)
+func (s *Server) redocHandler(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/app/api", http.StatusSeeOther)
 }
 
 func (s *Server) apiScrape(w http.ResponseWriter, r *http.Request) {
@@ -678,18 +778,37 @@ func formatDate(t time.Time) string {
 
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil && r.Method != http.MethodGet && r.Method != http.MethodHead {
+			r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
+		}
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("X-XSS-Protection", "1; mode=block")
-		w.Header().Set("Content-Security-Policy",
-			"default-src 'self'; "+
-				"script-src 'self' cdn.redoc.ly cdnjs.cloudflare.com 'unsafe-inline' 'unsafe-eval'; "+
-				"worker-src 'self' blob:; "+
-				"style-src 'self' 'unsafe-inline' fonts.googleapis.com cdnjs.cloudflare.com; "+
-				"img-src 'self' data: cdn.redoc.ly cdnjs.cloudflare.com *.tile.openstreetmap.org; "+
-				"font-src 'self' fonts.gstatic.com; "+
-				"connect-src 'self'")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		w.Header().Set("Content-Security-Policy", localContentSecurityPolicy(r.URL.Path))
+		if strings.HasPrefix(r.URL.Path, "/app/") || strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/" {
+			w.Header().Set("Cache-Control", "no-store")
+		}
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func localContentSecurityPolicy(path string) string {
+	if path == "/legacy" || path == "/view" || path == "/jobs" || path == "/scrape" {
+		// The preserved legacy UI still loads HTMX, Leaflet, and map tiles from
+		// their historical providers. The local application under /app has a
+		// deliberately tighter, dependency-free policy below.
+		return "default-src 'self'; " +
+			"script-src 'self' cdn.redoc.ly cdnjs.cloudflare.com 'unsafe-inline'; " +
+			"style-src 'self' 'unsafe-inline' fonts.googleapis.com cdnjs.cloudflare.com; " +
+			"img-src 'self' data: cdn.redoc.ly cdnjs.cloudflare.com *.tile.openstreetmap.org; " +
+			"font-src 'self' fonts.gstatic.com; connect-src 'self'; " +
+			"object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+	}
+
+	return "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+		"img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; " +
+		"base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
 }

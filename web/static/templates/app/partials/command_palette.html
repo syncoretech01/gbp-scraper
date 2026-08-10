@@ -1,0 +1,16 @@
+{{define "app/command-palette"}}
+<dialog class="command-palette" id="command-palette" aria-labelledby="command-palette-title">
+    <form method="dialog" class="palette-heading">
+        <label id="command-palette-title" for="command-query">Go to a page or run an action</label>
+        <button class="icon-button" value="cancel" data-action="close-command-palette"><span aria-hidden="true">&times;</span><span class="sr-only">Close</span></button>
+    </form>
+    <input id="command-query" type="search" placeholder="Type a command..." autocomplete="off" data-command-query>
+    <nav aria-label="Commands" data-command-list>
+        <a href="/app/scrapes/new" data-command="new scrape" data-action="navigate" data-endpoint="/app/scrapes/new"><span>New scrape</span><kbd>N</kbd></a>
+        <a href="/app/jobs" data-command="jobs queue monitor" data-action="navigate" data-endpoint="/app/jobs"><span>Open jobs</span><kbd>J</kbd></a>
+        <a href="/app/results" data-command="results businesses" data-action="navigate" data-endpoint="/app/results"><span>Open results</span><kbd>R</kbd></a>
+        {{if .Features.Exports}}<a href="/app/exports" data-command="export data" data-action="navigate" data-endpoint="/app/exports"><span>Create export</span><kbd>Ctrl E</kbd></a>{{end}}
+        {{if .Features.System}}<a href="/app/system" data-command="system diagnostics" data-action="navigate" data-endpoint="/app/system"><span>Run system checks</span></a>{{end}}
+    </nav>
+</dialog>
+{{end}}

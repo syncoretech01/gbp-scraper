@@ -1,0 +1,20 @@
+{{define "app/result-drawer"}}
+<article class="section-stack result-detail">
+    <header><h3>{{.Business.Name}}</h3><p>{{.Business.PrimaryCategory}} &middot; {{.Business.Address}}</p></header>
+    <dl class="detail-list">
+        <div><dt>Phone</dt><dd>{{if .Business.Phone}}<a href="tel:{{.Business.NormalizedPhone}}">{{.Business.Phone}}</a>{{else}}Not available{{end}}</dd></div>
+        <div><dt>Email</dt><dd>{{if .Business.PrimaryEmail}}<a href="mailto:{{.Business.PrimaryEmail}}">{{.Business.PrimaryEmail}}</a>{{else}}Not available{{end}}</dd></div>
+        <div><dt>Website</dt><dd>{{if .Business.Website}}<a href="{{.Business.Website}}" target="_blank" rel="noopener noreferrer">{{.Business.Domain}}</a>{{else}}Not available{{end}}</dd></div>
+        <div><dt>Rating</dt><dd>{{.Business.RatingLabel}} / 5 ({{.Business.ReviewCountLabel}} reviews)</dd></div>
+        <div><dt>Quality</dt><dd>{{.Business.QualityLabel}}/100 &middot; {{.Business.ConfidenceLabel}} confidence</dd></div>
+        <div><dt>Last scraped</dt><dd>{{.Business.ScrapedLabel}}</dd></div>
+        <div><dt>Place ID</dt><dd><code>{{.Business.PlaceID}}</code></dd></div>
+        <div><dt>CID / Data ID</dt><dd><code>{{.Business.CID}} {{.Business.DataID}}</code></dd></div>
+    </dl>
+    {{if .CanMutate}}<section><h3>Local workflow</h3><form class="section-stack" action="/api/v1/results/bulk" method="post"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><input type="hidden" name="result_ids" value="{{.Business.ID}}"><input type="hidden" name="action" value="notes"><input type="hidden" name="return_to" value="/app/results/{{.Business.ID}}"><div class="field"><label for="business-notes-{{.Business.ID}}">Notes</label><textarea class="textarea" id="business-notes-{{.Business.ID}}" name="value" maxlength="5000" rows="4">{{.Business.Notes}}</textarea></div><button class="button button-small" type="submit">Save notes</button></form></section>{{end}}
+    <section><h3>Sources</h3>{{if .Sources}}<ol class="timeline">{{range .Sources}}<li><strong>{{.SourceType}}</strong><span>{{.ExtractedLabel}} &middot; query {{.SourceQuery}} &middot; cell {{.SourceCell}}</span>{{if .SourceURL}}<a href="{{.SourceURL}}" target="_blank" rel="noopener noreferrer">Open source</a>{{end}}</li>{{end}}</ol>{{else}}<p class="muted">No source history recorded.</p>{{end}}</section>
+    <section><h3>Change history</h3>{{if .Versions}}<ol class="timeline">{{range .Versions}}<li><strong>Version {{.Version}} &middot; {{.ChangeType}}</strong><span>{{.ObservedLabel}}{{if .FieldsLabel}} &middot; {{.FieldsLabel}}{{end}}</span></li>{{end}}</ol>{{else}}<p class="muted">No versions recorded.</p>{{end}}</section>
+    {{if .Duplicates}}<section><h3>Possible duplicates</h3><ul>{{range .Duplicates}}<li><a href="/app/results/{{.}}">{{.}}</a></li>{{end}}</ul></section>{{end}}
+    <details><summary>Raw source JSON</summary><pre class="code-block">{{.RawJSON}}</pre></details>
+</article>
+{{end}}

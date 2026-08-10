@@ -35,6 +35,12 @@ FROM debian:trixie-slim
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/browsers
 ENV PLAYWRIGHT_DRIVER_PATH=/opt/ms-playwright-go
 
+# Copying these artifacts first creates an explicit dependency on the
+# playwright stage. BuildKit therefore does not saturate a slow connection by
+# running both apt dependency installations at the same time.
+COPY --from=playwright-deps /opt/browsers /opt/browsers
+COPY --from=playwright-deps /opt/ms-playwright-go /opt/ms-playwright-go
+
 # Install only the necessary dependencies in a single layer
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -57,11 +63,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpango-1.0-0 \
     libcairo2 \
     libasound2 \
+    curl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
-
-COPY --from=playwright-deps /opt/browsers /opt/browsers
-COPY --from=playwright-deps /opt/ms-playwright-go /opt/ms-playwright-go
 
 RUN chmod -R 755 /opt/browsers \
     && chmod -R 755 /opt/ms-playwright-go

@@ -1,0 +1,33 @@
+{{define "app/page/system"}}{{template "app/layout" .}}{{end}}
+
+{{define "app/page-actions"}}
+<div class="page-actions">
+    <form action="/api/v1/system/integrity" method="post"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button" type="submit">Run integrity check</button></form>
+    <form action="/api/v1/system/backups" method="post"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button button-primary" type="submit">Create verified backup</button></form>
+</div>
+{{end}}
+
+{{define "app/content"}}
+<div class="section-stack">
+    {{if .Page.Notice}}<div class="notice notice-success" role="status"><div><strong>{{.Page.Notice}}</strong></div></div>{{end}}
+    <div class="notice {{if eq .Page.Snapshot.Integrity "ok"}}notice-success{{else}}notice-error{{end}}" role="status"><div><strong>SQLite integrity: {{.Page.Snapshot.Integrity}}</strong><p>The check reads the live local database without changing stored data.</p></div></div>
+    <section class="grid metrics-grid" aria-label="Local system summary">
+        <article class="card metric"><div class="metric-label">Database</div><p class="metric-value">{{.Page.Snapshot.DatabaseBytes}} B</p><span class="metric-detail">schema v{{.Page.Snapshot.SchemaVersion}}</span></article>
+        <article class="card metric"><div class="metric-label">Normalized businesses</div><p class="metric-value">{{.Page.Snapshot.BusinessCount}}</p><span class="metric-detail">{{.Page.Snapshot.SourceCount}} source observations</span></article>
+        <article class="card metric"><div class="metric-label">Jobs</div><p class="metric-value">{{.Page.Snapshot.JobCount}}</p><span class="metric-detail">{{.Activity.Running}} running; {{.Activity.Queued}} queued</span></article>
+        <article class="card metric"><div class="metric-label">Data directory</div><p class="metric-value">{{.Page.DataBytes}}</p><span class="metric-detail">{{.Page.DataFolder}}</span></article>
+        <article class="card metric"><div class="metric-label">Backups</div><p class="metric-value">{{.Page.Snapshot.BackupCount}}</p><span class="metric-detail">migration and manual copies</span></article>
+        <article class="card metric"><div class="metric-label">Exports</div><p class="metric-value">{{.Page.Snapshot.ExportCount}}</p><span class="metric-detail">registered local deliveries</span></article>
+    </section>
+
+    <section class="grid grid-2">
+        <article class="card"><div class="card-header"><div><h2>Versions and binding</h2><p>Useful for local troubleshooting</p></div></div><div class="card-body"><dl class="key-value"><dt>Go</dt><dd>{{.Page.GoVersion}}</dd><dt>Operating system</dt><dd>{{.Page.OS}}</dd><dt>SQLite</dt><dd>{{.Page.Snapshot.SQLiteVersion}}</dd><dt>Database schema</dt><dd>{{.Page.Snapshot.SchemaVersion}}</dd><dt>HTTP binding</dt><dd>{{.Page.Bind}}</dd></dl></div></article>
+        <article class="card"><div class="card-header"><div><h2>Safe maintenance</h2><p>VACUUM compacts SQLite; backups use SQLite's consistent VACUUM INTO mechanism and are verified before registration.</p></div></div><div class="card-body section-stack"><form action="/api/v1/system/vacuum" method="post" data-confirm="Compact the local database now? Active database work may wait briefly."><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button" type="submit">VACUUM database</button></form><p class="field-hint">Restore is intentionally offline: stop the container, preserve the current database, and replace it with a verified downloaded backup. This avoids swapping a database underneath active workers.</p><p class="field-hint">If proxy credentials are configured, preserve the adjacent <code>.proxy-master-key</code> too. Database backups contain encrypted proxy URLs, but never copy the encryption key into the database or download.</p></div></article>
+    </section>
+
+    <section class="card" aria-labelledby="backups-title">
+        <div class="card-header"><div><h2 id="backups-title">Verified backups</h2><p>Checksums and schema versions are retained in SQLite</p></div></div>
+        {{if .Page.Backups}}<div class="table-wrap"><table class="data-table"><thead><tr><th>Created</th><th>Kind</th><th>State</th><th>Schema</th><th>Size</th><th>SHA-256</th><th>Action</th></tr></thead><tbody>{{range .Page.Backups}}<tr><td>{{.CreatedAt}}</td><td>{{.Kind}}</td><td><span class="status status-{{.State}}">{{.State}}</span></td><td>v{{.SchemaVersion}}</td><td>{{.Size}}</td><td><code>{{.Checksum}}</code></td><td><a class="button button-small" href="/api/v1/system/backups/{{.ID}}/download" download>Download</a></td></tr>{{end}}</tbody></table></div>{{else}}<div class="empty-state"><div><strong>No registered backups</strong><span>Create a verified backup before important maintenance or configuration changes.</span></div></div>{{end}}
+    </section>
+</div>
+{{end}}

@@ -1,0 +1,112 @@
+{{define "app/page/results"}}{{template "app/layout" .}}{{end}}
+
+{{define "app/head"}}<script defer src="/static/js/app-results.js"></script>{{end}}
+
+{{define "app/page-actions"}}
+<div class="page-actions">
+    {{if .Page.Capabilities.CanMap}}<a class="button" href="/app/map?source=results" data-endpoint="/app/map?source=results">Map view</a>{{end}}
+    {{if .Page.Capabilities.CanSavedViews}}<a class="button" href="/app/saved-searches?tab=views" data-endpoint="/app/saved-searches?tab=views">Saved views</a>{{end}}
+    {{if .Page.Capabilities.CanExport}}<a class="button button-primary" href="{{.Page.ExportURL}}" data-endpoint="{{.Page.ExportURL}}">Create export</a>{{end}}
+</div>
+{{end}}
+
+{{define "app/content"}}
+<div class="section-stack" data-results-explorer data-endpoint="/api/v1/results">
+    {{if .Page.Notice}}<div class="notice notice-success" role="status"><div><strong>{{.Page.Notice}}</strong></div></div>{{end}}
+    <section class="grid metrics-grid" aria-label="Result summary">
+        <article class="card metric"><div class="metric-label">Unique businesses</div><p class="metric-value">{{.Page.Stats.UniqueBusinesses}}</p><span class="metric-detail">{{.Page.Stats.RawRecords}} source records</span></article>
+        <article class="card metric"><div class="metric-label">Duplicate groups</div><p class="metric-value">{{.Page.Stats.DuplicateGroups}}</p><span class="metric-detail">{{.Page.Stats.DuplicatesMerged}} records merged</span></article>
+        <article class="card metric"><div class="metric-label">With website</div><p class="metric-value">{{.Page.Stats.WebsitePercent}}%</p><span class="metric-detail">{{.Page.Stats.Websites}} businesses</span></article>
+        <article class="card metric"><div class="metric-label">With email</div><p class="metric-value">{{.Page.Stats.EmailPercent}}%</p><span class="metric-detail">{{.Page.Stats.Emails}} addresses</span></article>
+        <article class="card metric"><div class="metric-label">Needs review</div><p class="metric-value">{{.Page.Stats.NeedsReview}}</p><span class="metric-detail">low confidence or conflicts</span></article>
+    </section>
+
+    <form class="card" action="/app/results" method="get" aria-labelledby="result-filter-title">
+        <div class="card-header"><div><h2 id="result-filter-title">Search and filters</h2><p>Every filter is applied to the normalized local business database</p></div><a href="/app/results" data-endpoint="/app/results">Clear all</a></div>
+        <div class="card-body section-stack">
+            <div class="grid grid-4">
+                <div class="field"><label for="result-search">Full-text search</label><input class="input" id="result-search" name="q" type="search" value="{{.Page.Query}}" placeholder="Name, category, address, domain, email, phone"></div>
+                <div class="field"><label for="result-job">Source job</label><select class="select" id="result-job" name="job_id"><option value="">All jobs</option>{{range .Page.JobOptions}}<option value="{{.ID}}" {{if .Selected}}selected{{end}}>{{.Name}}</option>{{end}}</select></div>
+                <div class="field"><label for="result-view">Saved view</label><select class="select" id="result-view" name="view"><option value="">No saved view</option>{{range .Page.SavedViews}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select></div>
+                <div class="field"><label for="result-sort">Sort</label><select class="select" id="result-sort" name="sort"><option value="updated_desc" {{if eq .Page.Sort "updated_desc"}}selected{{end}}>Recently updated</option><option value="name_asc" {{if eq .Page.Sort "name_asc"}}selected{{end}}>Name</option><option value="rating_desc" {{if eq .Page.Sort "rating_desc"}}selected{{end}}>Highest rating</option><option value="reviews_desc" {{if eq .Page.Sort "reviews_desc"}}selected{{end}}>Most reviews</option><option value="quality_desc" {{if eq .Page.Sort "quality_desc"}}selected{{end}}>Quality score</option></select></div>
+            </div>
+            <div class="filter-builder" data-filter-rows>
+                {{range .Page.Filters}}
+                <div class="filter-row">
+                    <select class="select" name="filter_field"><option selected value="{{.Field}}">{{.FieldLabel}}</option></select>
+                    <select class="select" name="filter_operator"><option selected value="{{.Operator}}">{{.OperatorLabel}}</option></select>
+                    <input class="input" name="filter_value" value="{{.Value}}" aria-label="Filter value">
+                    <button class="button button-small" type="button" data-action="remove-filter" data-endpoint="#filters">Remove</button>
+                </div>
+                {{end}}
+            </div>
+            <div class="page-actions left-actions"><button class="button button-small" type="button" data-action="add-filter" data-endpoint="#filters">Add filter</button><span class="field-hint">Use text, numeric, availability, reviewed, or tag filters. Every value is safely bound to the local database query.</span></div>
+            <div class="form-actions">
+                <label class="check-row"><input type="checkbox" name="include_duplicates" value="true" {{if .Page.IncludeDuplicates}}checked{{end}}><span>Show duplicate source rows</span></label>
+                <button class="button button-primary" type="submit" data-endpoint="/app/results">Apply filters</button>
+            </div>
+        </div>
+    </form>
+
+    {{if .Page.Capabilities.CanSavedViews}}<details class="card disclosure"><summary>Save the current search and filters as a reusable view</summary><form class="card-body grid grid-2" action="/api/v1/saved-views" method="post"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><input type="hidden" name="q" value="{{.Page.Query}}"><input type="hidden" name="job_id" value="{{.Page.JobID}}"><input type="hidden" name="sort" value="{{.Page.Sort}}"><input type="hidden" name="include_duplicates" value="{{.Page.IncludeDuplicates}}">{{range .Page.Filters}}<input type="hidden" name="filter_field" value="{{.Field}}"><input type="hidden" name="filter_operator" value="{{.Operator}}"><input type="hidden" name="filter_value" value="{{.Value}}">{{end}}<div class="field"><label for="saved-view-name">View name</label><input class="input" id="saved-view-name" name="name" maxlength="120" required placeholder="San Francisco dentists with email"></div><div class="form-actions"><button class="button button-primary" type="submit">Save view</button></div></form></details>{{end}}
+
+    <template id="filter-row-template">
+        <div class="filter-row">
+            <select class="select" name="filter_field" aria-label="Filter field"><option value="city">City</option><option value="state">State</option><option value="country">Country</option><option value="category">Category</option><option value="rating">Rating</option><option value="reviews">Review count</option><option value="website_status">Website status</option><option value="quality_score">Quality score</option><option value="website">Website availability</option><option value="email">Email availability</option><option value="phone">Phone availability</option><option value="reviewed">Reviewed</option><option value="tags">Tags</option></select>
+            <select class="select" name="filter_operator" aria-label="Filter operator"><option value="eq">equals</option><option value="contains">contains</option><option value="starts_with">starts with</option><option value="gte">at least</option><option value="lte">at most</option><option value="empty">is empty</option><option value="not_empty">is not empty</option></select>
+            <input class="input" name="filter_value" aria-label="Filter value" placeholder="Value">
+            <button class="button button-small" type="button" data-action="remove-filter" data-endpoint="#filters">Remove</button>
+        </div>
+    </template>
+
+    <form action="/api/v1/results/bulk" method="post" data-confirm="Apply this action to every selected business?">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <input type="hidden" name="return_to" value="{{.Page.CurrentURL}}">
+        {{if .Page.Capabilities.CanSelect}}<div class="selection-bar" data-selection-bar hidden>
+            <strong><span data-selection-count>0</span> selected</strong>
+            {{if .Page.Capabilities.CanTag}}<input class="input input-compact" name="tag" maxlength="64" aria-label="Tag name" placeholder="Tag name"><button class="button button-small" type="submit" name="action" value="tag" data-requires-selection data-endpoint="/api/v1/results/bulk">Tag</button><button class="button button-small" type="submit" name="action" value="untag" data-requires-selection data-endpoint="/api/v1/results/bulk">Untag</button>{{end}}
+            {{if .Page.Capabilities.CanMarkReviewed}}<button class="button button-small" type="submit" name="action" value="reviewed" data-requires-selection data-endpoint="/api/v1/results/bulk">Mark reviewed</button><button class="button button-small" type="submit" name="action" value="unreviewed" data-requires-selection data-endpoint="/api/v1/results/bulk">Needs review</button>{{end}}
+            {{if .Page.Capabilities.CanEnrich}}<button class="button button-small" type="submit" name="action" value="enrich" data-requires-selection data-endpoint="/api/v1/results/bulk">Re-enrich</button>{{end}}
+            {{if .Page.Capabilities.CanCheckWebsites}}<button class="button button-small" type="submit" name="action" value="website-check" data-requires-selection data-endpoint="/api/v1/results/bulk">Recheck websites</button>{{end}}
+            {{if .Page.Capabilities.CanCheckEmails}}<button class="button button-small" type="submit" name="action" value="email-check" data-requires-selection data-endpoint="/api/v1/results/bulk">Recheck emails</button>{{end}}
+            {{if .Page.Capabilities.CanMerge}}<button class="button button-small" type="submit" name="action" value="merge" formmethod="post" formaction="/api/v1/results/duplicates/merge" data-requires-selection data-endpoint="/api/v1/results/duplicates/merge">Merge duplicates</button>{{end}}
+            {{if .Page.Capabilities.CanDelete}}<button class="button button-small button-danger" type="submit" name="action" value="delete" data-requires-selection data-endpoint="/api/v1/results/bulk">Delete</button>{{end}}
+        </div>{{end}}
+
+        {{if .Page.Results}}
+        <div class="table-wrap results-table-wrap" tabindex="0" aria-label="Scrollable business results">
+            <table class="data-table results-table">
+                <caption class="sr-only">Filtered local business records</caption>
+                <thead><tr>{{if .Page.Capabilities.CanSelect}}<th><input type="checkbox" data-select-all aria-label="Select all results on this page"></th>{{end}}<th>Name</th><th>Category</th><th>Location</th><th>Contacts</th><th>Rating</th><th>Website</th><th>Quality</th><th>Workflow</th><th>Source</th><th>Actions</th></tr></thead>
+                <tbody>
+                {{range .Page.Results}}
+                    <tr>
+                        {{if $.Page.Capabilities.CanSelect}}<td><input type="checkbox" name="result_ids" value="{{.ID}}" aria-label="Select {{.Name}}"></td>{{end}}
+                        <td><strong><a href="/app/results/{{.ID}}" data-action="open-result" data-endpoint="/app/results/{{.ID}}/drawer">{{.Name}}</a></strong><small class="cell-subtitle">{{.BusinessStatus}}{{if .Claimed}} &middot; claimed{{end}}</small></td>
+                        <td>{{.PrimaryCategory}}<small class="cell-subtitle">{{.AdditionalCategories}}</small></td>
+                        <td>{{.Address}}<small class="cell-subtitle">{{.City}}, {{.State}} {{.PostalCode}}</small></td>
+                        <td>{{if .Phone}}<a href="tel:{{.NormalizedPhone}}">{{.Phone}}</a>{{else}}<span class="muted">No phone</span>{{end}}<small class="cell-subtitle">{{if .PrimaryEmail}}<a href="mailto:{{.PrimaryEmail}}">{{.PrimaryEmail}}</a>{{else}}No email{{end}}</small></td>
+                        <td>{{.RatingLabel}} / 5<small class="cell-subtitle">{{.ReviewCountLabel}} reviews</small></td>
+                        <td><span class="status status-{{.WebsiteState}}">{{.WebsiteStatus}}</span><small class="cell-subtitle">{{.Domain}} &middot; {{.ResponseTime}}</small></td>
+                        <td><strong>{{.QualityLabel}}</strong>/100<small class="cell-subtitle">{{.ConfidenceLabel}} confidence</small></td>
+                        <td>{{if .Reviewed}}Reviewed{{else}}Needs review{{end}}<span class="tag-list">{{range .Tags}}<span class="tag">{{.}}</span>{{end}}</span><small class="cell-subtitle">{{.ChangeStatus}} &middot; {{.UpdatedLabel}}</small></td>
+                        <td>{{.SourceQuery}}<small class="cell-subtitle">cell {{.SourceCell}} &middot; {{.ScrapedLabel}}</small></td>
+                        <td><div class="table-actions"><a class="button button-small" href="/app/results/{{.ID}}" data-action="open-result" data-endpoint="/app/results/{{.ID}}/drawer">Details</a>{{if .MapsURL}}<a class="button button-small" href="{{.MapsURL}}" target="_blank" rel="noopener noreferrer" data-endpoint="{{.MapsURL}}">Maps<span class="sr-only"> (opens in a new tab)</span></a>{{end}}{{if .Website}}<a class="button button-small" href="{{.Website}}" target="_blank" rel="noopener noreferrer" data-endpoint="{{.Website}}">Website<span class="sr-only"> (opens in a new tab)</span></a>{{end}}</div></td>
+                    </tr>
+                {{end}}
+                </tbody>
+            </table>
+        </div>
+        {{else}}
+        <section class="card empty-state"><div><strong>No businesses match these filters</strong><span>Broaden the filters, include duplicate rows, or collect a new area.</span><p class="page-actions centered-actions"><a class="button" href="/app/results" data-endpoint="/app/results">Clear filters</a><a class="button button-primary" href="/app/scrapes/new" data-endpoint="/app/scrapes/new">New scrape</a></p></div></section>
+        {{end}}
+    </form>
+
+    {{if .Page.Results}}<nav class="pagination" aria-label="Results pages"><span>{{.Page.RangeLabel}} of {{.Page.Total}} {{if .Page.IncludeDuplicates}}source records{{else}}unique businesses{{end}}</span><div class="page-actions"><form class="inline-field" action="/app/results" method="get"><input type="hidden" name="q" value="{{.Page.Query}}"><label for="result-page-size">Rows</label><select class="select" id="result-page-size" name="page_size"><option value="25" {{if eq .Page.PageSize "25"}}selected{{end}}>25</option><option value="50" {{if eq .Page.PageSize "50"}}selected{{end}}>50</option><option value="100" {{if eq .Page.PageSize "100"}}selected{{end}}>100</option><option value="250" {{if eq .Page.PageSize "250"}}selected{{end}}>250</option></select><button class="button button-small" type="submit" data-endpoint="/app/results">Apply</button></form>{{if .Page.PreviousURL}}<a class="button button-small" href="{{.Page.PreviousURL}}" data-endpoint="{{.Page.PreviousURL}}">Previous</a>{{end}}{{if .Page.NextURL}}<a class="button button-small" href="{{.Page.NextURL}}" data-endpoint="{{.Page.NextURL}}">Next</a>{{end}}</div></nav>{{end}}
+
+    <dialog class="drawer" id="result-drawer" aria-labelledby="result-drawer-title">
+        <div class="drawer-header"><div><h2 id="result-drawer-title">Business details</h2><p class="field-hint">Structured fields, provenance, changes, notes, and duplicates</p></div><button class="icon-button" type="button" data-action="close-dialog" aria-label="Close details">&#10005;</button></div>
+        <div class="drawer-body" data-drawer-body><div class="empty-state"><div><strong>Select a business</strong><span>Its complete local record will appear here.</span></div></div></div>
+    </dialog>
+</div>
+{{end}}

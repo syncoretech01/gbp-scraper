@@ -1,0 +1,14 @@
+.git
+.github
+.agents
+.codex
+.tmp-*
+webdata
+backups
+exports
+screenshots
+node_modules
+coverage*
+*.log
+*.db
+*.db-*

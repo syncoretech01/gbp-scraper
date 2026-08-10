@@ -1,0 +1,101 @@
+{{define "app/page/dashboard"}}{{template "app/layout" .}}{{end}}
+
+{{define "app/page-actions"}}
+<div class="page-actions">
+    {{if .Features.System}}<a class="button" href="/app/system" data-action="navigate" data-endpoint="/app/system">System health</a>{{end}}
+    <a class="button button-primary" href="/app/scrapes/new" data-action="navigate" data-endpoint="/app/scrapes/new"><span aria-hidden="true">＋</span> New scrape</a>
+</div>
+{{end}}
+
+{{define "app/content"}}
+<div class="section-stack" data-dashboard data-endpoint="/api/v1/dashboard">
+    <section class="grid metrics-grid" aria-label="Workspace summary">
+        <article class="card metric">
+            <div class="metric-label"><span>Unique businesses</span><span aria-hidden="true">▦</span></div>
+            <p class="metric-value">{{.Page.Metrics.UniqueBusinesses}}</p>
+            <p class="metric-detail">{{.Page.Metrics.RawRecords}} raw records · {{.Page.Metrics.Duplicates}} duplicates</p>
+        </article>
+        <article class="card metric">
+            <div class="metric-label"><span>Collected today</span><span aria-hidden="true">↗</span></div>
+            <p class="metric-value">{{.Page.Metrics.CollectedToday}}</p>
+            <p class="metric-detail">{{.Page.Metrics.CollectedWeek}} this week · {{.Page.Metrics.CollectedMonth}} this month</p>
+        </article>
+        <article class="card metric">
+            <div class="metric-label"><span>Active jobs</span><span aria-hidden="true">◉</span></div>
+            <p class="metric-value">{{.Page.Metrics.ActiveJobs}}</p>
+            <p class="metric-detail">{{.Page.Metrics.QueuedJobs}} queued · {{.Page.Metrics.PausedJobs}} paused · {{.Page.Metrics.PartialJobs}} partial</p>
+        </article>
+        <article class="card metric">
+            <div class="metric-label"><span>Contact coverage</span><span aria-hidden="true">@</span></div>
+            <p class="metric-value">{{.Page.Metrics.EmailCoverage}}%</p>
+            <p class="metric-detail">{{.Page.Metrics.Emails}} emails · {{.Page.Metrics.Phones}} phones</p>
+        </article>
+        <article class="card metric">
+            <div class="metric-label"><span>Collection speed</span><span aria-hidden="true">⚡</span></div>
+            <p class="metric-value">{{.Page.Metrics.PlacesPerMinute}}</p>
+            <p class="metric-detail">places/min · {{.Page.Metrics.AverageDuration}} average job</p>
+        </article>
+        <article class="card metric">
+            <div class="metric-label"><span>Local storage</span><span aria-hidden="true">◫</span></div>
+            <p class="metric-value">{{.Page.Metrics.DatabaseSize}}</p>
+            <p class="metric-detail">{{.Page.Metrics.DiskFree}} free on data volume</p>
+        </article>
+    </section>
+
+    <section class="card" aria-label="Job outcomes"><div class="card-body"><div class="estimate"><div><span>Completed</span><strong>{{.Page.Metrics.CompletedJobs}}</strong></div><div><span>Partial</span><strong>{{.Page.Metrics.PartialJobs}}</strong></div><div><span>Failed</span><strong>{{.Page.Metrics.FailedJobs}}</strong></div><div><span>Cancelled</span><strong>{{.Page.Metrics.CancelledJobs}}</strong></div></div></div></section>
+
+    <section class="grid grid-2" aria-label="Collection analysis">
+        <article class="card">
+            <div class="card-header"><div><h2>Results collected</h2><p>Committed business records over the last 30 days</p></div><a href="/app/results" data-action="navigate" data-endpoint="/app/results">Explore</a></div>
+            <div class="card-body">
+                {{if .Page.CollectionByDate}}
+                <div class="chart" role="img" aria-label="Results collected by date">
+                    <table class="data-table">
+                        <thead><tr><th>Date</th><th>Records</th><th>Relative volume</th></tr></thead>
+                        <tbody>{{range .Page.CollectionByDate}}<tr><td>{{.Label}}</td><td>{{.Value}}</td><td><progress max="{{$.Page.CollectionMax}}" value="{{.Value}}">{{.Value}}</progress></td></tr>{{end}}</tbody>
+                    </table>
+                </div>
+                {{else}}<div class="empty-state"><div><strong>No collection history yet</strong><span>Start a scrape to build your local trend chart.</span></div></div>{{end}}
+            </div>
+        </article>
+        <article class="card">
+            <div class="card-header"><div><h2>Data availability</h2><p>Share of unique businesses with each contact field</p></div><a href="/app/results?view=data-gaps" data-action="navigate" data-endpoint="/app/results?view=data-gaps">Find gaps</a></div>
+            <div class="card-body section-stack">
+                {{range .Page.Availability}}
+                <div class="storage-meter"><div class="metric-label"><span>{{.Label}}</span><strong>{{.Percent}}%</strong></div><progress max="100" value="{{.Percent}}">{{.Percent}}%</progress></div>
+                {{else}}<div class="empty-state"><div><strong>No results to analyse</strong><span>Availability metrics appear after the first result is saved.</span></div></div>{{end}}
+            </div>
+        </article>
+    </section>
+
+    <section class="card" aria-labelledby="recent-jobs-heading">
+        <div class="card-header"><div><h2 id="recent-jobs-heading">Recent activity</h2><p>Live progress and actions for recent local jobs</p></div><a href="/app/jobs" data-action="navigate" data-endpoint="/app/jobs">View all jobs</a></div>
+        {{if .Page.RecentJobs}}
+        <div class="table-wrap">
+            <table class="data-table">
+                <thead><tr><th>Job</th><th>State</th><th>Progress</th><th>Records</th><th>Runtime</th><th>Actions</th></tr></thead>
+                <tbody>
+                {{range .Page.RecentJobs}}
+                    <tr>
+                        <td><strong><a href="/app/jobs/{{.ID}}" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}">{{.Name}}</a></strong><br><small>{{.Stage}}</small></td>
+                        <td><span class="status status-{{.State}}">{{.State}}</span></td>
+                        <td><div class="progress-track" role="progressbar" aria-label="{{.Name}} progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{.Percent}}"><div class="progress-bar" style="--progress: {{.Percent}}%"></div></div><small>{{.Percent}}% · ETA {{.ETA}}</small></td>
+                        <td>{{.UniqueRecords}} unique<br><small>{{.Emails}} emails</small></td>
+                        <td>{{.Runtime}}</td>
+                        <td><div class="table-actions">
+                            <a class="button button-small" href="/app/jobs/{{.ID}}" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}">Open</a>
+                            {{if .CanPause}}<form action="/api/v1/jobs/{{.ID}}/pause" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-small" type="submit" data-action="pause-job" data-endpoint="/api/v1/jobs/{{.ID}}/pause">Pause</button></form>{{end}}
+                            {{if .CanResume}}<form action="/api/v1/jobs/{{.ID}}/resume" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-small" type="submit" data-action="resume-job" data-endpoint="/api/v1/jobs/{{.ID}}/resume">Resume</button></form>{{end}}
+                            {{if .HasResults}}<a class="button button-small" href="/api/v1/jobs/{{.ID}}/download" download data-action="download-results" data-endpoint="/api/v1/jobs/{{.ID}}/download">CSV</a>{{end}}
+                        </div></td>
+                    </tr>
+                {{end}}
+                </tbody>
+            </table>
+        </div>
+        {{else}}
+        <div class="empty-state"><div><strong>Your workspace is ready</strong><span>Create a guided scrape or run the setup sample to collect your first businesses.</span><p><a class="button button-primary" href="/app/scrapes/new" data-action="navigate" data-endpoint="/app/scrapes/new">Configure a scrape</a></p></div></div>
+        {{end}}
+    </section>
+</div>
+{{end}}

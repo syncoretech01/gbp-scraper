@@ -298,6 +298,20 @@ docker run \
 
 ### Web UI
 
+For this repository checkout on Windows, start Docker Desktop, open PowerShell
+in the project folder, and run:
+
+```powershell
+docker compose up -d --build
+Start-Process http://127.0.0.1:8080/
+```
+
+The included Compose file publishes only to `127.0.0.1`, disables telemetry,
+and bind-mounts `./webdata` so container rebuilds and restarts retain jobs and
+results. See the [local workspace guide](docs/local-workspace.md) for the San
+Francisco coverage preset, radius-versus-grid behavior, troubleshooting, and
+safe lifecycle commands.
+
 Start the web interface with a single command:
 
 ```bash
@@ -305,12 +319,18 @@ mkdir -p gmapsdata
 
 docker run \
   -v "$PWD/gmapsdata:/gmapsdata" \
-  -p 8080:8080 \
+  -p 127.0.0.1:8080:8080 \
   gosom/google-maps-scraper \
+  -web \
+  -addr 0.0.0.0:8080 \
   -data-folder /gmapsdata
 ```
 
 Then open http://localhost:8080 in your browser.
+
+The published Docker port is restricted to the local machine. Native binary
+runs also bind to `127.0.0.1:8080` by default; use `-addr` explicitly only when
+you intend to expose the interface to another host.
 
 Or download the [binary release](https://github.com/gosom/google-maps-scraper/releases) for your platform.
 

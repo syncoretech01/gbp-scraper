@@ -1,0 +1,92 @@
+{{define "app/page/jobs"}}{{template "app/layout" .}}{{end}}
+
+{{define "app/page-actions"}}
+<div class="page-actions">
+    {{if .Page.CanViewArchived}}<a class="button" href="/app/jobs?archived=true" data-action="navigate" data-endpoint="/app/jobs?archived=true">Archived jobs</a>{{end}}
+    <a class="button button-primary" href="/app/scrapes/new" data-action="navigate" data-endpoint="/app/scrapes/new">New scrape</a>
+</div>
+{{end}}
+
+{{define "app/content"}}
+<div class="section-stack" data-jobs-page>
+    <form class="table-toolbar" action="/app/jobs" method="get" role="search">
+        <div class="field toolbar-grow">
+            <label for="job-search">Search jobs</label>
+            <input class="input" id="job-search" name="q" type="search" value="{{.Page.Query}}" placeholder="Name, query, tag, folder, or ID">
+        </div>
+        <div class="field">
+            <label for="job-state">State</label>
+            <select class="select" id="job-state" name="state">
+                <option value="">All states</option>
+                <option value="draft" {{if eq .Page.ActiveState "draft"}}selected{{end}}>Draft</option><option value="queued" {{if eq .Page.ActiveState "queued"}}selected{{end}}>Queued</option><option value="starting" {{if eq .Page.ActiveState "starting"}}selected{{end}}>Starting</option>
+                <option value="running" {{if eq .Page.ActiveState "running"}}selected{{end}}>Running</option><option value="paused" {{if eq .Page.ActiveState "paused"}}selected{{end}}>Paused</option><option value="partial" {{if eq .Page.ActiveState "partial"}}selected{{end}}>Partial</option>
+                <option value="completed" {{if eq .Page.ActiveState "completed"}}selected{{end}}>Completed</option><option value="failed" {{if eq .Page.ActiveState "failed"}}selected{{end}}>Failed</option><option value="cancelled" {{if eq .Page.ActiveState "cancelled"}}selected{{end}}>Cancelled</option>
+            </select>
+        </div>
+        {{if .Page.Folders}}<div class="field">
+            <label for="job-folder">Folder</label>
+            <select class="select" id="job-folder" name="folder"><option value="">All folders</option>{{range .Page.Folders}}<option value="{{.Value}}">{{.Label}}</option>{{end}}</select>
+        </div>{{end}}
+        <div class="field">
+            <label for="job-sort">Sort</label>
+            <select class="select" id="job-sort" name="sort"><option value="updated_desc" {{if eq .Page.Sort "updated_desc"}}selected{{end}}>Recently updated</option><option value="created_desc" {{if eq .Page.Sort "created_desc"}}selected{{end}}>Newest</option><option value="created_asc" {{if eq .Page.Sort "created_asc"}}selected{{end}}>Oldest</option><option value="name_asc" {{if eq .Page.Sort "name_asc"}}selected{{end}}>Name</option></select>
+        </div>
+        <button class="button" type="submit" data-endpoint="/app/jobs">Apply</button>
+    </form>
+
+    <div class="tabs" role="navigation" aria-label="Job views">
+        <a href="/app/jobs" data-endpoint="/app/jobs" {{if not .Page.ActiveState}}aria-current="page"{{end}}>All <span class="badge">{{.Page.Counts.All}}</span></a>
+        <a href="/app/jobs?state=running,starting" data-endpoint="/app/jobs?state=running,starting">Active <span class="badge">{{.Page.Counts.Active}}</span></a>
+        <a href="/app/jobs?state=queued" data-endpoint="/app/jobs?state=queued">Queued <span class="badge">{{.Page.Counts.Queued}}</span></a>
+        <a href="/app/jobs?state=paused" data-endpoint="/app/jobs?state=paused">Paused <span class="badge">{{.Page.Counts.Paused}}</span></a>
+        <a href="/app/jobs?state=partial,failed" data-endpoint="/app/jobs?state=partial,failed">Needs attention <span class="badge">{{.Page.Counts.Attention}}</span></a>
+    </div>
+
+    {{if .Page.Jobs}}
+    <div class="table-wrap">
+        <table class="data-table">
+            <caption class="sr-only">Local scrape jobs and their current lifecycle state</caption>
+            <thead><tr><th>Job</th><th>State</th><th>Progress</th><th>Results</th><th>Timing</th><th>Configuration</th><th>Actions</th></tr></thead>
+            <tbody>
+            {{range .Page.Jobs}}
+                <tr>
+                    <td>
+                        <strong><a href="/app/jobs/{{.ID}}" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}">{{.Name}}</a></strong>
+                        <small class="cell-subtitle">{{.ID}}</small>
+                        {{if .Tags}}<span class="tag-list">{{range .Tags}}<span class="tag">{{.}}</span>{{end}}</span>{{end}}
+                    </td>
+                    <td><span class="status status-{{.State}}">{{.State}}</span><small class="cell-subtitle">{{.Stage}}</small></td>
+                    <td>
+                        <div class="progress-track" role="progressbar" aria-label="{{.Name}} progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{.Percent}}"><div class="progress-bar" style="--progress: {{.Percent}}%"></div></div>
+                        <small>{{.Percent}}%{{if .ETA}} &middot; ETA {{.ETA}}{{end}}</small>
+                    </td>
+                    <td>{{.UniqueRecords}} unique<small class="cell-subtitle">{{.RawRecords}} raw &middot; {{.Emails}} emails</small></td>
+                    <td>{{.UpdatedAt}}<small class="cell-subtitle">Runtime {{.Runtime}}</small></td>
+                    <td>{{.QuerySummary}}<small class="cell-subtitle">{{.LocationSummary}}</small></td>
+                    <td>
+                        <div class="table-actions">
+                            <a class="button button-small" href="/app/jobs/{{.ID}}" data-endpoint="/app/jobs/{{.ID}}">Monitor</a>
+                            {{if .CanStart}}<form action="/api/v1/jobs/{{.ID}}/start" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-small" type="submit" data-endpoint="/api/v1/jobs/{{.ID}}/start">Start</button></form>{{end}}
+                            {{if .CanPause}}<form action="/api/v1/jobs/{{.ID}}/pause" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-small" type="submit" data-endpoint="/api/v1/jobs/{{.ID}}/pause">Pause</button></form>{{end}}
+                            {{if .CanResume}}<form action="/api/v1/jobs/{{.ID}}/resume" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-small" type="submit" data-endpoint="/api/v1/jobs/{{.ID}}/resume">Resume</button></form>{{end}}
+                            {{if .HasResults}}<a class="button button-small" href="/api/v1/jobs/{{.ID}}/download" download data-endpoint="/api/v1/jobs/{{.ID}}/download">Partial CSV</a>{{end}}
+                            {{if .HasMoreActions}}<details class="action-menu"><summary class="button button-small" aria-label="More actions for {{.Name}}">More</summary><div>
+                                {{if .CanDuplicate}}<form action="/api/v1/jobs/{{.ID}}/duplicate" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button type="submit" data-endpoint="/api/v1/jobs/{{.ID}}/duplicate">Duplicate configuration</button></form>{{end}}
+                                {{if .CanRetry}}<form action="/api/v1/jobs/{{.ID}}/retry" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button type="submit" data-endpoint="/api/v1/jobs/{{.ID}}/retry">Retry failed tasks</button></form>{{end}}
+                                {{if .CanCancel}}<form action="/api/v1/jobs/{{.ID}}/cancel" method="post" data-confirm="Cancel this job after its current write completes?"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button type="submit" data-endpoint="/api/v1/jobs/{{.ID}}/cancel">Cancel safely</button></form>{{end}}
+                                {{if .CanArchive}}<form action="/api/v1/jobs/{{.ID}}/archive" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button type="submit" data-endpoint="/api/v1/jobs/{{.ID}}/archive">{{if .Archived}}Restore from archive{{else}}Archive{{end}}</button></form>{{end}}
+                                {{if .CanDelete}}<form action="/api/v1/jobs/{{.ID}}" method="post" data-confirm="Delete this job? Saved business records are retained unless you explicitly choose otherwise."><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><input type="hidden" name="_method" value="DELETE"><button class="danger-text" type="submit" data-endpoint="/api/v1/jobs/{{.ID}}">Delete job</button></form>{{end}}
+                            </div></details>{{end}}
+                        </div>
+                    </td>
+                </tr>
+            {{end}}
+            </tbody>
+        </table>
+    </div>
+    <nav class="pagination" aria-label="Jobs pages"><span>{{.Page.RangeLabel}} of {{.Page.Total}} jobs</span><div class="page-actions">{{if .Page.PreviousURL}}<a class="button button-small" href="{{.Page.PreviousURL}}" data-endpoint="{{.Page.PreviousURL}}">Previous</a>{{end}}{{if .Page.NextURL}}<a class="button button-small" href="{{.Page.NextURL}}" data-endpoint="{{.Page.NextURL}}">Next</a>{{end}}</div></nav>
+    {{else}}
+    <section class="card empty-state"><div><strong>No jobs match this view</strong><span>Clear filters or configure a new local scrape.</span><p class="page-actions centered-actions"><a class="button" href="/app/jobs" data-endpoint="/app/jobs">Clear filters</a><a class="button button-primary" href="/app/scrapes/new" data-endpoint="/app/scrapes/new">New scrape</a></p></div></section>
+    {{end}}
+</div>
+{{end}}
