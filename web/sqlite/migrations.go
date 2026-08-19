@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	currentSchemaVersion           = 10
+	currentSchemaVersion           = 11
 	migrationChecksumSchemaVersion = 4
 )
 
@@ -1071,6 +1071,24 @@ var schemaMigrations = []schemaMigration{
 			`ALTER TABLE job_runtime ADD COLUMN retry_current_requested INTEGER NOT NULL DEFAULT 0`,
 			// Homepage screenshots captured by the browser-capable enrichment path.
 			`ALTER TABLE website_audits ADD COLUMN screenshot_path TEXT NOT NULL DEFAULT ''`,
+		},
+	},
+	{
+		version: 11,
+		name:    "gbp-prospecting",
+		statements: []string{
+			// GBP prospecting signals live beside the business row: a website
+			// status from the prospect taxonomy, a configurable worth-calling
+			// score with tier and explainable reasons, and the raw signal
+			// snapshot the score was computed from.
+			`ALTER TABLE businesses ADD COLUMN prospect_status TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE businesses ADD COLUMN prospect_score REAL`,
+			`ALTER TABLE businesses ADD COLUMN prospect_tier TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE businesses ADD COLUMN prospect_signals TEXT NOT NULL DEFAULT '{}'`,
+			`ALTER TABLE businesses ADD COLUMN prospect_reasons TEXT NOT NULL DEFAULT '[]'`,
+			`ALTER TABLE businesses ADD COLUMN prospect_updated_at INTEGER`,
+			`CREATE INDEX IF NOT EXISTS idx_businesses_prospect
+			ON businesses(prospect_status, prospect_tier)`,
 		},
 	},
 }
