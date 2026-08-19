@@ -143,6 +143,13 @@ type newScrapePageData struct {
 	LocalAI        localAISettings
 	Initial        wizardInitialValues
 	TemplateID     string
+	// KeywordSets feeds the step-1 "insert a saved set" picker. The controls
+	// only render when the repository can store sets (KeywordSetsSupported),
+	// so a legacy database shows no dead buttons.
+	KeywordSets          []KeywordSet
+	KeywordSetsSupported bool
+	// DefaultProxyPoolID preselects the operator's default pool in step 6.
+	DefaultProxyPoolID string
 }
 
 type wizardInitialValues struct {
@@ -224,6 +231,17 @@ func (s *Server) newScrapePage(w http.ResponseWriter, r *http.Request) {
 		Latitude:      "37.7749",
 		Longitude:     "-122.4194",
 		GeographyMode: "bbox",
+	}
+	// Saved scrape defaults replace the built-in example location, while a
+	// duplicated job, saved area, or template below still wins over both.
+	if defaults.LocationLabel != "" {
+		initial.LocationLabel = defaults.LocationLabel
+	}
+	if defaults.Lat != "" {
+		initial.Latitude = defaults.Lat
+	}
+	if defaults.Lon != "" {
+		initial.Longitude = defaults.Lon
 	}
 	duplicateJobID := strings.TrimSpace(r.URL.Query().Get("duplicate_job"))
 	if duplicateJobID != "" {
@@ -313,6 +331,23 @@ func (s *Server) newScrapePage(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// A stored default pool is only preselected while it is still offered;
+	// a deleted or disabled pool silently falls back to a direct connection.
+	defaultProxyPoolID := ""
+	for _, pool := range proxyOptions {
+		if pool.ID == defaults.ProxyPoolID {
+			defaultProxyPoolID = pool.ID
+
+			break
+		}
+	}
+	// A repository without keyword-set support (ErrKeywordSetsUnsupported)
+	// simply renders the wizard without the saved-set controls.
+	keywordSetsSupported := s.svc.SupportsKeywordSets()
+	keywordSets := make([]KeywordSet, 0)
+	if sets, setsErr := s.svc.ListKeywordSets(r.Context()); setsErr == nil {
+		keywordSets = sets
+	}
 	s.renderAppPage(w, "new_scrape", appPageData{
 		Title:     "New scrape",
 		Subtitle:  "Configure a complete, local business-research job in seven guided steps.",
@@ -320,7 +355,7 @@ func (s *Server) newScrapePage(w http.ResponseWriter, r *http.Request) {
 		Theme:     "system",
 		CSRFToken: s.csrfToken,
 		Activity:  activity,
-		Page: newScrapePageData{Defaults: defaults, LocalAI: localAI, Initial: initial, TemplateID: templateID, ProxyPools: proxyOptions, SavedAreas: savedAreas, FieldGroups: scrapeFieldGroups{Business: []scrapeFieldOption{
+		Page: newScrapePageData{Defaults: defaults, LocalAI: localAI, Initial: initial, TemplateID: templateID, ProxyPools: proxyOptions, DefaultProxyPoolID: defaultProxyPoolID, SavedAreas: savedAreas, KeywordSets: keywordSets, KeywordSetsSupported: keywordSetsSupported, FieldGroups: scrapeFieldGroups{Business: []scrapeFieldOption{
 			{Key: "title", Label: "Name", Description: "Business title as shown on Maps.", Selected: true},
 			{Key: "category", Label: "Categories", Description: "Primary and additional categories.", Selected: true},
 			{Key: "status", Label: "Business status", Description: "Open or closed signal where available.", Selected: true},

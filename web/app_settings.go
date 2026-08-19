@@ -33,6 +33,14 @@ type scrapeDefaults struct {
 	GridCellKM   string
 	Email        bool
 	ExtraReviews bool
+	// LocationLabel, Lat, and Lon prefill the wizard's location step. All
+	// three stay empty until an operator saves their own defaults, keeping
+	// the built-in San Francisco example untouched.
+	LocationLabel string
+	Lat           string
+	Lon           string
+	// ProxyPoolID preselects a proxy pool in the wizard when it still exists.
+	ProxyPoolID string
 }
 
 type settingsPageData struct {
@@ -41,6 +49,7 @@ type settingsPageData struct {
 	Preferences appPreferences
 	Storage     storagePreferences
 	LocalAI     localAISettings
+	ProxyPools  []proxyPoolOption
 	DataFolder  string
 	Theme       string
 	Notice      string
@@ -195,6 +204,10 @@ func scrapeSettingsFromMap(values map[string]string) scrapeDefaults {
 	defaults.GridCellKM = settingString(values, "scrape.grid_cell_km", defaults.GridCellKM)
 	defaults.Email = values["scrape.email"] == "true"
 	defaults.ExtraReviews = values["scrape.extra_reviews"] == "true"
+	defaults.LocationLabel = settingString(values, "scrape.location_label", defaults.LocationLabel)
+	defaults.Lat = settingString(values, "scrape.latitude", defaults.Lat)
+	defaults.Lon = settingString(values, "scrape.longitude", defaults.Lon)
+	defaults.ProxyPoolID = settingString(values, "scrape.default_proxy_pool", defaults.ProxyPoolID)
 	return defaults
 }
 
@@ -232,6 +245,19 @@ func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
 	if qualityErr != nil {
 		qualityRules = DefaultQualityRuleSet()
 	}
+	// Mirrors the wizard's pool filter so a stored default always names a
+	// pool the wizard can actually offer. A repository without proxy support
+	// simply leaves the list empty and the select hidden.
+	proxyOptions := make([]proxyPoolOption, 0)
+	if pools, poolsErr := s.svc.ListProxyPools(r.Context()); poolsErr == nil {
+		for _, pool := range pools {
+			if pool.EnabledCount > 0 {
+				proxyOptions = append(proxyOptions, proxyPoolOption{
+					ID: pool.ID, Name: pool.Name, HealthyCount: int(pool.HealthyCount),
+				})
+			}
+		}
+	}
 	s.renderAppPage(w, "settings", appPageData{
 		Title:     "Settings",
 		Subtitle:  "Choose defaults applied to every newly configured local scrape.",
@@ -245,6 +271,7 @@ func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
 			Preferences: appPreferencesFromMap(values),
 			Storage:     storagePreferencesFromMap(values),
 			LocalAI:     localAISettingsFromMap(values),
+			ProxyPools:  proxyOptions,
 			DataFolder:  s.svc.dataFolder,
 			Theme:       settingString(values, "appearance.theme", "system"),
 			Notice:      strings.TrimSpace(r.URL.Query().Get("notice")),
@@ -360,6 +387,12 @@ func validateSettingsForm(r *http.Request) (map[string]string, error) {
 	if theme != "system" && theme != "light" && theme != "dark" {
 		return nil, fmt.Errorf("invalid appearance theme")
 	}
+	// Like task_workers, these fields postdate older forms: absent or empty
+	// values keep the stored defaults empty rather than failing the save.
+	locationLabel, latitude, longitude, defaultProxyPool, err := validateScrapeLocationDefaults(r)
+	if err != nil {
+		return nil, err
+	}
 	preferences, err := validateAppearancePreferences(r)
 	if err != nil {
 		return nil, err
@@ -396,6 +429,10 @@ func validateSettingsForm(r *http.Request) (map[string]string, error) {
 		"scrape.grid_cell_km":            strconv.FormatFloat(gridCell, 'f', -1, 64),
 		"scrape.email":                   strconv.FormatBool(r.FormValue("email") == "on"),
 		"scrape.extra_reviews":           strconv.FormatBool(r.FormValue("extra_reviews") == "on"),
+		"scrape.location_label":          locationLabel,
+		"scrape.latitude":                latitude,
+		"scrape.longitude":               longitude,
+		"scrape.default_proxy_pool":      defaultProxyPool,
 		"appearance.theme":               theme,
 		"appearance.compact_tables":      strconv.FormatBool(preferences.CompactTables),
 		"appearance.sidebar_default":     preferences.SidebarDefault,
@@ -422,6 +459,42 @@ func validateSettingsForm(r *http.Request) (map[string]string, error) {
 	}
 
 	return values, nil
+}
+
+// validateScrapeLocationDefaults reads the optional default location and proxy
+// pool for new scrapes. Every field may be empty: the wizard then keeps its
+// built-in example instead of a stored operator preference.
+func validateScrapeLocationDefaults(r *http.Request) (label, latitude, longitude, proxyPool string, err error) {
+	label = strings.TrimSpace(r.FormValue("location_label"))
+	if len(label) > 120 {
+		return "", "", "", "", fmt.Errorf("default location label must be at most 120 characters")
+	}
+	if strings.ContainsAny(label, "\x00\r\n") {
+		return "", "", "", "", fmt.Errorf("default location label contains control characters")
+	}
+
+	latitude = strings.TrimSpace(r.FormValue("latitude"))
+	if latitude != "" {
+		value, parseErr := strconv.ParseFloat(latitude, 64)
+		if parseErr != nil || value < -90 || value > 90 {
+			return "", "", "", "", fmt.Errorf("default latitude must be between -90 and 90")
+		}
+	}
+
+	longitude = strings.TrimSpace(r.FormValue("longitude"))
+	if longitude != "" {
+		value, parseErr := strconv.ParseFloat(longitude, 64)
+		if parseErr != nil || value < -180 || value > 180 {
+			return "", "", "", "", fmt.Errorf("default longitude must be between -180 and 180")
+		}
+	}
+
+	proxyPool = strings.TrimSpace(r.FormValue("default_proxy_pool"))
+	if len(proxyPool) > 64 {
+		return "", "", "", "", fmt.Errorf("default proxy pool ID must be at most 64 characters")
+	}
+
+	return label, latitude, longitude, proxyPool, nil
 }
 
 func validateAppearancePreferences(r *http.Request) (appPreferences, error) {
