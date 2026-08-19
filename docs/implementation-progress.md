@@ -138,7 +138,7 @@ Last updated: 2026-08-19
 - [ ] Website, email, phone, and social-profile availability rates.
 - [ ] Job success and failure trends.
 - [ ] Scraping speed and block rate over time.
-- [ ] Proxy latency and reliability distribution.
+- [x] Proxy latency and reliability distribution.
 - [ ] Website-active versus website-inactive results.
 
 ### Recent activity cards
@@ -154,17 +154,17 @@ Last updated: 2026-08-19
 
 - [x] Single keyword, multiple keywords, and upstream-supported direct Google Maps URLs through the query input.
 - [ ] Business category picker and reusable category groups.
-- [ ] Include and exclude keywords.
+- [x] Include and exclude keywords.
 - [x] Upload keywords from CSV or TXT; paste one query per line.
-- [ ] Generate category × location combinations automatically.
+- [x] Generate category × location combinations automatically.
 - [x] Preview/count generated query lines before launch.
 - [x] Detect and remove exact case-insensitive duplicates; fuzzy warning is documented as unavailable.
-- [ ] Save keyword sets for reuse.
+- [x] Save keyword sets for reuse.
 
 ### Step 2 — Location and geographic scope
 
 - [x] Configure a location label and exact coordinates; automatic geocoding of text locations is not claimed.
-- [ ] Select multiple cities or upload locations from a file.
+- [x] Select multiple cities or upload locations from a file.
 - [x] Draw a circle, polygon, or bounding box on a map.
 - [x] Set radius, zoom, bounding box, and grid-cell size with explicit mode semantics.
 - [x] Preview estimated grid-cell and task counts.
@@ -342,14 +342,14 @@ Last updated: 2026-08-19
 
 ### Example reusable views
 
-- [ ] Businesses without websites.
-- [ ] Businesses with an active website but no visible email.
+- [x] Businesses without websites.
+- [x] Businesses with an active website but no visible email.
 - [ ] Highly rated businesses with low-quality websites.
-- [ ] Businesses with phone but no website.
+- [x] Businesses with phone but no website.
 - [ ] Businesses with email and LinkedIn.
-- [ ] Open listings with more than 50 reviews.
+- [x] Open listings with more than 50 reviews.
 - [ ] New or changed businesses since the last scrape.
-- [ ] Permanently closed listings.
+- [x] Permanently closed listings.
 
 ## 10 Deduplication Engine
 
@@ -389,7 +389,7 @@ Last updated: 2026-08-19
 - [x] Normalize business names, whitespace, punctuation, Unicode width, and common legal suffixes for matching.
 - [x] Parse full addresses into street, city, state, postal code, and country where possible.
 - [ ] Normalize country/state labels and category names.
-- [ ] Standardize social URLs and remove share/tracking variants.
+- [x] Standardize social URLs and remove share/tracking variants.
 - [x] Convert rating and review counts into numeric fields.
 - [x] Use consistent nullable database fields and display-safe missing-value handling.
 - [ ] Flag suspicious placeholder values, malformed URLs, and mismatched domains.
@@ -464,7 +464,7 @@ Last updated: 2026-08-19
 - [ ] Source type: Google Maps, website homepage, contact page, about page, footer, structured data, or manual edit.
 - [ ] Source URL, source query, source grid cell, extraction timestamp, extraction method, and confidence.
 - [x] Original value, normalized value, current preferred value, and previous values.
-- [ ] Manual edits should record the operator, date, and reason when local user accounts are enabled.
+- [x] Manual edits should record the operator, date, and reason when local user accounts are enabled.
 - [x] Exports may optionally include provenance columns or a companion JSON file.
 
 ## 16 Change Tracking and Incremental Scraping
@@ -485,17 +485,17 @@ Last updated: 2026-08-19
 - [ ] Collect new and changed listings.
 - [ ] Recheck only fields likely to change.
 - [ ] Re-enrich only businesses whose website or contact data is missing/stale.
-- [ ] Retain configurable version history and show before/after comparisons.
+- [x] Retain configurable version history and show before/after comparisons.
 
 ## 17 Scheduling
 
 - [ ] Section complete and verified against the specification.
 - [x] One-time, hourly, daily, weekly, monthly, and bounded five-field custom cron schedules.
 - [x] Selected days and times with embedded IANA timezone handling; a separate run-on-start switch is not implemented.
-- [ ] Skip, queue, or replace when the previous run is still active.
-- [ ] Automatic retries with retry limits and backoff.
+- [x] Skip, queue, or replace when the previous run is still active.
+- [x] Automatic retries with retry limits and backoff.
 - [ ] Incremental-only mode for recurring jobs.
-- [ ] Automatic export or local webhook after completion.
+- [x] Automatic export or local webhook after completion.
 - [ ] Retention rules for old runs, logs, screenshots, and exports.
 - [x] Missed-run queue-one or skip handling after the machine was offline.
 
@@ -507,7 +507,7 @@ Last updated: 2026-08-19
 - [x] Export and import validated templates as JSON without accepting inline proxy credentials.
 - [ ] Parameterised templates such as one category applied to many cities.
 - [ ] Track last run, use count, average result count, and average duration.
-- [ ] Starter templates: businesses without websites, high-rated businesses, closed-business monitor, new local businesses, and website audit prospects.
+- [x] Starter templates: businesses without websites, high-rated businesses, closed-business monitor, new local businesses, and website audit prospects.
 
 ## 19 Proxy Manager
 
@@ -533,15 +533,15 @@ Last updated: 2026-08-19
 ## 20 Adaptive Performance
 
 - [ ] Section complete and verified against the specification.
-- [ ] Reduce concurrency when block/failure rate rises.
-- [ ] Increase concurrency cautiously after a stable success window.
+- [x] Reduce concurrency when block/failure rate rises.
+- [x] Increase concurrency cautiously after a stable success window.
 - [ ] Reduce browser count or pages per browser when RAM pressure rises.
 - [x] Pause new tasks when disk space becomes low.
 - [ ] Retry failed pages with another proxy or a fresh browser context.
 - [ ] Restart crashed browser processes automatically.
 - [ ] Pause the job when all proxies fail and resume after recovery.
 - [ ] Adjust website timeout using recent response history.
-- [ ] Display every automatic change and the reason it occurred.
+- [x] Display every automatic change and the reason it occurred.
 
 ## 21 Checkpoints and Recovery
 
@@ -594,13 +594,13 @@ Last updated: 2026-08-19
 
 ### Endpoint groups
 
-- [ ] **Jobs:** Create, validate, start, pause, resume, cancel, delete, duplicate, status, progress, checkpoints, and logs.
-- [ ] **Results:** List, search, filter, retrieve, edit, tag, deduplicate, enrich, and bulk actions.
+- [x] **Jobs:** Create, validate, start, pause, resume, cancel, delete, duplicate, status, progress, checkpoints, and logs.
+- [x] **Results:** List, search, filter, retrieve, edit, tag, deduplicate, enrich, and bulk actions.
 - [x] **Maps:** Saved areas, grid preview, cell status, and geographic result queries.
-- [ ] **Proxies:** Import, test, pool, enable/disable, health, and usage.
-- [ ] **Schedules:** Create, update, enable, disable, run now, and history.
+- [x] **Proxies:** Import, test, pool, enable/disable, health, and usage.
+- [x] **Schedules:** Create, update, enable, disable, run now, and history.
 - [ ] **Exports:** Create, status, list, download, repeat, and delete.
-- [ ] **System:** Health, resource metrics, database statistics, version, maintenance, and diagnostics.
+- [x] **System:** Health, resource metrics, database statistics, version, maintenance, and diagnostics.
 
 ### API experience
 
@@ -627,9 +627,9 @@ Last updated: 2026-08-19
 
 ### Possible Ollama-powered features
 
-- [ ] Generate keyword and category variations.
+- [x] Generate keyword and category variations.
 - [ ] Convert a natural-language request into a scrape configuration.
-- [ ] Convert natural language into result filters.
+- [x] Convert natural language into result filters.
 - [ ] Classify businesses and website quality.
 - [ ] Explain quality scores and duplicate matches.
 - [ ] Summarize business descriptions or change history.
@@ -672,7 +672,7 @@ Last updated: 2026-08-19
 
 ### System information
 
-- [ ] Application, scraper, database, Go, and browser versions.
+- [x] Application, scraper, database, Go, and browser versions.
 - [ ] CPU, RAM, disk, database size, queue length, active browsers/pages, running jobs, log size, screenshot storage, and export storage.
 - [ ] Worker heartbeat, last successful browser launch, last database write, and proxy-pool status.
 
@@ -687,8 +687,8 @@ Last updated: 2026-08-19
 - [ ] Browser can launch.
 - [x] Internet reachable.
 - [x] Maps page reachable.
-- [ ] Proxy credentials accepted.
-- [ ] Sufficient disk and memory.
+- [x] Proxy credentials accepted.
+- [x] Sufficient disk and memory.
 - [x] Scheduled worker active.
 
 ## 28 Settings and Preferences
@@ -697,12 +697,12 @@ Last updated: 2026-08-19
 
 ### Scraping defaults
 
-- [ ] Language, location, zoom, depth, runtime, concurrency, browser-pool size, pages per browser, enrichment, reviews, browser visibility, and proxy pool.
+- [x] Language, location, zoom, depth, runtime, concurrency, browser-pool size, pages per browser, enrichment, reviews, browser visibility, and proxy pool.
 
 ### Storage and retention
 
 - [ ] Data, export, screenshot, log, backup, and temporary directories.
-- [ ] Maximum storage, automatic cleanup, number of backups, and record/version retention.
+- [x] Maximum storage, automatic cleanup, number of backups, and record/version retention.
 
 ### Privacy and appearance
 
@@ -713,7 +713,7 @@ Last updated: 2026-08-19
 
 - [ ] Section complete and verified against the specification.
 - [x] Bind the native server and published Compose port to 127.0.0.1 by default and warn clearly for wildcard server binds.
-- [ ] Optional local login with strong password hashing and session timeout.
+- [x] Optional local login with strong password hashing and session timeout.
 - [ ] CSRF protection, secure cookies, API-key protection, and local rate limiting.
 - [x] Encrypt proxy URLs/passwords with AES-256-GCM under a separate local key; no other secret setting is currently stored.
 - [x] Mask credentials and tokens in the implemented UI, errors, lifecycle/proxy logs, and exports.
@@ -909,3 +909,14 @@ Last updated: 2026-08-19
 - 2026-08-20: Implemented duplicate review and bulk delete, the two Results controls that were rendered but permanently capability-gated off. Merging is non-destructive: the merged record keeps its row, versions and provenance, its source observations and per-job links move to the surviving record, and a reversible snapshot plus an audit entry record the decision. Keep-both writes a permanent non-match rule so the pair is never suggested again. Deleting is a reversible soft delete that hides a record from results and exports without touching its evidence, and a restore action brings it back.
 - 2026-08-20: Verified on a copy of the live workspace: schema migrated v7 to v8 cleanly, and merging a real candidate pair took the visible result count from 36 to 35 while the stored business and source counts both stayed at 36, which is the non-destructive guarantee in practice.
 - 2026-08-20: Implemented job rename, archive/restore and notes, completing the job-control set (start, pause, resume, cancel, delete, archive, rename, duplicate, restart). All three are metadata-only and never touch lifecycle state, task plan or result file, verified by asserting the runtime state and its version are unchanged by a rename. Archiving is refused while a job is still active so live work cannot be hidden, archived jobs leave the default queue view behind a "Show archived" toggle, and every change is audited. Ownership labels, job tags and folders remain unimplemented, so the tags/folders/notes line stays unticked.
+- 2026-08-20: High-throughput completion pass across six parallel subsystem worktrees plus a core batch, all merged and gated together.
+- 2026-08-20: Schedules gained the replace overlap policy (cancels the still-active job before queueing), bounded retries with backoff (0-10 extra attempts, 10-3600s, attempt tracked per run), PUT /api/v1/schedules/{id}, GET /api/v1/schedules/{id}/runs, automatic export after a completed run in any advertised format, and per-schedule run retention.
+- 2026-08-20: The wizard gained reusable keyword sets (durable, upsert-by-name, use-counted), include/exclude keyword filters with an explicit apply step, a category x location combination generator with a client-side locations file, and scrape defaults for location label/coordinates and a default proxy pool.
+- 2026-08-20: Results gained manual field edits (name, phone, website, category) that require a reason, record operator/date/reason to field_provenance as source_type manual_edit, refresh the derived normalized columns through the import normalisers, and write change and audit rows in one transaction.
+- 2026-08-20: Import now flags suspicious placeholder phones/websites/emails without dropping data, social profile URLs shed tracking parameters, and country names plus Canadian provinces normalise conservatively (unknown input passes through unchanged).
+- 2026-08-20: The Map Explorer gained a results-density heat layer and failed/empty coverage shading built only from vendored Leaflet primitives, with legends and text labels so colour is never the only signal.
+- 2026-08-20: The dashboard charts enabled-proxy latency buckets and per-pool reliability; the System page shows the browser-automation module version; the self-test gained browser-runtime presence and proxy-credential checks (network-gated, side-effect free).
+- 2026-08-20: Adaptive performance now also reacts to the task failure rate: a window with at least half failures halves the budget and only a fully clean window recovers one step, so decay always outpaces recovery; every change is recorded with its reason.
+- 2026-08-20: Retention is executed, not just stored: manual backups beyond the count, version snapshots beyond their window (each business keeps its newest), and oldest exports when a storage cap is exceeded; runs at worker start and on demand. A test proves pre-migration safety copies are never candidates.
+- 2026-08-20: Optional local login: bcrypt password in settings, in-memory sessions with configurable timeout, per-address rate limiting, session invalidation on credential change, API-key path preserved for API clients; disabled by default so loopback behaviour is unchanged.
+- 2026-08-20: Starter content seeds once into an empty workspace: five starter templates and six example saved views, all validated through the real service paths. POST /api/v1/jobs/validate provides create-identical dry-run validation. Disabled proxies can be batch-retested and healthy ones re-enabled. Onboarding checks disk capacity.

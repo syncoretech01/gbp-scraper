@@ -1,7 +1,7 @@
 # Local upgrade: implemented scope and technical limitations
 
 Last reconciled with `Google_Maps_Scraper_Local_Improvement_Specification.md`:
-2026-08-19.
+2026-08-20.
 
 This document is the authoritative boundary for specification items that are
 not implemented in this local build. A menu item or button is not displayed
@@ -94,20 +94,21 @@ The build provides the following working paths:
   speed series therefore counts the warning and error worker events that are
   genuinely recorded (low disk, adaptive concurrency changes, task errors) and
   is labelled as warnings rather than blocks.
-- Proxy latency and reliability distribution charts are not implemented; the
-  dashboard shows pool totals and health counts only.
+- The dashboard charts enabled-proxy latency buckets and per-pool reliability
+  percentages. A time-series latency history is not kept.
 - The storage tile reports database, export, and log sizes plus remaining free
   disk. Screenshot storage is always zero because nothing captures screenshots.
 
 ### 04: New Scrape Wizard
 
-- No business-category taxonomy, category picker, or reusable category groups.
-- No include/exclude keyword expression builder; queries are plain lines.
-- No category x location combination generator, and no reusable keyword-set
-  entity — only whole-job templates.
-- No multi-city selection and no location file upload. Drawing happens on the
-  Map Explorer and reaches the wizard as a saved-area snapshot; there is no map
-  canvas inside the wizard itself.
+- No business-category taxonomy or curated category picker; the combination
+  generator takes free-text category lines instead.
+- Include/exclude keyword filters, a category x location combination generator
+  with a locations file (TXT/CSV, first column), and reusable named keyword
+  sets are implemented. Filters apply on an explicit step and everything
+  resolves to plain query lines, so engine compatibility is untouched.
+- Drawing happens on the Map Explorer and reaches the wizard as a saved-area
+  snapshot; there is no map canvas inside the wizard itself.
 - No per-field selection UI. Extended Maps fields (popular times, images,
   reservations, ordering links, menus, owner information, reviews) are retained
   inside `businesses.raw_json` but are not individually selectable, normalized
@@ -123,8 +124,10 @@ The build provides the following working paths:
 
 ### 05: Map Explorer
 
-- Heatmaps for result density, failed cells, empty cells, and duplicate-heavy
-  cells are not implemented.
+- Heat layers exist for result density (screen-space buckets over the loaded
+  results) and for failed and empty coverage cells, rendered with vendored
+  Leaflet primitives only. A duplicate-heavy-cells heat layer is not
+  implemented because per-cell duplicate counts are not recorded.
 - Individual cells cannot be resized or grouped. Cell geometry is derived
   deterministically from one cell-size input; cells can be selected, excluded,
   and rescraped, but not edited.
@@ -164,8 +167,11 @@ The build provides the following working paths:
   Column resize, reorder, freeze, grouping, and selected-row copy helpers are
   implemented in the browser; the saved layout lives in local storage and is not
   part of a saved view, which stores only the search.
-- Inline editing covers the reviewed flag and per-record notes. No other field
-  is editable from the table.
+- Inline editing covers the reviewed flag, per-record notes, and — through the
+  record drawer — manual edits of name, phone, website, and category, each
+  requiring a reason and recorded with operator, date, and previous value as
+  manual-edit provenance. Other fields are not editable, and there is no
+  spreadsheet-style cell editing in the table itself.
 - The normalized result row omits description, street, plus code, phone type,
   per-email type/status, the individual social platforms, ratings breakdown,
   user reviews, and popular times. Some of these exist in the detail drawer or
@@ -197,9 +203,10 @@ The build provides the following working paths:
   normalization are implemented. Registrable-domain/public-suffix resolution,
   full international address standardisation, phone type, and category ontology
   mapping are not comprehensive. `normalizeState` handles US state names only.
-- Suspicious placeholder values and mismatched domains are not flagged. Social
-  URL cleanup removes share/intent forms and fragments but not query tracking
-  parameters.
+- Suspicious placeholder phones, websites, and emails are flagged at import
+  without dropping data. Email/website domain mismatch is used only as a
+  relevance signal, not surfaced as a flag. Social URL cleanup removes
+  share/intent forms, fragments, and common tracking parameters.
 
 ### 12-16: email, website analysis, scoring, provenance, changes
 
@@ -225,31 +232,32 @@ The build provides the following working paths:
 - Provenance covers core normalized fields, every raw source observation, and
   website-sourced contacts. Four of seven source types are emitted
   (`google_maps_csv`, `website_homepage`, `website_contact`, `website_about`);
-  footer and manual-edit source types are never written, and the operator and
-  edit-reason columns are read and rendered but never populated because no
-  manual field edit exists. Source grid cell is not populated for real jobs.
+  the footer source type is never written. Manual edits populate the operator
+  and edit-reason columns. Source grid cell is not populated for real jobs.
   Field-by-field rollback is not implemented.
 - Change tracking records new businesses, changed fields, website active/
   inactive transitions, domain redirects, and newly discovered contacts, and
-  change data can be included in exports. Listing removal, closure, and reopen
-  detection are not implemented. There are no incremental-only scrape modes of
-  any kind, no threshold alerts, and no version-retention setting.
+  change data can be included in exports. Version retention is configurable and
+  executed (each business always keeps its newest snapshot). Listing removal,
+  closure, and reopen detection are not implemented, and there are no
+  incremental-only scrape modes or threshold alerts.
 
 ### 17-18: schedules and reusable configurations
 
-- Schedule overlap policy supports queue and skip; `replace` is absent.
-- Scheduler-level retries with limits and backoff do not exist. Retry count and
-  delay are per-job runner settings.
-- There is no incremental-only mode, no run-on-start toggle, and no schedule- or
-  job-completion export or webhook. Integration delivery fires on manual export
-  creation only.
-- There are no automatic retention rules for old runs, logs, or exports.
-  Artifact cleanup is an operator-triggered System action.
+- Schedule overlap policy supports queue, skip, and replace (replace cancels
+  the still-active job through the ordinary lifecycle control).
+- Scheduler-level retries exist: up to ten extra attempts with a bounded
+  backoff, tracked per run. Auto-export after a completed run is available in
+  every advertised export format; a completion webhook is not wired to
+  schedules (webhooks fire on export creation).
+- There is no incremental-only mode and no run-on-start toggle.
+- Old schedule runs are pruned per-schedule by a configurable retention window.
+  Log-file retention remains an operator-triggered System action.
 - Templates store the full implemented job configuration with tags, folder,
   description, pin, use count, and last use, and support JSON import/export,
-  duplicate, and delete. Parameter placeholders, starter-template seeding,
-  average result count, average duration, and a dedicated rename action are
-  absent.
+  duplicate, and delete. Five starter templates and six example saved views
+  seed once into an empty workspace. Parameter placeholders, average result
+  count, average duration, and a dedicated rename action are absent.
 
 ### 19-21: proxies, adaptive performance, checkpoints
 
@@ -257,12 +265,16 @@ The build provides the following working paths:
   but call no IP-geolocation service, so exit IP and country remain unknown, and
   the slow/rate-limited/auth-failed/offline status taxonomy is not implemented.
 - Least-recently-used, sticky-per-query, sticky-per-cell rotation and per-proxy
-  task caps are not implemented. Disabled-proxy batch retest is manual.
-- Adaptive concurrency reacts to CPU, available memory, and free disk, and every
-  automatic change is recorded as a durable redacted event visible in the
-  monitor. It does **not** react to block or failure rate, has no
-  stable-success-window hysteresis, and reduces scrapemate worker concurrency
-  rather than browser count or pages per browser.
+  task caps are not implemented. Disabled proxies can be batch-retested per
+  pool (up to 50 at a time) and healthy ones are re-enabled; the retest is
+  operator-triggered, not automatic.
+- Adaptive concurrency reacts to CPU, available memory, free disk, and the
+  recent task failure rate: a window where at least half the attempts failed
+  halves the budget, and only a fully clean window recovers one step, so decay
+  always outpaces recovery. Every change is recorded with its reason. Block
+  rate specifically is not measurable (the engine emits no block callback),
+  and adaptation adjusts worker concurrency rather than browser count or pages
+  per browser.
 - Browser-process crash restart, automatic retry with a fresh context or another
   proxy, all-proxies-failed pause/resume, and adaptive website timeout are not
   implemented. `StopReasonProxiesUnavailable` is defined but never emitted.
@@ -284,8 +296,8 @@ The build provides the following working paths:
 
 ### 23-25: API, integrations, and optional AI
 
-- There is no job validate/dry-run endpoint, and no schedule update or
-  run-history endpoint.
+- POST /api/v1/jobs/validate provides create-identical dry-run validation, and
+  schedules have update (PUT) and run-history endpoints.
 - OpenAPI JSON and the Redoc page are served and linked, and cURL/Python/
   JavaScript/Go examples are shown, but neither the document nor the examples
   are exercised by a test.
@@ -294,9 +306,10 @@ The build provides the following working paths:
   another SQLite file is not implemented; those appear only as export formats.
   Google Sheets sync and custom plugin hooks for enrichment, validation,
   scoring, and export are absent.
-- Optional local AI is implemented for the supported task set and stays disabled
-  by default. Its HTTP handlers have no test; coverage stops at prompt
-  construction, endpoint validation, and the transport.
+- Optional local AI is implemented for the supported task set and stays
+  disabled by default; its status/assist handlers are route-tested. Only the
+  keyword-variation and result-filter tasks are exercised end-to-end in the
+  UI; the remaining assist tasks are reachable through the documented API.
 - This remains a loopback-trust API. API keys and the local rate limiter add
   defence in depth, not a remote multi-user boundary.
 
@@ -305,22 +318,28 @@ The build provides the following working paths:
 - SQLite/WAL/FTS5 is the only supported web database. The repository's separate
   CLI database modes are preserved, but the local UI has no PostgreSQL
   deployment or migration path.
-- Retention settings are validated and stored but not executed. Maximum storage,
-  backup count, and version-retention days have no enforcing job.
+- Retention settings are executed: a pass at worker start (and on demand via
+  the API) prunes manual backups beyond the configured count, version
+  snapshots beyond their window, and — when the storage cap is exceeded — the
+  oldest completed exports. Pre-migration safety copies, job CSVs, and the
+  database itself are never retention candidates.
 - Storage paths for data, exports, screenshots, logs, backups, and temporary
   files are configurable and path-contained. The map-tile cache path is fixed
   and there is no browser-profile directory setting.
-- Browser version is not reported. The version panel shows Go, OS, SQLite,
-  schema, and module version.
+- The version panel shows Go, OS, SQLite, schema, module, and the browser
+  automation (Playwright driver module) version.
 - Restart worker and online restore are deliberately absent. Restore is an
   offline procedure: stop the container, preserve the current database, verify
   the chosen backup, and replace `jobs.db`. A live SQLite file swap under active
   workers is unsafe. Proxy restores also require the adjacent
   `.proxy-master-key`; the key is never embedded into database downloads.
 - The self-test checks database readability/writability, output directories,
-  memory, disk, the scheduler heartbeat, and optionally Maps reachability. It
-  does not launch a browser and does not verify proxy credentials.
-- Scraping defaults omit a default location and a default proxy pool.
+  memory, disk, the scheduler heartbeat, browser-runtime presence (driver
+  directory, honestly labelled — only a real scrape proves a launch), and
+  optionally Maps reachability plus one enabled proxy's credentials. It never
+  launches a browser.
+- Scraping defaults include a default location label/coordinates and a default
+  proxy pool alongside the existing engine defaults.
 - Telemetry is hard-disabled and log redaction is implemented. There is no
   clear-browser-profiles action.
 
@@ -335,18 +354,24 @@ The build provides the following working paths:
 - Framing is denied everywhere except `/app/map`, which allows same-origin
   framing only so the Results split view can embed it. Cross-origin framing
   stays blocked on every path.
-- There is no login, password hashing, session, or cookie of any kind. Backups
-  are plain SQLite copies with a SHA-256 checksum; encrypted backups are not
-  implemented. Do not expose this build to an untrusted network without an
-  authenticated reverse proxy and TLS.
+- Optional local login exists: a bcrypt-hashed password stored in settings,
+  in-memory sessions with a configurable timeout (a restart signs everyone
+  out by design), per-address login rate limiting, and full session
+  invalidation on any credential change. While enabled, pages require a
+  session and API requests require an API key. The cookie is HttpOnly and
+  SameSite=Strict but not Secure, because the local app serves plain HTTP.
+  Backups are plain SQLite copies with a SHA-256 checksum; encrypted backups
+  are not implemented. Do not expose this build to an untrusted network
+  without a reverse proxy and TLS.
 - The app includes semantic landmarks, labels, a skip link, focus indicators,
   textual states, ARIA live progress, keyboard navigation, a command palette,
   the full suggested shortcut set, scalable layout, and reduced-motion CSS. It
   does not include an audited WCAG conformance report, a spreadsheet keyboard
   model, skeleton loaders, or tooltips for every advanced term.
-- Onboarding verifies database integrity, data-directory existence, and HTTP
-  binding, and can run a writable-directory/Maps test. It does not launch a
-  browser, exercise proxies, or benchmark CPU/RAM/disk capacity.
+- Onboarding verifies database integrity, data-directory existence, HTTP
+  binding, and free disk capacity (warning under 2 GB), and can run a
+  writable-directory/Maps test. It does not launch a browser or exercise
+  proxies.
 
 ### 31-34: stack, roadmap, acceptance, appendices
 
@@ -437,7 +462,6 @@ the same worktree; the non-race suite runs natively.
 Known test gaps that keep otherwise-working features unchecked in
 `implementation-progress.md`: the maintenance endpoints
 (`cache/clear`, `artifacts/cleanup`, `jobs/stop-all`, `diagnostics/download`,
-`update-info`), the local AI HTTP handlers, the OpenAPI document and Redoc
-route, the template JSON import/export routes, the enrichment change and
-discovery records, the adaptive memory branch, and the map keyword-group
-assignment action.
+`update-info`), the template JSON import/export routes, the enrichment change
+and discovery records, the adaptive memory branch, the map keyword-group
+assignment action, and the export-preset repository methods.
