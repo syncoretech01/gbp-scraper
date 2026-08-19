@@ -104,8 +104,66 @@ func (repo *repo) DashboardAnalytics(ctx context.Context, since time.Time) (web.
 	if analytics.Proxy, err = repo.dashboardProxySummary(ctx); err != nil {
 		return web.DashboardAnalytics{}, err
 	}
+	if analytics.ProxyLatencyBuckets, err = repo.dashboardProxyLatencyBuckets(ctx); err != nil {
+		return web.DashboardAnalytics{}, err
+	}
+	if analytics.ProxyReliability, err = repo.dashboardProxyPoolReliability(ctx); err != nil {
+		return web.DashboardAnalytics{}, err
+	}
 
 	return analytics, nil
+}
+
+// dashboardProxyLatencyBuckets buckets enabled proxies by their most recent
+// latency sample. The newest proxy_health row wins so a stale counter cannot
+// misrepresent a proxy that has degraded; proxies.latency_ms is only a
+// fallback for rows recorded before health sampling existed.
+func (repo *repo) dashboardProxyLatencyBuckets(ctx context.Context) ([]web.DashboardCountPoint, error) {
+	points, err := repo.dashboardCountPoints(ctx, `
+		SELECT CASE
+			WHEN last_latency IS NULL THEN 'Unknown'
+			WHEN last_latency < 200 THEN '<200 ms'
+			WHEN last_latency < 500 THEN '200–499 ms'
+			WHEN last_latency < 1000 THEN '500–999 ms'
+			ELSE '1000+ ms' END AS label,
+			COUNT(*) AS value
+		FROM (
+			SELECT COALESCE(
+				(SELECT proxy_health.latency_ms FROM proxy_health
+					WHERE proxy_health.proxy_id = proxies.id
+					ORDER BY proxy_health.checked_at DESC, proxy_health.id DESC LIMIT 1),
+				proxies.latency_ms) AS last_latency
+			FROM proxies WHERE proxies.enabled = 1
+		)
+		GROUP BY label
+		ORDER BY CASE label WHEN '<200 ms' THEN 1 WHEN '200–499 ms' THEN 2
+			WHEN '500–999 ms' THEN 3 WHEN '1000+ ms' THEN 4 ELSE 5 END`, nil)
+	if err != nil {
+		return nil, fmt.Errorf("read proxy latency buckets: %w", err)
+	}
+
+	return points, nil
+}
+
+// dashboardProxyPoolReliability returns success/(success+failure) per pool as
+// a whole percent. The HAVING clause both bounds the output to pools with real
+// evidence and guards the division against a zero denominator.
+func (repo *repo) dashboardProxyPoolReliability(ctx context.Context) ([]web.DashboardCountPoint, error) {
+	points, err := repo.dashboardCountPoints(ctx, `
+		SELECT proxy_pools.name AS label,
+			CAST(ROUND(100.0 * SUM(proxies.success_count)
+				/ (SUM(proxies.success_count) + SUM(proxies.failure_count))) AS INTEGER) AS value
+		FROM proxy_pools
+		JOIN proxy_pool_members ON proxy_pool_members.pool_id = proxy_pools.id
+		JOIN proxies ON proxies.id = proxy_pool_members.proxy_id
+		GROUP BY proxy_pools.id
+		HAVING SUM(proxies.success_count) + SUM(proxies.failure_count) > 0
+		ORDER BY label LIMIT ?`, dashboardBreakdownLimit)
+	if err != nil {
+		return nil, fmt.Errorf("read proxy pool reliability: %w", err)
+	}
+
+	return points, nil
 }
 
 func (repo *repo) dashboardCountPoints(ctx context.Context, query string, argument any) ([]web.DashboardCountPoint, error) {

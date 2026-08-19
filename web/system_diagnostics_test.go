@@ -2,12 +2,14 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -140,6 +142,140 @@ func TestBoundedDirectorySizeStopsAndHonorsCancellation(t *testing.T) {
 	if _, _, _, err := boundedDirectorySize(cancelled, directory, 100); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled scan error = %v", err)
 	}
+}
+
+func TestPlaywrightModuleVersionReadsBuildMetadata(t *testing.T) {
+	t.Parallel()
+
+	if got := playwrightModuleVersion(nil); got != "not embedded" {
+		t.Fatalf("nil build info version = %q, want fallback", got)
+	}
+
+	info := &debug.BuildInfo{Deps: []*debug.Module{{Path: "github.com/other/dependency", Version: "v1.0.0"}}}
+	if got := playwrightModuleVersion(info); got != "not embedded" {
+		t.Fatalf("unrelated dependency version = %q, want fallback", got)
+	}
+
+	info.Deps = append(info.Deps, &debug.Module{Path: playwrightModulePath, Version: "v0.6100.0"})
+	if got := playwrightModuleVersion(info); got != "playwright-go v0.6100.0" {
+		t.Fatalf("embedded dependency version = %q", got)
+	}
+
+	replaced := &debug.BuildInfo{Deps: []*debug.Module{{
+		Path: playwrightModulePath, Version: "v0.5.0",
+		Replace: &debug.Module{Path: "example.com/fork", Version: "v0.9.9"},
+	}}}
+	if got := playwrightModuleVersion(replaced); got != "playwright-go v0.9.9" {
+		t.Fatalf("replaced dependency version = %q", got)
+	}
+
+	// The system page reads the value through a method on its page data, so the
+	// template lookup keeps compiling and always has something honest to show.
+	if got := (systemPageData{}).BrowserAutomation(); got == "" {
+		t.Fatal("systemPageData.BrowserAutomation() returned an empty string")
+	}
+}
+
+// Template lookups only fail at execution time, so the system page must render
+// with the Browser automation row instead of silently 500ing in production.
+func TestSystemPageTemplateRendersBrowserAutomationVersion(t *testing.T) {
+	t.Parallel()
+
+	repository := &diagnosticJobRepository{}
+	server, err := New(NewService(repository, t.TempDir()), "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	server.renderAppPage(recorder, "system", appPageData{
+		Title: "System", ActiveNav: "system", Theme: "system",
+		Page: systemPageData{},
+	})
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("system page render = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, "Browser automation") {
+		t.Fatal("system page misses the Browser automation version row")
+	}
+	if !strings.Contains(body, browserAutomationVersion()) {
+		t.Fatalf("system page misses the reported driver version %q", browserAutomationVersion())
+	}
+}
+
+// The self-test must always include the browser-runtime and proxy-credential
+// checks, and with no proxies configured neither may fail or reach a network.
+func TestSystemSelfTestReportsBrowserRuntimeAndProxyCredentialChecks(t *testing.T) {
+	repository := &diagnosticJobRepository{snapshot: SystemDatabaseSnapshot{SchemaVersion: 5}}
+	service := NewService(repository, t.TempDir())
+	service.RecordSchedulerHeartbeat(time.Now().UTC())
+	server, err := New(service, "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	probe := &fakeLocalSystemProbe{resources: healthyTestResources()}
+	server.systemProbe = probe
+
+	driverDirectory := t.TempDir()
+	t.Setenv(playwrightDriverPathVariable, driverDirectory)
+
+	report := runDiagnosticsSelfTest(t, server)
+	browser := findSelfTestCheck(t, report, "browser_runtime")
+	if browser.State != "passed" || !strings.Contains(browser.Message, "only a real scrape") {
+		t.Fatalf("browser_runtime with driver directory = %+v", browser)
+	}
+	proxy := findSelfTestCheck(t, report, "proxy_credentials")
+	if proxy.State != "passed" || !strings.Contains(proxy.Message, "No proxies configured") {
+		t.Fatalf("proxy_credentials without proxies = %+v", proxy)
+	}
+	if probe.reachCalls != 0 {
+		t.Fatalf("offline self-test with new checks made %d network calls", probe.reachCalls)
+	}
+
+	// A missing driver directory is a warning that degrades the run, never a failure.
+	t.Setenv(playwrightDriverPathVariable, filepath.Join(driverDirectory, "missing"))
+	report = runDiagnosticsSelfTest(t, server)
+	browser = findSelfTestCheck(t, report, "browser_runtime")
+	if browser.State != "warning" || !strings.Contains(browser.Message, "not found") {
+		t.Fatalf("browser_runtime without driver directory = %+v", browser)
+	}
+	if report.Status != "degraded" {
+		t.Fatalf("self-test status with missing driver = %q, want degraded", report.Status)
+	}
+}
+
+func runDiagnosticsSelfTest(t *testing.T, server *Server) systemSelfTestResponse {
+	t.Helper()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/system/self-test", http.NoBody)
+	server.srv.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("self-test status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		Data systemSelfTestResponse `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode self-test response: %v; body = %s", err, recorder.Body.String())
+	}
+
+	return payload.Data
+}
+
+func findSelfTestCheck(t *testing.T, report systemSelfTestResponse, name string) systemSelfTestCheck {
+	t.Helper()
+
+	for _, check := range report.Checks {
+		if check.Name == name {
+			return check
+		}
+	}
+	t.Fatalf("self-test report has no %q check: %+v", name, report.Checks)
+
+	return systemSelfTestCheck{}
 }
 
 func healthyTestResources() localResourceSnapshot {

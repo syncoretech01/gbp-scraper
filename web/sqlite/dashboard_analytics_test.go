@@ -155,6 +155,111 @@ func TestDashboardJobTrendsAndProxySummaryQuery(t *testing.T) {
 	}
 }
 
+func TestDashboardProxyLatencyBucketsAndPoolReliability(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repository, _, closeRepository := newLocalFeatureRepository(t)
+
+	defer closeRepository()
+
+	primary, imported, err := repository.ImportProxyPool(ctx, "Primary", "round_robin", []string{
+		"http://user:secret@127.0.0.1:8080", // #nosec G101 -- synthetic proxy credential for a local test database.
+		"http://user:secret@127.0.0.1:8081",
+		"http://user:secret@127.0.0.1:8082",
+	})
+	if err != nil || imported != 3 {
+		t.Fatalf("ImportProxyPool(Primary) = %d, %v", imported, err)
+	}
+
+	backup, imported, err := repository.ImportProxyPool(ctx, "Backup", "round_robin", []string{"socks5://10.0.0.1:1080"})
+	if err != nil || imported != 1 {
+		t.Fatalf("ImportProxyPool(Backup) = %d, %v", imported, err)
+	}
+
+	primaries, err := repository.ListProxies(ctx, primary.ID)
+	if err != nil || len(primaries) != 3 {
+		t.Fatalf("ListProxies(Primary) = %+v, %v", primaries, err)
+	}
+
+	backups, err := repository.ListProxies(ctx, backup.ID)
+	if err != nil || len(backups) != 1 {
+		t.Fatalf("ListProxies(Backup) = %+v, %v", backups, err)
+	}
+
+	now := time.Now().UTC()
+	recordSample := func(proxyID, status string, latencyMS int64, checkedAt time.Time) {
+		t.Helper()
+
+		if err := repository.RecordProxyTest(ctx, proxyID, web.ProxyTestResult{
+			Status: status, LatencyMS: &latencyMS, CheckedAt: checkedAt,
+		}); err != nil {
+			t.Fatalf("RecordProxyTest(%s, %s) error = %v", proxyID, status, err)
+		}
+	}
+
+	// Fast proxy: one healthy sample below 200 ms.
+	recordSample(primaries[0].ID, "healthy", 120, now.Add(-2*time.Minute))
+	// Degraded proxy: the newer, slower failing sample must win the bucket.
+	recordSample(primaries[1].ID, "healthy", 850, now.Add(-2*time.Minute))
+	recordSample(primaries[1].ID, "offline", 1200, now.Add(-time.Minute))
+	// primaries[2] is never tested and must land in the Unknown bucket.
+
+	// The backup proxy records only a failure and is then disabled, so it may
+	// not appear in the enabled-only latency buckets but its pool still owns
+	// an honest 0% reliability figure.
+	recordSample(backups[0].ID, "offline", 300, now.Add(-time.Minute))
+	if err := repository.SetProxyEnabled(ctx, backups[0].ID, false); err != nil {
+		t.Fatalf("SetProxyEnabled() error = %v", err)
+	}
+
+	buckets, err := repository.dashboardProxyLatencyBuckets(ctx)
+	if err != nil {
+		t.Fatalf("dashboardProxyLatencyBuckets() error = %v", err)
+	}
+	wantBuckets := []web.DashboardCountPoint{
+		{Label: "<200 ms", Value: 1},
+		{Label: "1000+ ms", Value: 1},
+		{Label: "Unknown", Value: 1},
+	}
+	if len(buckets) != len(wantBuckets) {
+		t.Fatalf("latency buckets = %+v, want %+v", buckets, wantBuckets)
+	}
+	for index, want := range wantBuckets {
+		if buckets[index] != want {
+			t.Fatalf("latency bucket %d = %+v, want %+v", index, buckets[index], want)
+		}
+	}
+
+	reliability, err := repository.dashboardProxyPoolReliability(ctx)
+	if err != nil {
+		t.Fatalf("dashboardProxyPoolReliability() error = %v", err)
+	}
+	// Primary saw 2 successes and 1 failure (67%), Backup only 1 failure (0%);
+	// pools sort by name.
+	wantReliability := []web.DashboardCountPoint{
+		{Label: "Backup", Value: 0},
+		{Label: "Primary", Value: 67},
+	}
+	if len(reliability) != len(wantReliability) {
+		t.Fatalf("pool reliability = %+v, want %+v", reliability, wantReliability)
+	}
+	for index, want := range wantReliability {
+		if reliability[index] != want {
+			t.Fatalf("pool reliability %d = %+v, want %+v", index, reliability[index], want)
+		}
+	}
+
+	analytics, err := repository.DashboardAnalytics(ctx, now.AddDate(0, 0, -30))
+	if err != nil {
+		t.Fatalf("DashboardAnalytics() error = %v", err)
+	}
+	if len(analytics.ProxyLatencyBuckets) != len(wantBuckets) || len(analytics.ProxyReliability) != len(wantReliability) {
+		t.Fatalf("analytics projection: latency = %+v, reliability = %+v",
+			analytics.ProxyLatencyBuckets, analytics.ProxyReliability)
+	}
+}
+
 func assertLabelPresent(t *testing.T, name string, points []web.DashboardCountPoint, want string) {
 	t.Helper()
 

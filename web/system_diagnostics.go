@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -22,12 +23,21 @@ const (
 	systemMetricsTimeout       = 5 * time.Second
 	systemSelfTestTimeout      = 12 * time.Second
 	systemNetworkCheckTimeout  = 4 * time.Second
+	systemProxyCheckTimeout    = 10 * time.Second
 	schedulerHeartbeatMaxAge   = 5 * time.Second
 	minimumAvailableMemory     = 256 << 20
 	minimumAvailableDisk       = 512 << 20
 	maximumStorageScanEntries  = 100_000
 	internetReachabilityTarget = "https://www.google.com/generate_204"
 	mapsReachabilityTarget     = "https://www.google.com/maps?hl=en"
+
+	// playwrightModulePath is the browser-automation driver module compiled
+	// into release binaries; matches the require line in go.mod.
+	playwrightModulePath = "github.com/mxschmitt/playwright-go"
+
+	// playwrightDriverPathVariable mirrors the override the playwright-go
+	// runtime itself honours when locating its driver installation.
+	playwrightDriverPathVariable = "PLAYWRIGHT_DRIVER_PATH"
 )
 
 // ErrSystemDiagnosticsUnsupported indicates that a repository cannot provide
@@ -348,7 +358,7 @@ func (s *Server) apiSystemSelfTest(w http.ResponseWriter, r *http.Request) {
 	startedAt := time.Now().UTC()
 	report := systemSelfTestResponse{
 		Status: "passed", NetworkRequested: includeNetwork, StartedAt: startedAt,
-		Checks: make([]systemSelfTestCheck, 0, 8),
+		Checks: make([]systemSelfTestCheck, 0, 10),
 	}
 	addCheck := func(check systemSelfTestCheck) {
 		report.Checks = append(report.Checks, check)
@@ -414,6 +424,8 @@ func (s *Server) apiSystemSelfTest(w http.ResponseWriter, r *http.Request) {
 		Message: "Scheduler heartbeat is " + heartbeat.Status,
 	})
 
+	addCheck(browserRuntimeCheck(time.Now()))
+
 	for _, target := range []struct {
 		name string
 		url  string
@@ -428,8 +440,148 @@ func (s *Server) apiSystemSelfTest(w http.ResponseWriter, r *http.Request) {
 		addCheck(s.runReachabilityCheck(ctx, target.name, target.url))
 	}
 
+	addCheck(s.proxyCredentialsCheck(ctx, includeNetwork, time.Now()))
+
 	report.DurationMS = time.Since(startedAt).Milliseconds()
 	renderJSON(w, http.StatusOK, localAPIEnvelope{Data: report})
+}
+
+// BrowserAutomation reports the compiled-in Playwright driver module version
+// for the versions panel on the system page. The method lives here so the
+// version logic stays beside the other diagnostics probes.
+func (systemPageData) BrowserAutomation() string {
+	return browserAutomationVersion()
+}
+
+func browserAutomationVersion() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "not embedded"
+	}
+
+	return playwrightModuleVersion(info)
+}
+
+// playwrightModuleVersion extracts the playwright-go dependency version from
+// build metadata. It reports "not embedded" when the running binary was built
+// without the module (for example a trimmed test binary) rather than guessing.
+func playwrightModuleVersion(info *debug.BuildInfo) string {
+	if info == nil {
+		return "not embedded"
+	}
+	for _, dependency := range info.Deps {
+		if dependency == nil || dependency.Path != playwrightModulePath {
+			continue
+		}
+		version := dependency.Version
+		if dependency.Replace != nil && dependency.Replace.Version != "" {
+			version = dependency.Replace.Version
+		}
+		if version == "" {
+			break
+		}
+
+		return "playwright-go " + version
+	}
+
+	return "not embedded"
+}
+
+// browserRuntimeCheck reports whether a Playwright driver installation looks
+// present on disk. It never fails hard: a missing directory is only a warning
+// because the driver downloads on first use, and a present directory is still
+// no proof a browser launches — only a real scrape demonstrates that.
+func browserRuntimeCheck(started time.Time) systemSelfTestCheck {
+	location, found := playwrightDriverDirectory()
+	if location == "" {
+		return newSystemCheck("browser_runtime", "warning",
+			"Playwright driver not found: no user cache directory is available; only a real scrape proves a browser launch", started)
+	}
+	if found {
+		return newSystemCheck("browser_runtime", "passed",
+			"Playwright driver present at "+location+"; only a real scrape proves a browser actually launches", started)
+	}
+
+	return newSystemCheck("browser_runtime", "warning",
+		"Playwright driver not found at "+location+"; it is installed on the first scrape, and only a real scrape proves a browser launch", started)
+}
+
+// playwrightDriverDirectory returns the most authoritative driver location and
+// whether it exists: an explicit PLAYWRIGHT_DRIVER_PATH override, otherwise
+// the playwright-go cache directories under the user cache dir.
+func playwrightDriverDirectory() (string, bool) {
+	if override := strings.TrimSpace(os.Getenv(playwrightDriverPathVariable)); override != "" {
+		return override, directoryExists(override)
+	}
+	cacheDirectory, err := os.UserCacheDir()
+	if err != nil {
+		return "", false
+	}
+	candidates := []string{
+		filepath.Join(cacheDirectory, "ms-playwright-go"),
+		filepath.Join(cacheDirectory, "ms-playwright"),
+	}
+	for _, candidate := range candidates {
+		if directoryExists(candidate) {
+			return candidate, true
+		}
+	}
+
+	return candidates[0], false
+}
+
+// proxyCredentialsCheck verifies that at least one enabled proxy still accepts
+// its stored credentials. It tests exactly one proxy with a bounded context so
+// a large pool cannot stall the self-test, and it respects the offline-first
+// contract: with the network not requested the live test is skipped honestly.
+func (s *Server) proxyCredentialsCheck(ctx context.Context, includeNetwork bool, started time.Time) systemSelfTestCheck {
+	proxies, err := s.svc.ListProxies(ctx, "")
+	if errors.Is(err, ErrProxyStoreUnsupported) || (err == nil && len(proxies) == 0) {
+		return newSystemCheck("proxy_credentials", "passed",
+			"No proxies configured; scrapes use the direct connection", started)
+	}
+	if err != nil {
+		return newSystemCheck("proxy_credentials", "warning",
+			"Could not read the local proxy configuration: "+redactedDiagnosticError(err), started)
+	}
+	var candidate *ProxyRecord
+	for index := range proxies {
+		if proxies[index].Enabled {
+			candidate = &proxies[index]
+			break
+		}
+	}
+	if candidate == nil {
+		return newSystemCheck("proxy_credentials", "passed",
+			"No proxies configured; every stored proxy is disabled, so scrapes use the direct connection", started)
+	}
+	if !includeNetwork {
+		return newSystemCheck("proxy_credentials", "skipped",
+			"Enabled proxies exist, but the credential test needs the network self-test; run it with internet checks included", started)
+	}
+	secret, err := s.svc.GetProxySecret(ctx, candidate.ID)
+	if err != nil {
+		return newSystemCheck("proxy_credentials", "warning",
+			"Could not decrypt the stored proxy URL for "+candidate.MaskedURL+": "+redactedDiagnosticError(err), started)
+	}
+	proxyContext, cancel := context.WithTimeout(ctx, systemProxyCheckTimeout)
+	defer cancel()
+	result := checkProxyAccess(proxyContext, secret)
+	if result.Status == "healthy" || result.Status == "slow" {
+		message := fmt.Sprintf("Proxy %s accepted its credentials (status %s)", candidate.MaskedURL, result.Status)
+		if result.LatencyMS != nil {
+			message += fmt.Sprintf(" in %d ms", *result.LatencyMS)
+		}
+
+		return newSystemCheck("proxy_credentials", "passed",
+			message+"; only a real scrape proves end-to-end proxy access", started)
+	}
+	message := fmt.Sprintf("Proxy %s test returned status %s", candidate.MaskedURL, result.Status)
+	if result.Error != "" {
+		message += ": " + redactedDiagnosticError(errors.New(result.Error))
+	}
+
+	return newSystemCheck("proxy_credentials", "warning", message, started)
 }
 
 func (s *Server) schedulerHeartbeatView(now time.Time) schedulerHeartbeatView {
