@@ -301,6 +301,69 @@
             " new queries" + (result.skipped ? ", skipped " + result.skipped + " duplicates" : "") + ".");
     }
 
+    // generateGBPQueries asks the local prospecting API for ZIP x synonym
+    // coverage queries and merges them into the keywords list. The returned
+    // centre only replaces the map centre while it is still empty or at the
+    // San Francisco example default, so a deliberate location is never lost.
+    async function generateGBPQueries(trigger) {
+        const stateInput = wizard.querySelector("[data-gbp-state]");
+        const cityInput = wizard.querySelector("[data-gbp-city]");
+        const topNInput = wizard.querySelector("[data-gbp-top-n]");
+        const synonymsInput = wizard.querySelector("[data-gbp-synonyms]");
+        const zipsInput = wizard.querySelector("[data-gbp-zips-file]");
+        const state = stateInput ? stateInput.value.trim() : "";
+        const synonyms = lines(synonymsInput && synonymsInput.value);
+        if (state.length !== 2) { setStatus("[data-gbp-status]", "Enter the 2-letter state code first."); return; }
+        if (!synonyms.length) { setStatus("[data-gbp-status]", "Add at least one category synonym."); return; }
+        const body = new FormData();
+        body.set("state", state);
+        body.set("city", cityInput ? cityInput.value.trim() : "");
+        body.set("top_n", topNInput && topNInput.value ? topNInput.value : "25");
+        body.set("synonyms", synonyms.join("\n"));
+        const zipFile = zipsInput && zipsInput.files && zipsInput.files[0];
+        if (zipFile) {
+            if (zipFile.size > 2 * 1024 * 1024) { setStatus("[data-gbp-status]", "The ZIP CSV must be 2 MB or smaller."); return; }
+            body.set("zips_csv", zipFile);
+        }
+        trigger.disabled = true;
+        setStatus("[data-gbp-status]", "Generating coverage queries…");
+        try {
+            const response = await fetch("/api/v1/prospects/queries", {
+                method: "POST",
+                credentials: "same-origin",
+                headers: { "Accept": "application/json", "X-CSRF-Token": value("csrf_token", "") },
+                body: body
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error((payload.error && payload.error.message) || "Could not generate coverage queries");
+            const data = payload.data || {};
+            const queries = Array.isArray(data.queries) ? data.queries : [];
+            if (!queries.length) throw new Error("No queries were generated for that state and city");
+            const result = appendUniqueLines(queries);
+            const centre = Array.isArray(data.centre) ? data.centre : [];
+            if (centre.length === 2 && Number.isFinite(Number(centre[0])) && Number.isFinite(Number(centre[1]))) {
+                const latitudeField = field("latitude");
+                const longitudeField = field("longitude");
+                const sfDefault = (latitudeField && (latitudeField.value === "" || latitudeField.value === "37.7749")) &&
+                    (longitudeField && (longitudeField.value === "" || longitudeField.value === "-122.4194"));
+                if (sfDefault) {
+                    latitudeField.value = String(centre[0]);
+                    longitudeField.value = String(centre[1]);
+                    updatePreview();
+                }
+            }
+            const zipCount = Number(data.zip_count) || 0;
+            setStatus("[data-gbp-status]", queries.length + " queries across " + zipCount + " ZIPs; added " + result.added +
+                " new" + (result.skipped ? ", skipped " + result.skipped + " duplicates" : "") + ".");
+            notify("GBP coverage queries added.", "success");
+        } catch (error) {
+            setStatus("[data-gbp-status]", error.message || "Could not generate coverage queries.");
+            notify(error.message || "Could not generate coverage queries.", "error");
+        } finally {
+            trigger.disabled = false;
+        }
+    }
+
     async function generateLocalAIKeywords(trigger) {
         const input = wizard.querySelector("[data-local-ai-input]");
         const status = wizard.querySelector("[data-local-ai-status]");
@@ -348,6 +411,7 @@
         else if (trigger.dataset.action === "save-keyword-set") { event.preventDefault(); saveKeywordSet(trigger); }
         else if (trigger.dataset.action === "apply-keyword-filters") { event.preventDefault(); applyKeywordFilters(); }
         else if (trigger.dataset.action === "generate-combinations") { event.preventDefault(); generateCombinations(); }
+        else if (trigger.dataset.action === "generate-gbp-queries") { event.preventDefault(); generateGBPQueries(trigger); }
     });
 
     wizard.addEventListener("change", (event) => {

@@ -609,3 +609,28 @@ html[data-reduced-motion="true"] *, html[data-reduced-motion="true"] *::before, 
 .heat-duplicate-2 { background: #c3a2e4; }
 .heat-duplicate-3 { background: #9f66d3; }
 .heat-duplicate-4 { background: #6d3aa8; }
+
+/* GBP prospecting badges. Each badge ALWAYS carries its text label (the
+   taxonomy value or tier letter); colour is reinforcement, never the only
+   signal. Status suffixes are the lowercased taxonomy with "_" -> "-". */
+.prospect-badge { display: inline-flex; align-items: center; gap: .35rem; padding: .22rem .52rem; border-radius: 2rem; font-size: .74rem; font-weight: 750; white-space: nowrap; background: var(--surface-muted); color: var(--text-muted); }
+.prospect-no-website { background: var(--danger-soft, #fbe3e5); color: var(--danger, #9c2130); }
+.prospect-dead { background: var(--danger-soft, #fbe3e5); color: var(--danger, #9c2130); }
+.prospect-ssl-broken { background: var(--danger-soft, #fbe3e5); color: var(--danger, #9c2130); }
+.prospect-parked { background: var(--warning-soft, #fdf0dc); color: var(--warning, #8a5a13); }
+.prospect-social-only { background: var(--warning-soft, #fdf0dc); color: var(--warning, #8a5a13); }
+.prospect-free-builder { background: var(--purple-soft, #ece2f7); color: var(--purple, #6d3aa8); }
+.prospect-no-https { background: var(--purple-soft, #ece2f7); color: var(--purple, #6d3aa8); }
+.prospect-live { background: var(--success-soft, #e0f2e6); color: var(--success, #1c7a3d); }
+
+/* Worth-calling tiers: A is hottest, F is coldest. */
+.prospect-tier-a { background: var(--success-soft, #e0f2e6); color: var(--success, #1c7a3d); }
+.prospect-tier-b { background: var(--primary-soft, #e3ecfb); color: var(--primary, #1d4ea8); }
+.prospect-tier-c { background: var(--purple-soft, #ece2f7); color: var(--purple, #6d3aa8); }
+.prospect-tier-d { background: var(--warning-soft, #fdf0dc); color: var(--warning, #8a5a13); }
+.prospect-tier-e { background: var(--warning-soft, #fdf0dc); color: var(--warning, #8a5a13); }
+.prospect-tier-f { background: var(--surface-muted, #eceff3); color: var(--text-muted, #536278); }
+
+/* Prospecting settings editors on the Settings page. */
+.prospect-editor { display: grid; gap: .65rem; }
+.prospect-editor h3 { margin: 0; }

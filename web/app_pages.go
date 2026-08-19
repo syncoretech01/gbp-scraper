@@ -67,6 +67,26 @@ type dashboardPageData struct {
 	ProxyLatency     []dashboardChartPoint
 	ProxyReliability []dashboardChartPoint
 	RecentJobs       []dashboardJob
+	Prospects        dashboardProspectSummary
+}
+
+// dashboardProspectSummary feeds the Prospecting card: stored GBP website
+// statuses, worth-calling tiers, and the scored total. Supported stays false
+// when the repository cannot serve prospect signals so the card is skipped
+// silently instead of rendering dead controls.
+type dashboardProspectSummary struct {
+	Supported bool
+	Scored    int
+	ByStatus  []dashboardProspectPoint
+	ByTier    []dashboardProspectPoint
+}
+
+// dashboardProspectPoint pairs one taxonomy label with its count and a
+// CSS-safe badge state.
+type dashboardProspectPoint struct {
+	Label string
+	State string
+	Value int
 }
 
 type dashboardMetrics struct {
@@ -149,6 +169,9 @@ type newScrapePageData struct {
 	// so a legacy database shows no dead buttons.
 	KeywordSets          []KeywordSet
 	KeywordSetsSupported bool
+	// ProspectQueriesSupported gates the step-1 GBP prospecting coverage
+	// generator so a repository without prospect support shows no dead form.
+	ProspectQueriesSupported bool
 	// DefaultProxyPoolID preselects the operator's default pool in step 6.
 	DefaultProxyPoolID string
 }
@@ -356,7 +379,7 @@ func (s *Server) newScrapePage(w http.ResponseWriter, r *http.Request) {
 		Theme:     "system",
 		CSRFToken: s.csrfToken,
 		Activity:  activity,
-		Page: newScrapePageData{Defaults: defaults, LocalAI: localAI, Initial: initial, TemplateID: templateID, ProxyPools: proxyOptions, DefaultProxyPoolID: defaultProxyPoolID, SavedAreas: savedAreas, KeywordSets: keywordSets, KeywordSetsSupported: keywordSetsSupported, FieldGroups: scrapeFieldGroups{Business: []scrapeFieldOption{
+		Page: newScrapePageData{Defaults: defaults, LocalAI: localAI, Initial: initial, TemplateID: templateID, ProxyPools: proxyOptions, DefaultProxyPoolID: defaultProxyPoolID, SavedAreas: savedAreas, KeywordSets: keywordSets, KeywordSetsSupported: keywordSetsSupported, ProspectQueriesSupported: s.svc.SupportsProspects(), FieldGroups: scrapeFieldGroups{Business: []scrapeFieldOption{
 			{Key: "title", Label: "Name", Description: "Business title as shown on Maps.", Selected: true},
 			{Key: "category", Label: "Categories", Description: "Primary and additional categories.", Selected: true},
 			{Key: "status", Label: "Business status", Description: "Open or closed signal where available.", Selected: true},
@@ -577,6 +600,17 @@ func (s *Server) buildDashboard(r *http.Request) (dashboardPageData, appActivity
 		}
 	}
 
+	// The Prospecting card degrades honestly: an unsupported repository skips
+	// the card entirely and a summary error just leaves the empty state.
+	if s.svc.SupportsProspects() {
+		page.Prospects.Supported = true
+		if summary, summaryErr := s.svc.ProspectSummaryData(r.Context()); summaryErr == nil {
+			page.Prospects.Scored = int(summary.Scored)
+			page.Prospects.ByStatus = dashboardProspectPoints(summary.ByStatus)
+			page.Prospects.ByTier = dashboardProspectPoints(summary.ByTier)
+		}
+	}
+
 	if page.Metrics.UniqueBusinesses > 0 {
 		page.Metrics.EmailCoverage = percentage(page.Metrics.Emails, page.Metrics.UniqueBusinesses)
 		page.Metrics.WebsiteCoverage = percentage(page.Metrics.Websites, page.Metrics.UniqueBusinesses)
@@ -628,6 +662,21 @@ func (s *Server) buildDashboard(r *http.Request) (dashboardPageData, appActivity
 	}
 
 	return page, activity, nil
+}
+
+// dashboardProspectPoints labels each taxonomy count with a CSS-safe badge
+// state for the Prospecting card.
+func dashboardProspectPoints(points []DashboardCountPoint) []dashboardProspectPoint {
+	converted := make([]dashboardProspectPoint, 0, len(points))
+	for _, point := range points {
+		converted = append(converted, dashboardProspectPoint{
+			Label: point.Label,
+			State: prospectStateClass(point.Label),
+			Value: int(point.Value),
+		})
+	}
+
+	return converted
 }
 
 func dashboardPoints(points []DashboardCountPoint) []dashboardChartPoint {
