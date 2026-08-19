@@ -563,6 +563,7 @@ html[data-reduced-motion="true"] *, html[data-reduced-motion="true"] *::before, 
     font-size: .85rem;
 }
 
+<<<<<<< HEAD
 .login-body {
     display: flex;
     align-items: center;
@@ -585,3 +586,22 @@ html[data-reduced-motion="true"] *, html[data-reduced-motion="true"] *::before, 
     margin: 0;
     font-size: 1.25rem;
 }
+=======
+/* Map heat layers: result density buckets, failed-cell shading, empty-cell emphasis.
+   The hex values mirror the densityHeatRamp/failedHeatRamp constants in app-map.js. */
+.map-heat-legend { bottom: 3.6rem; flex-direction: column; align-items: flex-start; gap: .25rem; }
+.map-heat-legend[hidden] { display: none; }
+.map-heat-legend .heat-legend-title { font-weight: 700; }
+.heat-swatch { border: 1px solid rgba(16, 24, 40, .25); }
+.heat-density-1 { background: #bcd3f5; }
+.heat-density-2 { background: #6ea0ea; }
+.heat-density-3 { background: #3478e5; }
+.heat-density-4 { background: #1d4ea8; }
+.heat-failed-1 { background: #f3c6cd; }
+.heat-failed-2 { background: #e78d9b; }
+.heat-failed-3 { background: #d44b5c; }
+.heat-failed-4 { background: #9c2130; }
+.heat-empty-cell { background: #e8b45a; }
+.heat-muted-cell { background: #d9dee7; }
+.map-heat-toggle[aria-pressed="true"] { border-color: var(--primary); background: var(--primary-soft); box-shadow: inset 0 0 0 1px var(--primary); }
+>>>>>>> worktree-agent-a157cbd14ce96ec0f

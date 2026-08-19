@@ -21,6 +21,10 @@
     const keywordGroupSelect = explorer.querySelector("[data-map-keyword-group]");
     const cellCount = explorer.querySelector("[data-map-cell-count]");
     const markerCount = explorer.querySelector("[data-map-marker-count]");
+    const heatLegend = explorer.querySelector("[data-map-heat-legend]");
+    const densityHeatButton = explorer.querySelector('[data-action="toggle-density-heat"]');
+    const failedHeatButton = explorer.querySelector('[data-action="toggle-failed-heat"]');
+    const emptyHeatButton = explorer.querySelector('[data-action="toggle-empty-heat"]');
     const csrfToken = explorer.dataset.csrfToken || "";
     const areasEndpoint = explorer.dataset.areasEndpoint || "/api/v1/maps/areas";
     const gridEndpoint = explorer.dataset.gridEndpoint || "/api/v1/maps/grid/preview";
@@ -37,7 +41,21 @@
     let drawnLayers;
     let gridLayers;
     let resultLayers;
+    let heatLayers;
     let liveRefreshTimer = null;
+    let densityHeatOn = false;
+    let lastResultPoints = [];
+    let lastDensityMaximum = 0;
+    const coverageEmphasis = { failed: false, empty: false };
+
+    // Heat ramps are duplicated as .heat-density-*, .heat-failed-*, .heat-empty-cell,
+    // and .heat-muted-cell classes in app.css so the legend swatches always match.
+    const densityHeatRamp = ["#bcd3f5", "#6ea0ea", "#3478e5", "#1d4ea8"];
+    const failedHeatRamp = ["#f3c6cd", "#e78d9b", "#d44b5c", "#9c2130"];
+    const emptyHeatFill = "#e8b45a";
+    const emptyHeatStroke = "#8a6a1c";
+    const mutedHeatFill = "#d9dee7";
+    const mutedHeatStroke = "#aab3c2";
 
     function showStatus(message, tone) {
         if (status) {
@@ -127,9 +145,13 @@
         selectedCells = new Set();
         if (gridLayers) gridLayers.clearLayers();
         if (resultLayers) resultLayers.clearLayers();
+        if (heatLayers) heatLayers.clearLayers();
+        lastResultPoints = [];
+        lastDensityMaximum = 0;
         if (cellCount) cellCount.textContent = "0";
         if (markerCount) markerCount.textContent = "0";
         updateSelectionActions();
+        updateHeatLegend();
     }
 
     function layerShape(layer) {
@@ -294,13 +316,217 @@
             fillColor = value > 0 ? "hsl(" + hues[overlay] + " 72% " + (68 - intensity * 30) + "%)" : "#d9dee7";
             fillOpacity = selected ? 0.64 : (value > 0 ? 0.30 + intensity * 0.45 : 0.14);
         }
-        return {
+        const style = {
             color: selected ? "#101828" : stateColours[state],
             weight: selected ? 3 : 1.5,
             dashArray: selected ? "5 3" : null,
             fillColor: fillColor,
             fillOpacity: fillOpacity
         };
+
+        return applyCoverageEmphasis(cell, style, selected);
+    }
+
+    function heatStep(value, maximum) {
+        const intensity = value / Math.max(1, maximum);
+        if (intensity <= 0.25) return 1;
+        if (intensity <= 0.5) return 2;
+        if (intensity <= 0.75) return 3;
+        return 4;
+    }
+
+    function cellFailureCount(cell) {
+        return Number(cell.failed_tasks || 0) + Number(cell.blocked_tasks || 0);
+    }
+
+    function maximumCellFailures() {
+        if (!lastPreview || !Array.isArray(lastPreview.cells)) return 0;
+        return lastPreview.cells.reduce((maximum, cell) => Math.max(maximum, cellFailureCount(cell)), 0);
+    }
+
+    function applyCoverageEmphasis(cell, style, selected) {
+        if (!coverageEmphasis.failed && !coverageEmphasis.empty) return style;
+        const failures = cellFailureCount(cell);
+        if (coverageEmphasis.failed && failures > 0) {
+            const step = heatStep(failures, maximumCellFailures());
+            style.fillColor = failedHeatRamp[step - 1];
+            style.fillOpacity = selected ? 0.68 : 0.32 + step * 0.09;
+            if (!selected) style.color = failedHeatRamp[3];
+            return style;
+        }
+        if (coverageEmphasis.empty && cell.empty) {
+            style.fillColor = emptyHeatFill;
+            style.fillOpacity = selected ? 0.68 : 0.55;
+            if (!selected) style.color = emptyHeatStroke;
+            return style;
+        }
+        style.fillColor = mutedHeatFill;
+        style.fillOpacity = selected ? 0.4 : 0.08;
+        if (!selected) style.color = mutedHeatStroke;
+        return style;
+    }
+
+    function restyleGridCells() {
+        if (!gridLayers) return;
+        gridLayers.eachLayer((layer) => {
+            if (layer._gosomCell) layer.setStyle(cellStyle(layer._gosomCell, selectedCells.has(layer._gosomCell.id)));
+        });
+    }
+
+    function coverageEvidenceAvailable() {
+        return Boolean(lastPreview && Array.isArray(lastPreview.cells) && lastPreview.cells.some((cell) =>
+            Number(cell.task_count || 0) > 0 || Number(cell.result_count || 0) > 0));
+    }
+
+    function setCoverageEmphasis(kind, button) {
+        const next = !coverageEmphasis[kind];
+        if (next && !coverageEvidenceAvailable()) {
+            showStatus("No durable coverage evidence is loaded yet. Choose a source job and refresh coverage, then enable heat shading.", "warning");
+            return;
+        }
+        coverageEmphasis[kind] = next;
+        if (button) button.setAttribute("aria-pressed", next ? "true" : "false");
+        restyleGridCells();
+        updateHeatLegend();
+        if (!next) {
+            showStatus(kind === "failed" ? "Failed-cell heat shading off; coverage colours restored." : "Empty-cell emphasis off; coverage colours restored.", "success");
+            return;
+        }
+        const cells = lastPreview && Array.isArray(lastPreview.cells) ? lastPreview.cells : [];
+        if (kind === "failed") {
+            const affected = cells.filter((cell) => cellFailureCount(cell) > 0).length;
+            showStatus(affected > 0
+                ? "Failed-cell heat shading on: " + affected + " cells carry failed or blocked tasks (darker red means more failures)."
+                : "Failed-cell heat shading on: no cells carry failed or blocked tasks, so everything is shown muted grey.", affected > 0 ? "success" : "warning");
+            return;
+        }
+        const affected = cells.filter((cell) => cell.empty).length;
+        showStatus(affected > 0
+            ? "Empty-cell emphasis on: " + affected + " completed cells produced zero results (amber)."
+            : "Empty-cell emphasis on: every completed cell produced at least one result, so everything is shown muted grey.", affected > 0 ? "success" : "warning");
+    }
+
+    function heatLegendRow(swatchClass, label) {
+        const row = document.createElement("span");
+        const swatch = document.createElement("i");
+        swatch.className = "legend-swatch heat-swatch " + swatchClass;
+        row.appendChild(swatch);
+        row.appendChild(document.createTextNode(label));
+        return row;
+    }
+
+    function heatRampRows(prefix, unitSingular, unitPlural, maximum) {
+        const rows = [];
+        let lower = 1;
+        for (let step = 1; step <= 4; step++) {
+            const upper = Math.max(1, Math.ceil(Math.max(1, maximum) * step * 0.25));
+            if (lower > upper) continue;
+            const label = (lower === upper ? String(upper) : lower + "–" + upper) + " " + (upper === 1 ? unitSingular : unitPlural);
+            rows.push(heatLegendRow(prefix + step, label));
+            lower = upper + 1;
+        }
+        return rows;
+    }
+
+    function updateHeatLegend() {
+        if (!heatLegend) return;
+        heatLegend.replaceChildren();
+        const mode = explorer.dataset.mode || "planning";
+        const addSection = function (title, rows) {
+            if (!rows.length) return;
+            const heading = document.createElement("span");
+            heading.className = "heat-legend-title";
+            heading.textContent = title;
+            heatLegend.appendChild(heading);
+            rows.forEach((row) => heatLegend.appendChild(row));
+        };
+        if (mode === "results" && densityHeatOn && lastResultPoints.length) {
+            addSection("Result density per bucket:", heatRampRows("heat-density-", "result", "results", lastDensityMaximum));
+        }
+        if (mode !== "results" && coverageEmphasis.failed) {
+            const rows = heatRampRows("heat-failed-", "failed or blocked task", "failed or blocked tasks", maximumCellFailures());
+            rows.push(heatLegendRow("heat-muted-cell", "no failures (muted)"));
+            addSection("Failed-cell shading:", rows);
+        }
+        if (mode !== "results" && coverageEmphasis.empty) {
+            addSection("Empty-cell emphasis:", [
+                heatLegendRow("heat-empty-cell", "completed with zero results (amber)"),
+                heatLegendRow("heat-muted-cell", "other cells (muted)")
+            ]);
+        }
+        heatLegend.hidden = !heatLegend.childNodes.length;
+    }
+
+    function densityBucketSizeDegrees() {
+        const centre = map.getCenter();
+        const centrePoint = map.latLngToContainerPoint(centre);
+        const shifted = map.containerPointToLatLng(window.L.point(centrePoint.x + 56, centrePoint.y + 56));
+        return {
+            latitude: Math.max(Math.abs(shifted.lat - centre.lat), 0.0001),
+            longitude: Math.max(Math.abs(shifted.lng - centre.lng), 0.0001)
+        };
+    }
+
+    function renderDensityHeat() {
+        if (!heatLayers || !map) return;
+        heatLayers.clearLayers();
+        lastDensityMaximum = 0;
+        if (!densityHeatOn || !lastResultPoints.length) {
+            updateHeatLegend();
+            return;
+        }
+        const size = densityBucketSizeDegrees();
+        const buckets = new Map();
+        lastResultPoints.forEach((point) => {
+            const row = Math.floor(point.latitude / size.latitude);
+            const column = Math.floor(point.longitude / size.longitude);
+            const key = row + ":" + column;
+            const bucket = buckets.get(key) || { row: row, column: column, count: 0 };
+            bucket.count++;
+            buckets.set(key, bucket);
+        });
+        let maximum = 1;
+        buckets.forEach((bucket) => { maximum = Math.max(maximum, bucket.count); });
+        lastDensityMaximum = maximum;
+        buckets.forEach((bucket) => {
+            const step = heatStep(bucket.count, maximum);
+            const colour = densityHeatRamp[step - 1];
+            const rectangle = window.L.rectangle([
+                [bucket.row * size.latitude, bucket.column * size.longitude],
+                [(bucket.row + 1) * size.latitude, (bucket.column + 1) * size.longitude]
+            ], { color: colour, weight: 1, fillColor: colour, fillOpacity: 0.28 + step * 0.11 });
+            rectangle.bindTooltip(bucket.count + (bucket.count === 1 ? " result" : " results") + " in this bucket");
+            heatLayers.addLayer(rectangle);
+        });
+        updateHeatLegend();
+    }
+
+    function syncResultLayerVisibility() {
+        if (!map || !heatLayers) return;
+        if (densityHeatOn) {
+            if (map.hasLayer(resultLayers)) map.removeLayer(resultLayers);
+            if (!map.hasLayer(heatLayers)) map.addLayer(heatLayers);
+            renderDensityHeat();
+        } else {
+            if (map.hasLayer(heatLayers)) map.removeLayer(heatLayers);
+            if (!map.hasLayer(resultLayers)) map.addLayer(resultLayers);
+        }
+    }
+
+    function setDensityHeat(next) {
+        densityHeatOn = next;
+        if (densityHeatButton) densityHeatButton.setAttribute("aria-pressed", next ? "true" : "false");
+        if (explorer.dataset.mode === "results") syncResultLayerVisibility();
+        updateHeatLegend();
+        if (!next) {
+            showStatus("Density heatmap off. Result markers are clustered again.", "success");
+            return;
+        }
+        if (!lastResultPoints.length) {
+            showStatus("Density heatmap is on, but no mapped results are loaded yet. Load results to fill the intensity buckets.", "warning");
+            return;
+        }
+        showStatus("Density heatmap on: " + lastResultPoints.length + " mapped results aggregated (darker blue means more results per bucket).", "success");
     }
 
     function cellTooltip(cell) {
@@ -341,6 +567,7 @@
         });
         if (cellCount) cellCount.textContent = String(visibleCount);
         updateSelectionActions();
+        updateHeatLegend();
     }
 
     function renderPreviewPreservingSelection(preview) {
@@ -580,6 +807,7 @@
             resultLayers.clearLayers();
             const results = Array.isArray(payload.data) ? payload.data : [];
             let plotted = 0;
+            const points = [];
             results.forEach((result) => {
                 const latitude = Number(result.latitude);
                 const longitude = Number(result.longitude);
@@ -587,8 +815,10 @@
                 const marker = window.L.marker([latitude, longitude], { title: result.name || "Business result" });
                 marker.bindPopup(resultPopup(result), { maxWidth: 340 });
                 resultLayers.addLayer(marker);
+                points.push({ latitude: latitude, longitude: longitude });
                 plotted++;
             });
+            lastResultPoints = points;
             if (markerCount) markerCount.textContent = String(plotted);
             setMode("results", false);
             const total = payload.meta && Number.isFinite(Number(payload.meta.total)) ? Number(payload.meta.total) : results.length;
@@ -701,14 +931,16 @@
         explorer.querySelectorAll('input[name="mode"]').forEach((input) => { input.checked = input.value === normalized; });
         if (normalized === "results") {
             if (map.hasLayer(gridLayers)) map.removeLayer(gridLayers);
-            if (!map.hasLayer(resultLayers)) map.addLayer(resultLayers);
+            syncResultLayerVisibility();
             if (load !== false) loadResults().catch(showError);
         } else {
             if (map.hasLayer(resultLayers)) map.removeLayer(resultLayers);
+            if (map.hasLayer(heatLayers)) map.removeLayer(heatLayers);
             if (!map.hasLayer(gridLayers)) map.addLayer(gridLayers);
             if (normalized === "live" && load !== false) loadCoverage(false).catch(showError);
         }
         updateLiveRefresh();
+        updateHeatLegend();
     }
 
     function updateLiveRefresh() {
@@ -757,6 +989,11 @@
         resultLayers = typeof window.L.markerClusterGroup === "function"
             ? window.L.markerClusterGroup({ chunkedLoading: true, showCoverageOnHover: false })
             : window.L.layerGroup();
+        heatLayers = window.L.layerGroup();
+
+        map.on("zoomend", function () {
+            if (densityHeatOn && (explorer.dataset.mode || "") === "results") renderDensityHeat();
+        });
 
         map.addControl(new window.L.Control.Draw({
             position: "topleft",
@@ -824,6 +1061,9 @@
             "keyword-cells": function () { return queueSelectedCells("keyword"); },
             "group-cells": function () { return queueSelectedCells("template"); },
             "load-results": loadResults,
+            "toggle-density-heat": function () { setDensityHeat(!densityHeatOn); },
+            "toggle-failed-heat": function () { setCoverageEmphasis("failed", failedHeatButton); },
+            "toggle-empty-heat": function () { setCoverageEmphasis("empty", emptyHeatButton); },
             "export-results-csv": function () { return exportResults("csv"); },
             "export-results-geojson": function () { return exportResults("geojson"); },
             "draw-polygon": function () { startDrawing("polygon"); },
