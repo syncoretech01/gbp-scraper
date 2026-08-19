@@ -1,8 +1,10 @@
 package web
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/gosom/google-maps-scraper/grid"
 )
@@ -251,4 +253,42 @@ func legacyState(status string) string {
 
 func renderLocalAPIError(w http.ResponseWriter, status int, code, message string) {
 	renderJSON(w, status, localAPIEnvelope{Error: &localAPIError{Code: code, Message: message}})
+}
+
+// apiValidateJob is the dry-run counterpart of POST /api/v1/jobs: it applies
+// exactly the same decoding and validation as job creation, reports the
+// outcome, and persists nothing. Clients can vet a configuration before
+// spending queue time on it.
+func (s *Server) apiValidateJob(w http.ResponseWriter, r *http.Request) {
+	var request apiScrapeRequest
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		renderJSON(w, http.StatusUnprocessableEntity, localAPIEnvelope{Data: map[string]any{
+			"valid": false, "error": err.Error(),
+		}})
+
+		return
+	}
+
+	candidate := Job{
+		ID:     "validate-only",
+		Name:   request.Name,
+		Date:   time.Now().UTC(),
+		Status: StatusPending,
+		Data:   request.JobData,
+	}
+
+	// The create endpoint interprets max_time as seconds; validation must see
+	// the same value creation would.
+	candidate.Data.MaxTime *= time.Second
+
+	if err := candidate.Validate(); err != nil {
+		renderJSON(w, http.StatusUnprocessableEntity, localAPIEnvelope{Data: map[string]any{
+			"valid": false, "error": err.Error(),
+		}})
+
+		return
+	}
+
+	renderJSON(w, http.StatusOK, localAPIEnvelope{Data: map[string]any{"valid": true}})
 }

@@ -196,3 +196,51 @@ func (r *fixedJobRepository) Update(context.Context, *Job) error   { return nil 
 func (r *fixedJobRepository) Select(context.Context, SelectParams) ([]Job, error) {
 	return []Job{r.job}, nil
 }
+
+func TestValidateJobEndpointIsADryRun(t *testing.T) {
+	t.Parallel()
+
+	repo := &countingCreateRepository{}
+	srv, err := New(NewService(repo, t.TempDir()), ":0")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	valid := `{"name":"probe","keywords":["dentist"],"lang":"en","zoom":15,` +
+		`"lat":"37.7749","lon":"-122.4194","fast_mode":true,"radius":1000,"depth":10,"max_time":600}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/jobs/validate", strings.NewReader(valid))
+	request.Header.Set("Content-Type", "application/json")
+	srv.apiValidateJob(recorder, request)
+
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"valid":true`) {
+		t.Fatalf("valid config = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	// Nothing may be persisted by a dry run.
+	if repo.createCalls != 0 {
+		t.Fatalf("dry run created %d job(s)", repo.createCalls)
+	}
+
+	invalid := `{"name":"probe","keywords":[],"lang":"en","zoom":15,"max_time":600}`
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/jobs/validate", strings.NewReader(invalid))
+	request.Header.Set("Content-Type", "application/json")
+	srv.apiValidateJob(recorder, request)
+
+	if recorder.Code != http.StatusUnprocessableEntity || !strings.Contains(recorder.Body.String(), `"valid":false`) {
+		t.Fatalf("invalid config = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// countingCreateRepository proves a dry run persists nothing.
+type countingCreateRepository struct {
+	fixedJobRepository
+	createCalls int
+}
+
+func (r *countingCreateRepository) Create(context.Context, *Job) error {
+	r.createCalls++
+
+	return nil
+}

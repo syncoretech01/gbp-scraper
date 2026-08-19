@@ -562,3 +562,26 @@ html[data-reduced-motion="true"] *, html[data-reduced-motion="true"] *::before, 
     padding: .25rem .4rem;
     font-size: .85rem;
 }
+
+.login-body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    background: var(--surface, #f5f6f8);
+}
+
+.login-card {
+    width: min(24rem, 92vw);
+    padding: 2rem;
+    border: 1px solid var(--border, #d5d9e0);
+    border-radius: .75rem;
+    background: var(--panel, #fff);
+    display: grid;
+    gap: .75rem;
+}
+
+.login-card h1 {
+    margin: 0;
+    font-size: 1.25rem;
+}

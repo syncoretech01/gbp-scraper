@@ -872,3 +872,48 @@ func TestInterruptedJobReportsRecoveryStatusAndLastCheckpoint(t *testing.T) {
 		t.Fatalf("recovery message does not describe remaining work: %q", message)
 	}
 }
+
+func TestDecideFailureBudgetHalvesOnFailuresAndRecoversSlowly(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                string
+		current, desired    int
+		failures, successes int
+		want                int
+	}{
+		{name: "quiet window changes nothing", current: 8, desired: 8, want: 8},
+		{name: "small window changes nothing", current: 8, desired: 8, failures: 1, successes: 1, want: 8},
+		{name: "half failed halves", current: 8, desired: 8, failures: 2, successes: 2, want: 4},
+		{name: "mostly failed halves", current: 8, desired: 8, failures: 5, successes: 1, want: 4},
+		{name: "halving floors at one", current: 1, desired: 8, failures: 4, successes: 0, want: 1},
+		{name: "mixed window below half holds", current: 8, desired: 8, failures: 1, successes: 4, want: 8},
+		{name: "clean window recovers one step", current: 4, desired: 8, failures: 0, successes: 3, want: 5},
+		{name: "clean window at desired holds", current: 8, desired: 8, failures: 0, successes: 6, want: 8},
+		{name: "recovery is one step even after a long clean window", current: 2, desired: 8, failures: 0, successes: 20, want: 3},
+		{name: "budget never exceeds desired", current: 12, desired: 8, failures: 0, successes: 3, want: 8},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := decideFailureBudget(test.current, test.desired, test.failures, test.successes)
+			if got != test.want {
+				t.Fatalf("decideFailureBudget(%d, %d, %d, %d) = %d, want %d",
+					test.current, test.desired, test.failures, test.successes, got, test.want)
+			}
+		})
+	}
+
+	// Decay must always be faster than recovery: from any budget, one bad
+	// window loses more than one clean window regains.
+	for budget := 2; budget <= 16; budget *= 2 {
+		lost := budget - decideFailureBudget(budget, 16, 4, 0)
+		regained := decideFailureBudget(budget, 16, 0, 3) - budget
+
+		if lost < regained {
+			t.Fatalf("budget %d: lost %d but regained %d — recovery must be slower than decay", budget, lost, regained)
+		}
+	}
+}

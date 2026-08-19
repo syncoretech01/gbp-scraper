@@ -99,6 +99,13 @@ type taskPoolRun struct {
 	effectiveConcurrency atomic.Int64
 	desiredConcurrency   atomic.Int64
 	workers              atomic.Int64
+
+	// The failure window feeds adaptive concurrency: attempts that failed and
+	// succeeded since the last adaptation decide whether the budget shrinks
+	// (failure rate rising) or cautiously recovers (a clean window).
+	windowFailures  atomic.Int64
+	windowSuccesses atomic.Int64
+	failureBudget   atomic.Int64
 }
 
 // requestStop latches the first stop reason. Later reasons are ignored so the
@@ -167,6 +174,7 @@ func (w *webrunner) runTaskPool(
 	run.desiredConcurrency.Store(int64(desiredConcurrency))
 	run.effectiveConcurrency.Store(int64(plan.PerTaskConcurrency * plan.Workers))
 	run.workers.Store(int64(plan.Workers))
+	run.failureBudget.Store(int64(desiredConcurrency))
 
 	supervisorDone := make(chan struct{})
 
@@ -342,7 +350,10 @@ func (w *webrunner) executeLeasedTask(
 
 	taskJob := *job
 	taskJob.Data = job.Data
-	taskJob.Data.Concurrency = plan.PerTaskConcurrency
+	// The live budget can shrink or recover between tasks; each new task takes
+	// its share of the budget as it stands, which is the safe reconfiguration
+	// point the engine supports.
+	taskJob.Data.Concurrency = max(1, int(run.effectiveConcurrency.Load())/max(1, plan.Workers))
 
 	if plan.PerTaskBrowserPool > 0 {
 		taskJob.Data.BrowserPool = plan.PerTaskBrowserPool
@@ -409,6 +420,8 @@ func (w *webrunner) executeLeasedTask(
 	}
 
 	if taskErr == nil {
+		run.windowSuccesses.Add(1)
+
 		if completeErr := w.svc.CompleteJobTask(context.Background(), job.ID, task.Key, checkpoint); completeErr != nil {
 			_ = w.svc.RecordJobWorkerEvent(
 				context.Background(), job.ID, "task-commit-failed", "error",
@@ -481,6 +494,8 @@ func (w *webrunner) failLeasedTask(
 	taskErr error,
 	checkpoint web.JobTaskCheckpoint,
 ) {
+	run.windowFailures.Add(1)
+
 	retryable := task.Attempts < task.MaxAttempts
 
 	if failErr := w.svc.FailJobTask(
@@ -613,10 +628,24 @@ func (w *webrunner) superviseTaskPool(
 
 // adaptTaskPool records an adaptive change to the shared concurrency budget.
 // The pool size itself stays fixed for the run so leases and browser shares
-// remain predictable; what changes is the reported effective capacity.
+// remain predictable; what changes is the effective capacity new tasks take.
+//
+// Two independent signals cap the budget: resource pressure (CPU, RAM, disk)
+// and the recent task failure rate. The failure budget halves when at least
+// half of a meaningful window failed, and recovers one step at a time only
+// after a fully clean window, so recovery is deliberately slower than decay.
 func (w *webrunner) adaptTaskPool(run *taskPoolRun, sample workerResourceSample) {
 	desired := int(run.desiredConcurrency.Load())
-	next := int64(adaptiveWorkerConcurrency(desired, sample, run.job.Data.LowDiskBytes))
+
+	failures := run.windowFailures.Swap(0)
+	successes := run.windowSuccesses.Swap(0)
+	failureBudget := decideFailureBudget(
+		int(run.failureBudget.Load()), desired, int(failures), int(successes),
+	)
+	run.failureBudget.Store(int64(failureBudget))
+
+	resourceBudget := adaptiveWorkerConcurrency(desired, sample, run.job.Data.LowDiskBytes)
+	next := int64(min(resourceBudget, failureBudget))
 
 	previous := run.effectiveConcurrency.Load()
 	if next == previous {
@@ -625,19 +654,59 @@ func (w *webrunner) adaptTaskPool(run *taskPoolRun, sample workerResourceSample)
 
 	run.effectiveConcurrency.Store(next)
 
+	reason := "resource pressure"
+	if failureBudget < resourceBudget {
+		reason = "task failure rate"
+	} else if next > previous {
+		reason = "recovered after a stable success window"
+	}
+
 	_ = w.svc.RecordJobWorkerEvent(
 		context.Background(), run.job.ID, "adaptive-performance", "information",
-		fmt.Sprintf("Adaptive performance changed the concurrency budget from %d to %d", previous, next),
+		fmt.Sprintf("Adaptive performance changed the concurrency budget from %d to %d (%s)", previous, next, reason),
 		map[string]any{
 			"previous_concurrency":   previous,
 			"effective_concurrency":  next,
 			"desired_concurrency":    desired,
+			"failure_budget":         failureBudget,
+			"resource_budget":        resourceBudget,
+			"window_failures":        failures,
+			"window_successes":       successes,
 			"task_workers":           run.workers.Load(),
 			"cpu_percent":            sample.CPUPercent,
 			"memory_available_bytes": sample.MemoryAvailableBytes,
 			"disk_free_bytes":        sample.DiskFreeBytes,
 		},
 	)
+}
+
+// decideFailureBudget is the pure adaptation rule, kept separate so it can be
+// tested exhaustively.
+//
+//   - A window with at least four attempts where half or more failed halves
+//     the budget (never below one).
+//   - A window with at least three attempts and zero failures recovers one
+//     step toward the desired concurrency.
+//   - Anything else (quiet or mixed windows) leaves the budget unchanged.
+func decideFailureBudget(current, desired, failures, successes int) int {
+	if current < 1 {
+		current = 1
+	}
+
+	if current > desired {
+		current = desired
+	}
+
+	attempts := failures + successes
+
+	switch {
+	case attempts >= 4 && failures*2 >= attempts:
+		return max(1, current/2)
+	case attempts >= 3 && failures == 0 && current < desired:
+		return current + 1
+	default:
+		return current
+	}
 }
 
 // stoppedBecauseContext maps a cancelled run to the reason a caller should see.

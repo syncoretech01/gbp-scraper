@@ -33,6 +33,7 @@ type Server struct {
 	systemProbe  localSystemProbe
 	apiRates     apiRateState
 	apiRateLimit apiAtomicInt64
+	auth         authState
 }
 
 func New(svc *Service, addr string) (*Server, error) {
@@ -62,6 +63,7 @@ func New(svc *Service, addr string) (*Server, error) {
 		},
 	}
 	ans.initializeAPIAccessSettings()
+	ans.initializeAuth()
 
 	staticFS, err := fs.Sub(static, "static")
 	if err != nil {
@@ -117,6 +119,7 @@ func New(svc *Service, addr string) (*Server, error) {
 	mux.HandleFunc("/api/docs", ans.redocHandler)
 	mux.HandleFunc("GET /api/openapi.json", ans.apiOpenAPI)
 	mux.HandleFunc("/api/v1/dashboard", ans.apiDashboard)
+	mux.HandleFunc("POST /api/v1/jobs/validate", ans.apiValidateJob)
 	mux.HandleFunc("/api/v1/jobs", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPost:
@@ -184,6 +187,8 @@ func New(svc *Service, addr string) (*Server, error) {
 	})
 	ans.registerLifecycleRoutes(mux)
 	ans.registerJobOrganisationRoutes(mux)
+	ans.registerRetentionRoutes(mux)
+	ans.registerAuthRoutes(mux)
 	ans.registerCheckpointRoutes(mux)
 	ans.registerResultRoutes(mux)
 	ans.registerDuplicateRoutes(mux)
@@ -227,7 +232,7 @@ func New(svc *Service, addr string) (*Server, error) {
 	mux.HandleFunc("POST /api/v1/onboarding/complete", ans.completeOnboarding)
 	mux.HandleFunc("POST /api/v1/onboarding/self-test", ans.runOnboardingSelfTest)
 
-	handler := securityHeaders(ans.apiAccessMiddleware(ans.browserCSRFProtection(mux)))
+	handler := securityHeaders(ans.localAuthentication(ans.apiAccessMiddleware(ans.browserCSRFProtection(mux))))
 	ans.srv.Handler = handler
 
 	tmplsKeys := []string{

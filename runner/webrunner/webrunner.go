@@ -91,6 +91,17 @@ func (w *webrunner) Run(ctx context.Context) error {
 		log.Printf("warning: some legacy result CSV files could not be imported: %v", err)
 	}
 
+	if report, err := w.svc.ApplyRetentionPolicies(ctx); err != nil &&
+		!errors.Is(err, web.ErrRetentionUnsupported) {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		log.Printf("warning: retention policies could not be applied: %v", err)
+	} else if err == nil && (report.BackupsPruned > 0 || report.VersionsPruned > 0 || report.ExportsPruned > 0) {
+		log.Printf("retention removed %d backup(s), %d version snapshot(s), %d export(s)",
+			report.BackupsPruned, report.VersionsPruned, report.ExportsPruned)
+	}
+
 	if recovered, err := w.svc.RecoverEnrichmentTasks(ctx); err != nil &&
 		!errors.Is(err, web.ErrEnrichmentUnsupported) {
 		if ctxErr := ctx.Err(); ctxErr != nil {
