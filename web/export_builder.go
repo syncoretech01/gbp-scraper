@@ -3,6 +3,7 @@ package web
 import (
 	"archive/zip"
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/gosom/google-maps-scraper/web/prospect"
 )
 
 const (
@@ -97,6 +100,11 @@ var exportColumnDefinitions = []exportColumnDefinition{
 	{Key: "sources_json", Label: "sources_json", DataType: "json"},
 	{Key: "provenance_json", Label: "provenance_json", DataType: "json"},
 	{Key: "changes_json", Label: "changes_json", DataType: "json"},
+	{Key: "prospect_status", Label: "prospect_status", DataType: "text"},
+	{Key: "prospect_score", Label: "prospect_score", DataType: "number"},
+	{Key: "prospect_tier", Label: "prospect_tier", DataType: "text"},
+	{Key: "prospect_reasons", Label: "prospect_reasons", DataType: "json"},
+	{Key: "call_opener", Label: "call_opener", DataType: "text"},
 }
 
 var defaultExportColumnKeys = []string{
@@ -354,8 +362,19 @@ func decodeExportOptions(raw string) (ExportBuildOptions, error) {
 }
 
 type exportDataRow struct {
-	Business BusinessResult  `json:"business"`
-	Detail   *BusinessDetail `json:"detail,omitempty"`
+	Business BusinessResult      `json:"business"`
+	Detail   *BusinessDetail     `json:"detail,omitempty"`
+	Prospect *prospectExportData `json:"prospect,omitempty"`
+}
+
+// exportProspectValue returns the prospect data spooled with the row, or
+// computes it from the built-in defaults for rows spooled before prospect
+// support (and for writers driven directly in tests).
+func exportProspectValue(row exportDataRow) prospectExportData {
+	if row.Prospect != nil {
+		return *row.Prospect
+	}
+	return computeProspectExportData(row.Business, prospect.DefaultScoreWeights(), prospect.DefaultOpenerTemplates())
 }
 
 type exportSpoolGroup struct {
@@ -505,6 +524,7 @@ func (s *Server) spoolExportRows(
 	groups := make([]*exportSpoolGroup, 0, 8)
 	var rowCount int64
 	var touch uint64
+	prospectWeights, prospectTemplates := s.svc.prospectExportConfiguration(ctx)
 	closeSpools := func() error {
 		var closeErrors []error
 		for _, group := range groups {
@@ -530,6 +550,8 @@ func (s *Server) spoolExportRows(
 		}
 		for _, business := range page.Results {
 			data := exportDataRow{Business: business}
+			computed := computeProspectExportData(business, prospectWeights, prospectTemplates)
+			data.Prospect = &computed
 			if options.IncludeRaw || options.IncludeSources || options.IncludeProvenance || options.IncludeChanges {
 				detail, err := s.svc.GetBusiness(ctx, business.ID)
 				if err != nil {
@@ -688,6 +710,8 @@ func newExportPartWriter(
 		return newXLSXExportWriter(destination, columns)
 	case "sqlite":
 		return newSQLiteExportWriter(destination, columns, options)
+	case "discovered_companies":
+		return newDiscoveredCompaniesExportWriter(destination)
 	default:
 		return newTextExportWriter(destination, format, columns, options)
 	}
@@ -764,6 +788,8 @@ func verifyExportFile(format, path string) error {
 		return verifyXLSX(path)
 	case "sqlite":
 		return verifySQLiteExport(path)
+	case "discovered_companies":
+		return verifyDiscoveredCompaniesExport(path)
 	default:
 		info, err := os.Stat(path)
 		if err != nil {
@@ -867,6 +893,24 @@ func exportColumnValue(row exportDataRow, key string) (any, error) {
 		return marshalExportDetail(row.Detail, func(detail *BusinessDetail) any { return detail.Provenance })
 	case "changes_json":
 		return marshalExportDetail(row.Detail, func(detail *BusinessDetail) any { return detail.Changes })
+	case "prospect_status":
+		return exportProspectValue(row).Status, nil
+	case "prospect_score":
+		return exportProspectValue(row).Score, nil
+	case "prospect_tier":
+		return exportProspectValue(row).Tier, nil
+	case "prospect_reasons":
+		reasons := exportProspectValue(row).Reasons
+		if reasons == nil {
+			reasons = []prospect.Reason{}
+		}
+		encoded, err := json.Marshal(reasons)
+		if err != nil {
+			return nil, err
+		}
+		return json.RawMessage(encoded), nil
+	case "call_opener":
+		return exportProspectValue(row).Opener, nil
 	default:
 		return nil, fmt.Errorf("unsupported export column %q", key)
 	}
@@ -920,4 +964,106 @@ func exportValueString(value any) string {
 		}
 		return string(data)
 	}
+}
+
+// discoveredCompaniesExportWriter emits the Lead-Engine ingestion format:
+// one DiscoveredCompany JSON object per line. Column selections do not apply;
+// the contract fixes the shape.
+type discoveredCompaniesExportWriter struct {
+	destination string
+	temporary   string
+	file        *os.File
+	buffer      *bufio.Writer
+	closed      bool
+}
+
+func newDiscoveredCompaniesExportWriter(destination string) (*discoveredCompaniesExportWriter, error) {
+	temporary := destination + ".tmp"
+	file, err := os.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("create export file: %w", err)
+	}
+	return &discoveredCompaniesExportWriter{
+		destination: destination, temporary: temporary,
+		file: file, buffer: bufio.NewWriterSize(file, 128*1024),
+	}, nil
+}
+
+func (writer *discoveredCompaniesExportWriter) Add(row exportDataRow) error {
+	if writer.closed {
+		return fmt.Errorf("export writer is closed")
+	}
+	company := discoveredCompanyFromBusiness(row.Business, exportProspectValue(row))
+	encoded, err := json.Marshal(company)
+	if err != nil {
+		return fmt.Errorf("encode discovered company: %w", err)
+	}
+	if _, err := writer.buffer.Write(encoded); err != nil {
+		return err
+	}
+	return writer.buffer.WriteByte('\n')
+}
+
+func (writer *discoveredCompaniesExportWriter) Close() error {
+	if writer.closed {
+		return nil
+	}
+	writer.closed = true
+	writeErr := writer.buffer.Flush()
+	if syncErr := writer.file.Sync(); writeErr == nil {
+		writeErr = syncErr
+	}
+	if closeErr := writer.file.Close(); writeErr == nil {
+		writeErr = closeErr
+	}
+	if writeErr != nil {
+		_ = os.Remove(writer.temporary)
+		return fmt.Errorf("write export file: %w", writeErr)
+	}
+	if err := os.Rename(writer.temporary, writer.destination); err != nil {
+		_ = os.Remove(writer.temporary)
+		return fmt.Errorf("publish export file: %w", err)
+	}
+	return nil
+}
+
+func (writer *discoveredCompaniesExportWriter) Abort() {
+	if writer == nil {
+		return
+	}
+	if !writer.closed {
+		writer.closed = true
+		_ = writer.file.Close()
+	}
+	_ = os.Remove(writer.temporary)
+}
+
+// verifyDiscoveredCompaniesExport checks that every line of the generated
+// file is one JSON object carrying the contract's providerCompanyId key.
+func verifyDiscoveredCompaniesExport(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	line := 0
+	for scanner.Scan() {
+		line++
+		raw := bytes.TrimSpace(scanner.Bytes())
+		if len(raw) == 0 {
+			continue
+		}
+		var company struct {
+			ProviderCompanyID *string `json:"providerCompanyId"`
+		}
+		if err := json.Unmarshal(raw, &company); err != nil {
+			return fmt.Errorf("line %d is not valid JSON: %w", line, err)
+		}
+		if company.ProviderCompanyID == nil || strings.TrimSpace(*company.ProviderCompanyID) == "" {
+			return fmt.Errorf("line %d is missing providerCompanyId", line)
+		}
+	}
+	return scanner.Err()
 }
