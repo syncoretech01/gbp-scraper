@@ -670,6 +670,8 @@ func (repo *repo) StoreWebsiteAudit(
 		return 0, err
 	}
 
+	repo.reclassifyProspectsForBusiness(ctx, task.BusinessID)
+
 	return auditID, nil
 }
 

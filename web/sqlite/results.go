@@ -20,6 +20,7 @@ import (
 
 	"github.com/gosom/google-maps-scraper/web"
 	"github.com/gosom/google-maps-scraper/web/jobruntime"
+	"github.com/gosom/google-maps-scraper/web/prospect"
 	"github.com/gosom/google-maps-scraper/web/resultimport"
 )
 
@@ -292,6 +293,8 @@ func (repo *repo) ImportLegacyCSV(
 	if err := tx.Commit(); err != nil {
 		return web.ResultFileImport{}, fmt.Errorf("commit result import: %w", err)
 	}
+
+	repo.reclassifyProspectsForJob(ctx, job.ID, prospect.DefaultScoreWeights())
 
 	return summary, nil
 }
