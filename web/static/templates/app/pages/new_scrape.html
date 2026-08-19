@@ -116,6 +116,7 @@
             <h2 id="wizard-step-5-title">Keep source data, filter safely</h2>
             <p>All collected rows are preserved. After records commit, use Results to search and filter by rating, review count, category, city, status, website, email, phone, job and quality fields. This avoids losing data because of an overly strict scrape-time filter.</p>
             <div class="notice notice-info"><div><strong>Why there is no destructive pre-filter here</strong><p>Google can omit or change fields between list and detail views. Applying filters to the normalized local database is repeatable and auditable.</p></div></div>
+            <div class="field"><label for="incremental-mode">Rescan mode</label><select class="select" id="incremental-mode" name="incremental_mode"><option value="">Full collection</option><option value="new_only">Only new listings</option><option value="new_changed">New and changed listings</option></select><p class="field-hint">New, changed, and disappeared listings are detected when results are imported, so the scraper still visits listings to know they changed.</p></div>
             <div class="form-actions"><button class="button" type="button" data-action="wizard-back">Back</button><button class="button button-primary" type="button" data-action="wizard-next">Tune performance &rarr;</button></div>
         </section>
 
