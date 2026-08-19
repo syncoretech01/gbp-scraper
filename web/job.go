@@ -64,6 +64,11 @@ func (j *Job) Validate() error {
 	return nil
 }
 
+// MaximumJobTaskWorkers bounds how many plan tasks one job may run in parallel.
+// The job's browser budget is divided between them, so a higher value trades
+// per-task capacity for finer resume granularity rather than adding load.
+const MaximumJobTaskWorkers = 16
+
 type JobData struct {
 	Keywords        []string              `json:"keywords"`
 	Lang            string                `json:"lang"`
@@ -79,6 +84,7 @@ type JobData struct {
 	ExtraReviews    bool                  `json:"extra_reviews"`
 	MaxTime         time.Duration         `json:"max_time"`
 	Concurrency     int                   `json:"concurrency,omitempty"`
+	TaskWorkers     int                   `json:"task_workers,omitempty"`
 	BrowserPool     int                   `json:"browser_pool_size,omitempty"`
 	PagesBrowser    int                   `json:"pages_per_browser,omitempty"`
 	MaxRecords      int                   `json:"max_records,omitempty"`
@@ -123,6 +129,13 @@ func (d *JobData) Validate() error {
 
 	if d.Concurrency < 0 || d.Concurrency > 64 {
 		return errors.New("concurrency must be between 1 and 64 when set")
+	}
+
+	// Task workers run whole queries or grid cells side by side. The total
+	// browser budget is divided between them, so this bounds parallel resume
+	// units rather than adding capacity.
+	if d.TaskWorkers < 0 || d.TaskWorkers > MaximumJobTaskWorkers {
+		return fmt.Errorf("parallel tasks must be between 1 and %d when set", MaximumJobTaskWorkers)
 	}
 
 	if d.BrowserPool < 0 || d.BrowserPool > 32 {

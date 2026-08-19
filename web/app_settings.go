@@ -16,6 +16,7 @@ type scrapeDefaults struct {
 	Depth        int
 	MaxTime      string
 	Concurrency  int
+	TaskWorkers  int
 	BrowserPool  int
 	PagesBrowser int
 	MaxRecords   int
@@ -152,6 +153,7 @@ func defaultScrapeSettings() scrapeDefaults {
 		Depth:        10,
 		MaxTime:      "60m",
 		Concurrency:  4,
+		TaskWorkers:  4,
 		BrowserPool:  2,
 		PagesBrowser: 2,
 		MaxRecords:   0,
@@ -174,6 +176,7 @@ func scrapeSettingsFromMap(values map[string]string) scrapeDefaults {
 	defaults.Depth = settingInt(values, "scrape.depth", defaults.Depth)
 	defaults.MaxTime = settingString(values, "scrape.max_runtime", defaults.MaxTime)
 	defaults.Concurrency = settingInt(values, "scrape.concurrency", defaults.Concurrency)
+	defaults.TaskWorkers = settingInt(values, "scrape.task_workers", defaults.TaskWorkers)
 	defaults.BrowserPool = settingInt(values, "scrape.browser_pool", defaults.BrowserPool)
 	defaults.PagesBrowser = settingInt(values, "scrape.pages_per_browser", defaults.PagesBrowser)
 	defaults.MaxRecords = settingInt(values, "scrape.max_records", defaults.MaxRecords)
@@ -286,6 +289,17 @@ func validateSettingsForm(r *http.Request) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Older clients and partial forms predate this field, so an absent value
+	// keeps the existing default rather than failing the whole save.
+	taskWorkers := defaultScrapeSettings().TaskWorkers
+
+	if strings.TrimSpace(r.FormValue("task_workers")) != "" {
+		taskWorkers, err = boundedFormInt(r, "task_workers", 1, MaximumJobTaskWorkers)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	concurrency, err := boundedFormInt(r, "concurrency", 1, 64)
 	if err != nil {
 		return nil, err
@@ -365,6 +379,7 @@ func validateSettingsForm(r *http.Request) (map[string]string, error) {
 		"scrape.depth":                   strconv.Itoa(depth),
 		"scrape.max_runtime":             maxRuntime,
 		"scrape.concurrency":             strconv.Itoa(concurrency),
+		"scrape.task_workers":            strconv.Itoa(taskWorkers),
 		"scrape.browser_pool":            strconv.Itoa(browserPool),
 		"scrape.pages_per_browser":       strconv.Itoa(pagesBrowser),
 		"scrape.max_records":             strconv.Itoa(maxRecords),

@@ -153,7 +153,8 @@ The build provides the following working paths:
   interrupted task restarts from the beginning of that task; committed rows are
   preserved and merged rather than duplicated.
 - The checkpoint interval is not configurable. A checkpoint is committed after
-  every completed task.
+  every completed task, which with a concurrent pool means several commit points
+  can land close together.
 
 ### 08-09: Results and filtering
 
@@ -259,8 +260,12 @@ The build provides the following working paths:
   proxy, all-proxies-failed pause/resume, and adaptive website timeout are not
   implemented. `StopReasonProxiesUnavailable` is defined but never emitted.
 - Per-query and per-grid-cell continuation is implemented and tested.
-  Per-listing continuation is not. The `recovery_required` flag is exposed
-  through the checkpoint API but is not rendered on the monitor page.
+  Per-listing continuation is not. The monitor's Checkpoint card now renders the
+  recovery state, the last checkpoint time, and the completed/running/remaining/
+  failed task counts.
+- Lease deadlines are stored with one-second granularity, so a reclaim can lag a
+  lapsed lease by up to a second. The production lease is 90 seconds with a
+  20-second heartbeat, which makes that irrelevant in practice.
 
 ### 22: Export Centre
 
@@ -370,15 +375,25 @@ The build provides the following working paths:
   identity, so the `input_id` CSV column stays per-run and a repeated
   `-produce` keeps enqueuing fresh rows instead of colliding with the previous
   run's primary keys.
-- **Checkpointed execution is sequential.** Each durable task runs its own
-  scrapemate application so a task boundary is a safe commit point. A job's
-  configured concurrency applies within a task, not across tasks. This trades
-  throughput on large grids for exact resumability.
-- **A task interrupted by a stop reason is recorded as retryable, not
-  complete.** When a runtime limit, shutdown, or low-disk pause coincides with a
-  task, the task's committed rows are kept but the task itself stays pending, so
-  a resume re-runs it. Re-running is safe because the CSV merge deduplicates;
-  marking a truncated task complete would silently lose coverage.
+- **Checkpointed execution is concurrent and leased.** A bounded pool of task
+  workers shares one job's durable plan. A worker owns a task only while it
+  holds an unexpired lease, so two workers never run the same task, a worker
+  that dies loses its lease and the task returns to the queue, and a worker
+  whose lease was reclaimed cannot overwrite the new owner's result. Resume
+  granularity no longer costs sequential execution.
+- **Parallel tasks divide the budget rather than multiplying it.** The job's
+  concurrency and browser pool are shared out between workers, so four parallel
+  tasks each run at a quarter of the configured capacity. Raising the parallel
+  task count buys finer resume granularity and lower latency, not extra load.
+  The pool size is configurable per job and in Settings, bounded to 16.
+- **CSV merges are serialised.** Task results are idempotent by business
+  identity, but they rewrite one file, so exactly one merge runs at a time.
+- **An interrupted task is released, not failed.** Cancellation, shutdown, and
+  the low-disk pause return the task to the queue without consuming one of its
+  attempts, so a restart resumes it exactly. Committed rows are kept either way.
+- **One failing task does not fail the job.** A crashing task is retried up to
+  its configured attempt limit while other workers continue; a run that loses
+  tasks ends as partial with a task-failure reason rather than failed.
 - **Cancelled enrichment work is not failed.** A task interrupted by worker
   shutdown is left in its running state so startup recovery requeues it, rather
   than being recorded as a permanent website failure.

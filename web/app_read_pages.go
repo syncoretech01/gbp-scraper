@@ -162,11 +162,35 @@ type jobPipelineStep struct {
 }
 
 type jobCheckpointView struct {
-	Available      bool
-	CreatedAt      string
-	CompletedTasks int64
-	RemainingTasks int64
-	Version        string
+	Available        bool
+	CreatedAt        string
+	CompletedTasks   int64
+	RemainingTasks   int64
+	RunningTasks     int64
+	FailedTasks      int64
+	Version          string
+	RecoveryRequired bool
+	RecoveryMessage  string
+}
+
+// RecoveryStatusMessage states plainly what a resume would do, so an operator
+// does not have to infer it from the task counters.
+func RecoveryStatusMessage(execution JobExecutionSnapshot) string {
+	if execution.RecoveryRequired {
+		return fmt.Sprintf(
+			"This job was interrupted. Resuming runs the %d remaining task(s) and keeps the %d already committed.",
+			execution.Tasks.Remaining(), execution.Tasks.Completed,
+		)
+	}
+
+	if execution.Tasks.Remaining() > 0 {
+		return fmt.Sprintf(
+			"%d task(s) remain; %d have committed their rows.",
+			execution.Tasks.Remaining(), execution.Tasks.Completed,
+		)
+	}
+
+	return "Every planned task has committed its rows."
 }
 
 type jobProxyPoolView struct {
@@ -571,9 +595,24 @@ func (s *Server) buildJobMonitorPage(r *http.Request, id string) (jobMonitorPage
 			page.Checkpoint = jobCheckpointView{
 				Available: true, CreatedAt: formatDate(execution.Checkpoint.CreatedAt),
 				CompletedTasks: execution.Tasks.Completed, RemainingTasks: execution.Tasks.Remaining(),
-				Version: fmt.Sprintf("checkpoint %d / %s", execution.Checkpoint.ID, execution.Checkpoint.TaskKey),
+				RunningTasks: execution.Tasks.Running, FailedTasks: execution.Tasks.Failed,
+				Version:          fmt.Sprintf("checkpoint %d / %s", execution.Checkpoint.ID, execution.Checkpoint.TaskKey),
+				RecoveryRequired: execution.RecoveryRequired,
+				RecoveryMessage:  RecoveryStatusMessage(execution),
 			}
 			page.Job.LastCheckpoint = formatDate(execution.Checkpoint.CreatedAt)
+			page.Job.CanRestartCheckpoint = lifecycleAvailable && canApplyControl(runtime, jobruntime.ControlRestart)
+		} else if execution.RecoveryRequired || execution.Tasks.Total > 0 {
+			// A job interrupted before its first task committed still has to say
+			// where it stands, otherwise the card silently claims nothing exists.
+			page.Checkpoint = jobCheckpointView{
+				Available: true, CreatedAt: "no checkpoint committed yet",
+				CompletedTasks: execution.Tasks.Completed, RemainingTasks: execution.Tasks.Remaining(),
+				RunningTasks: execution.Tasks.Running, FailedTasks: execution.Tasks.Failed,
+				Version:          fmt.Sprintf("%d task(s) planned", execution.Tasks.Total),
+				RecoveryRequired: execution.RecoveryRequired,
+				RecoveryMessage:  RecoveryStatusMessage(execution),
+			}
 			page.Job.CanRestartCheckpoint = lifecycleAvailable && canApplyControl(runtime, jobruntime.ControlRestart)
 		}
 	} else if !errors.Is(executionErr, ErrCheckpointUnsupported) && !errors.Is(executionErr, ErrLifecycleNotFound) {

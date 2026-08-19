@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	currentSchemaVersion           = 7
+	currentSchemaVersion           = 8
 	migrationChecksumSchemaVersion = 4
 )
 
@@ -1018,6 +1018,20 @@ var schemaMigrations = []schemaMigration{
 			ON enrichment_tasks(state, created_at, id)`,
 			`CREATE UNIQUE INDEX idx_enrichment_tasks_active_business
 			ON enrichment_tasks(business_id) WHERE state IN ('queued', 'running')`,
+		},
+	},
+	{
+		version: 8,
+		name:    "concurrent-task-leases",
+		statements: []string{
+			// A leased task lets several workers share one job's plan safely. The
+			// lease owner is the only writer allowed to finish a task, and an
+			// expired lease is reclaimed so a crashed worker cannot strand work.
+			`ALTER TABLE job_tasks ADD COLUMN lease_owner TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE job_tasks ADD COLUMN lease_expires_at INTEGER`,
+			`ALTER TABLE job_tasks ADD COLUMN heartbeat_at INTEGER`,
+			`CREATE INDEX IF NOT EXISTS idx_job_tasks_lease
+			ON job_tasks(state, lease_expires_at)`,
 		},
 	},
 }

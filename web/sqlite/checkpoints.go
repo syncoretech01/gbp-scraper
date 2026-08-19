@@ -26,6 +26,10 @@ const (
 var _ interface {
 	PrepareJobTasks(context.Context, string, []web.JobTaskDefinition, int) ([]web.JobTask, error)
 	StartJobTask(context.Context, string, string) (web.JobTask, error)
+	ClaimNextJobTask(context.Context, string, string, time.Duration) (web.JobTask, bool, error)
+	HeartbeatJobTask(context.Context, string, string, string, time.Duration) error
+	ReleaseJobTask(context.Context, string, string, string, string) error
+	ReclaimExpiredJobTasks(context.Context, string) (int, error)
 	CompleteJobTask(context.Context, string, string, web.JobTaskCheckpoint) error
 	FailJobTask(context.Context, string, string, error, bool, web.JobTaskCheckpoint) error
 	UpdateJobWorkerProgress(context.Context, string, web.JobWorkerProgress) error
@@ -141,8 +145,10 @@ func (repo *repo) StartJobTask(ctx context.Context, jobID, taskKey string) (web.
 		ctx,
 		`UPDATE job_tasks SET
 			state = 'running', attempts = attempts + 1, last_error = '',
+			lease_owner = '', lease_expires_at = NULL, heartbeat_at = ?,
 			started_at = ?, finished_at = NULL, updated_at = ?
 		WHERE job_id = ? AND task_key = ? AND state IN ('pending', 'failed') AND attempts < max_attempts`,
+		now,
 		now,
 		now,
 		jobID,
@@ -258,6 +264,7 @@ func (repo *repo) finishJobTask(
 	result, err := tx.ExecContext(
 		ctx,
 		`UPDATE job_tasks SET state = ?, last_error = ?, checkpoint = ?,
+			lease_owner = '', lease_expires_at = NULL,
 			finished_at = ?, updated_at = ?
 		WHERE job_id = ? AND task_key = ? AND state = 'running'`,
 		state,
@@ -590,6 +597,7 @@ func (repo *repo) RecoverAbandonedJobs(ctx context.Context) (int, error) {
 		if _, err := tx.ExecContext(
 			ctx,
 			`UPDATE job_tasks SET state = 'pending', finished_at = NULL,
+				lease_owner = '', lease_expires_at = NULL, started_at = NULL,
 				last_error = 'Interrupted by local service shutdown', updated_at = ?
 			WHERE job_id = ? AND state = 'running'`,
 			now,

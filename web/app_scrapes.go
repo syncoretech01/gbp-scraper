@@ -137,6 +137,11 @@ func parseWizardJob(r *http.Request) (Job, jobruntime.State, error) {
 		return Job{}, "", err
 	}
 
+	taskWorkers, err := optionalFormInt(r, "task_workers")
+	if err != nil {
+		return Job{}, "", err
+	}
+
 	pagesBrowser, err := optionalFormInt(r, "pages_per_browser")
 	if err != nil {
 		return Job{}, "", err
@@ -207,6 +212,7 @@ func parseWizardJob(r *http.Request) (Job, jobruntime.State, error) {
 		ExtraReviews:  r.FormValue("extra_reviews") == "on",
 		MaxTime:       maxTime,
 		Concurrency:   concurrency,
+		TaskWorkers:   taskWorkers,
 		BrowserPool:   browserPool,
 		PagesBrowser:  pagesBrowser,
 		MaxRecords:    maxRecords,

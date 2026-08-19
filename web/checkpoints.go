@@ -18,6 +18,9 @@ var (
 	// ErrCheckpointTaskNotFound indicates that a deterministic task key is not
 	// part of the persisted job plan.
 	ErrCheckpointTaskNotFound = errors.New("job checkpoint task not found")
+	// ErrCheckpointLeaseLost indicates that another worker reclaimed a task
+	// lease. The previous owner must abandon the task without finishing it.
+	ErrCheckpointLeaseLost = errors.New("job checkpoint task lease was reclaimed")
 )
 
 // JobTaskDefinition is one deterministic, resumable unit of Maps work. Key
@@ -124,6 +127,10 @@ type JobTaskCheckpoint struct {
 type checkpointRepository interface {
 	PrepareJobTasks(context.Context, string, []JobTaskDefinition, int) ([]JobTask, error)
 	StartJobTask(context.Context, string, string) (JobTask, error)
+	ClaimNextJobTask(context.Context, string, string, time.Duration) (JobTask, bool, error)
+	HeartbeatJobTask(context.Context, string, string, string, time.Duration) error
+	ReleaseJobTask(context.Context, string, string, string, string) error
+	ReclaimExpiredJobTasks(context.Context, string) (int, error)
 	CompleteJobTask(context.Context, string, string, JobTaskCheckpoint) error
 	FailJobTask(context.Context, string, string, error, bool, JobTaskCheckpoint) error
 	UpdateJobWorkerProgress(context.Context, string, JobWorkerProgress) error
@@ -198,6 +205,57 @@ func (s *Service) StartJobTask(ctx context.Context, jobID, taskKey string) (JobT
 	}
 
 	return repository.StartJobTask(ctx, jobID, taskKey)
+}
+
+// ClaimNextJobTask leases the next runnable task for one worker. found is false
+// when the plan has no runnable task left.
+func (s *Service) ClaimNextJobTask(
+	ctx context.Context,
+	jobID, owner string,
+	lease time.Duration,
+) (JobTask, bool, error) {
+	repository, ok := s.repo.(checkpointRepository)
+	if !ok {
+		return JobTask{}, false, ErrCheckpointUnsupported
+	}
+
+	return repository.ClaimNextJobTask(ctx, jobID, owner, lease)
+}
+
+// HeartbeatJobTask extends a lease the caller still owns. It returns
+// ErrCheckpointLeaseLost once another worker has reclaimed the task.
+func (s *Service) HeartbeatJobTask(
+	ctx context.Context,
+	jobID, taskKey, owner string,
+	lease time.Duration,
+) error {
+	repository, ok := s.repo.(checkpointRepository)
+	if !ok {
+		return ErrCheckpointUnsupported
+	}
+
+	return repository.HeartbeatJobTask(ctx, jobID, taskKey, owner, lease)
+}
+
+// ReleaseJobTask returns an interrupted task to the queue without consuming a
+// further attempt, so a restart resumes it exactly.
+func (s *Service) ReleaseJobTask(ctx context.Context, jobID, taskKey, owner, reason string) error {
+	repository, ok := s.repo.(checkpointRepository)
+	if !ok {
+		return ErrCheckpointUnsupported
+	}
+
+	return repository.ReleaseJobTask(ctx, jobID, taskKey, owner, reason)
+}
+
+// ReclaimExpiredJobTasks recovers tasks whose worker stopped reporting.
+func (s *Service) ReclaimExpiredJobTasks(ctx context.Context, jobID string) (int, error) {
+	repository, ok := s.repo.(checkpointRepository)
+	if !ok {
+		return 0, ErrCheckpointUnsupported
+	}
+
+	return repository.ReclaimExpiredJobTasks(ctx, jobID)
 }
 
 // CompleteJobTask commits a safe resume boundary.

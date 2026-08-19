@@ -343,6 +343,7 @@ func scrapeDefaultsFromJobData(defaults scrapeDefaults, data JobData) scrapeDefa
 	}
 	if data.Concurrency > 0 {
 		defaults.Concurrency = data.Concurrency
+		defaults.TaskWorkers = data.TaskWorkers
 	}
 	if data.BrowserPool > 0 {
 		defaults.BrowserPool = data.BrowserPool

@@ -240,166 +240,41 @@ func (w *webrunner) scrapeJobCheckpointed(
 
 	startedAt := time.Now().UTC()
 	desiredConcurrency := job.Data.Concurrency
+
 	if desiredConcurrency <= 0 {
 		desiredConcurrency = w.cfg.Concurrency
 	}
+
 	if desiredConcurrency <= 0 {
 		desiredConcurrency = 1
 	}
-	resourceSample, _ := w.sampleWorkerResources(runCtx)
+
 	effectiveConcurrency := desiredConcurrency
+
 	if job.Data.Adaptive {
+		resourceSample, _ := w.sampleWorkerResources(runCtx)
 		effectiveConcurrency = adaptiveWorkerConcurrency(desiredConcurrency, resourceSample, job.Data.LowDiskBytes)
-		if effectiveConcurrency != desiredConcurrency {
-			_ = w.svc.RecordJobWorkerEvent(
-				context.Background(), job.ID, "adaptive-performance", "information",
-				fmt.Sprintf("Adaptive performance selected concurrency %d instead of %d for the next task", effectiveConcurrency, desiredConcurrency),
-				map[string]any{
-					"desired_concurrency": desiredConcurrency, "effective_concurrency": effectiveConcurrency,
-					"cpu_percent":            resourceSample.CPUPercent,
-					"memory_available_bytes": resourceSample.MemoryAvailableBytes,
-					"disk_free_bytes":        resourceSample.DiskFreeBytes,
-				},
-			)
-		}
 	}
 
-	var stopReason jobruntime.StopReason
-	var taskFailures int64
-	var committedWrites int64
-	for _, task := range pending {
-		if reason := receiveStopReason(stopReasons); reason != jobruntime.StopReasonNone {
-			stopReason = reason
-			break
-		}
-		if runCtx.Err() != nil {
-			stopReason = stoppedBecause(ctx, runCtx.Err(), stopReasons)
-			break
-		}
-		seed, exists := seedsByKey[task.Key]
-		if !exists {
-			return w.failJob(ctx, job, fmt.Errorf("checkpoint task %q has no current seed", task.Key))
-		}
+	// Tasks run side by side, but the browser budget is divided between them, so
+	// parallelism buys resume granularity rather than extra load.
+	plan := planTaskPool(job, effectiveConcurrency, len(pending))
 
-		for {
-			claimed, claimErr := w.svc.StartJobTask(runCtx, job.ID, task.Key)
-			if claimErr != nil {
-				return w.failJob(ctx, job, fmt.Errorf("start checkpoint task: %w", claimErr))
-			}
-			task = claimed
-			if task.State == "completed" || task.State == "skipped" {
-				break
-			}
+	_ = w.svc.RecordJobWorkerEvent(
+		context.Background(), job.ID, "task-pool", "information",
+		fmt.Sprintf("Running %d task(s) in parallel with %d worker concurrency each", plan.Workers, plan.PerTaskConcurrency),
+		map[string]any{
+			"task_workers": plan.Workers, "per_task_concurrency": plan.PerTaskConcurrency,
+			"per_task_browser_pool": plan.PerTaskBrowserPool,
+			"desired_concurrency":   desiredConcurrency, "effective_concurrency": effectiveConcurrency,
+			"pending_tasks": len(pending),
+		},
+	)
 
-			currentSample, sampleErr := w.sampleWorkerResources(runCtx)
-			if sampleErr == nil && job.Data.LowDiskBytes > 0 && currentSample.DiskFreeBytes < job.Data.LowDiskBytes {
-				stopReason = jobruntime.StopReasonLowDisk
-				_ = w.svc.FailJobTask(
-					context.Background(), job.ID, task.Key,
-					fmt.Errorf("available disk %d bytes is below safety threshold %d", currentSample.DiskFreeBytes, job.Data.LowDiskBytes),
-					true,
-					web.JobTaskCheckpoint{DiskFreeBytes: currentSample.DiskFreeBytes},
-				)
-				_ = w.svc.RecordJobWorkerEvent(
-					context.Background(), job.ID, "low-disk", "warning",
-					"Paused before starting the next task because free disk is below the configured safety threshold",
-					map[string]any{"disk_free_bytes": currentSample.DiskFreeBytes, "threshold_bytes": job.Data.LowDiskBytes},
-				)
-				break
-			}
-			if job.Data.Adaptive && sampleErr == nil {
-				nextConcurrency := adaptiveWorkerConcurrency(desiredConcurrency, currentSample, job.Data.LowDiskBytes)
-				if nextConcurrency != effectiveConcurrency {
-					previous := effectiveConcurrency
-					effectiveConcurrency = nextConcurrency
-					_ = w.svc.RecordJobWorkerEvent(
-						context.Background(), job.ID, "adaptive-performance", "information",
-						fmt.Sprintf("Adaptive performance changed concurrency from %d to %d at a safe task checkpoint", previous, effectiveConcurrency),
-						map[string]any{
-							"previous_concurrency": previous, "effective_concurrency": effectiveConcurrency,
-							"desired_concurrency": desiredConcurrency, "cpu_percent": currentSample.CPUPercent,
-							"memory_available_bytes": currentSample.MemoryAvailableBytes,
-							"disk_free_bytes":        currentSample.DiskFreeBytes,
-						},
-					)
-				}
-			}
-
-			taskJob := *job
-			taskJob.Data = job.Data
-			taskJob.Data.Concurrency = effectiveConcurrency
-			runPath, taskErr := w.runCheckpointTask(
-				runCtx,
-				&taskJob,
-				seed,
-				task,
-				exitMonitor,
-				stopReasons,
-				desiredConcurrency,
-				effectiveConcurrency,
-				startedAt,
-				committedWrites,
-			)
-			taskStopReason := receiveStopReason(stopReasons)
-			if taskStopReason == jobruntime.StopReasonNone {
-				switch {
-				case exiter.LimitReached(exitMonitor):
-					taskStopReason = jobruntime.StopReasonMaximumRecords
-				case errors.Is(runCtx.Err(), context.DeadlineExceeded):
-					taskStopReason = jobruntime.StopReasonRuntimeLimit
-				case ctx.Err() != nil:
-					taskStopReason = jobruntime.StopReasonShutdown
-				}
-			}
-			if taskStopReason != jobruntime.StopReasonNone {
-				stopReason = taskStopReason
-				if taskErr == nil {
-					taskErr = fmt.Errorf("task stopped for %s", taskStopReason)
-				}
-			}
-			if runPath != "" {
-				mergeSummary, mergeErr := mergeResultCSV(context.Background(), outpath, runPath)
-				if mergeErr != nil {
-					return w.failJob(ctx, job, fmt.Errorf("merge checkpoint task results: %w", mergeErr))
-				}
-				committedWrites++
-				checkpoint := web.JobTaskCheckpoint{
-					RowsAdded: mergeSummary.RunAdded, RowsReplaced: mergeSummary.ExistingReplaced,
-					DuplicatesSkipped: mergeSummary.DuplicatesSkipped, DiskFreeBytes: currentSample.DiskFreeBytes,
-				}
-				if taskErr == nil {
-					if completeErr := w.svc.CompleteJobTask(context.Background(), job.ID, task.Key, checkpoint); completeErr != nil {
-						return w.failJob(ctx, job, fmt.Errorf("commit task checkpoint: %w", completeErr))
-					}
-					break
-				}
-				retryable := stopReason != jobruntime.StopReasonNone ||
-					(runCtx.Err() == nil && claimed.Attempts < claimed.MaxAttempts)
-				if failErr := w.svc.FailJobTask(
-					context.Background(), job.ID, task.Key, taskErr, retryable, checkpoint,
-				); failErr != nil {
-					return w.failJob(ctx, job, fmt.Errorf("commit failed task checkpoint: %w", failErr))
-				}
-				if !retryable {
-					taskFailures++
-					break
-				}
-				if job.Data.RetryDelay > 0 {
-					select {
-					case <-runCtx.Done():
-					case <-time.After(job.Data.RetryDelay):
-					}
-				}
-				continue
-			}
-			if taskErr != nil {
-				return w.failJob(ctx, job, fmt.Errorf("task output was unavailable: %w", taskErr))
-			}
-		}
-		if stopReason != jobruntime.StopReasonNone {
-			break
-		}
-	}
+	stopReason := w.runTaskPool(
+		ctx, runCtx, runCancel, job, outpath, seedsByKey, exitMonitor,
+		stopReasons, plan, desiredConcurrency, startedAt,
+	)
 
 	if stopReason == jobruntime.StopReasonNone {
 		stopReason = receiveStopReason(stopReasons)
@@ -412,8 +287,6 @@ func (w *webrunner) scrapeJobCheckpointed(
 			stopReason = jobruntime.StopReasonRuntimeLimit
 		case ctx.Err() != nil:
 			stopReason = jobruntime.StopReasonShutdown
-		case taskFailures > 0:
-			stopReason = jobruntime.StopReasonTaskFailures
 		default:
 			stopReason = jobruntime.StopReasonCompleted
 		}
@@ -426,6 +299,12 @@ func (w *webrunner) scrapeJobCheckpointed(
 	taskSummary := jobruntime.TaskSummary{
 		Total: execution.Tasks.Total, Completed: execution.Tasks.Completed,
 		Failed: execution.Tasks.Failed, Skipped: execution.Tasks.Skipped,
+	}
+
+	// The durable plan, not a worker-local counter, decides whether exhausted
+	// tasks turned an otherwise clean run into a failure outcome.
+	if stopReason == jobruntime.StopReasonCompleted && execution.Tasks.Failed > 0 {
+		stopReason = jobruntime.StopReasonTaskFailures
 	}
 	outcome, err := jobruntime.ClassifyOutcome(jobruntime.RunResult{Reason: stopReason, Tasks: taskSummary})
 	if err != nil {
@@ -456,16 +335,14 @@ func (w *webrunner) scrapeJobCheckpointed(
 	return nil
 }
 
+// runCheckpointTask executes exactly one seed into its own temporary CSV. Live
+// progress reporting belongs to the pool supervisor, so the task itself only
+// runs the scraper and hands back a file to merge.
 func (w *webrunner) runCheckpointTask(
 	ctx context.Context,
 	job *web.Job,
 	seed scrapemate.IJob,
-	task web.JobTask,
 	exitMonitor exiter.Exiter,
-	stopReasons chan<- jobruntime.StopReason,
-	desiredConcurrency, effectiveConcurrency int,
-	startedAt time.Time,
-	databaseWrites int64,
 ) (string, error) {
 	outfile, err := os.CreateTemp(w.cfg.DataFolder, job.ID+".run-checkpoint-*.csv")
 	if err != nil {
@@ -497,21 +374,11 @@ func (w *webrunner) runCheckpointTask(
 
 	taskCtx, taskCancel := context.WithCancel(ctx)
 	defer taskCancel()
-	monitorCtx, monitorCancel := context.WithCancel(taskCtx)
-	monitorDone := make(chan struct{})
-	go func() {
-		defer close(monitorDone)
-		w.monitorTaskResources(
-			monitorCtx, job, task, exitMonitor, stopReasons,
-			desiredConcurrency, effectiveConcurrency, startedAt, databaseWrites, taskCancel,
-		)
-	}()
 
 	before := exiter.SnapshotOf(exitMonitor)
 	runErr := mate.Start(taskCtx, seed)
 	after := exiter.SnapshotOf(exitMonitor)
-	monitorCancel()
-	<-monitorDone
+
 	if closeErr := mate.Close(); closeErr != nil {
 		runErr = errors.Join(runErr, fmt.Errorf("close checkpoint worker: %w", closeErr))
 	}
@@ -559,57 +426,6 @@ func normalizeCheckpointRunError(ctx context.Context, runErr error, seedComplete
 	}
 
 	return runErr
-}
-
-func (w *webrunner) monitorTaskResources(
-	ctx context.Context,
-	job *web.Job,
-	task web.JobTask,
-	exitMonitor exiter.Exiter,
-	stopReasons chan<- jobruntime.StopReason,
-	desiredConcurrency, effectiveConcurrency int,
-	startedAt time.Time,
-	databaseWrites int64,
-	cancelTask context.CancelFunc,
-) {
-	ticker := time.NewTicker(resourceSampleInterval)
-	defer ticker.Stop()
-	for {
-		sample, err := w.sampleWorkerResources(ctx)
-		if err == nil {
-			exitSnapshot := exiter.SnapshotOf(exitMonitor)
-			elapsed := time.Since(startedAt)
-			placesPerMinute := jobruntime.RatePerMinute(int64(exitSnapshot.PlacesCompleted), elapsed)
-			_ = w.svc.UpdateJobWorkerProgress(context.Background(), job.ID, web.JobWorkerProgress{
-				Stage: jobruntime.StageSearchingMaps, ActiveTasks: 1,
-				PlacesPerMinute: placesPerMinute, CurrentQuery: task.Query, CurrentCell: task.SourceCell,
-				BrowserCount: int64(max(1, job.Data.BrowserPool)), ActivePages: int64(max(1, effectiveConcurrency)),
-				CPUPercent: sample.CPUPercent, MemoryBytes: sample.MemoryUsedBytes,
-				DiskFreeBytes: sample.DiskFreeBytes, DatabaseWrites: databaseWrites,
-				DesiredWorkers: int64(desiredConcurrency), EffectiveWorkers: int64(effectiveConcurrency),
-				UpdatedAt: time.Now().UTC(),
-			})
-			if job.Data.LowDiskBytes > 0 && sample.DiskFreeBytes < job.Data.LowDiskBytes {
-				select {
-				case stopReasons <- jobruntime.StopReasonLowDisk:
-				default:
-				}
-				_ = w.svc.RecordJobWorkerEvent(
-					context.Background(), job.ID, "low-disk", "warning",
-					"Free disk fell below the configured safety threshold; pausing at the current task checkpoint",
-					map[string]any{"disk_free_bytes": sample.DiskFreeBytes, "threshold_bytes": job.Data.LowDiskBytes},
-				)
-				cancelTask()
-				return
-			}
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
 }
 
 func (w *webrunner) sampleWorkerResources(ctx context.Context) (workerResourceSample, error) {

@@ -553,7 +553,7 @@ Last updated: 2026-08-19
 - [x] Preserve partial CSV/database results and durable redacted lifecycle logs.
 - [x] Continue from last completed query or grid cell.
 - [x] Create and verify local backups before database migrations.
-- [ ] Expose recovery status and last checkpoint time in the UI.
+- [x] Expose recovery status and last checkpoint time in the UI.
 
 ## 22 Export Centre
 
@@ -827,7 +827,7 @@ Last updated: 2026-08-19
 
 - [x] No loss of committed records after simulated interrupted retry-file recovery/restart and the final Docker restart smoke.
 - [ ] Large tables remain responsive using virtualisation and indexed queries.
-- [ ] Browser crashes do not automatically fail the entire job.
+- [x] Browser crashes do not automatically fail the entire job.
 - [x] Timeout/record-limit/incomplete completion is labelled Partial rather than Completed.
 - [x] Every exported record retains source job/query/cell and scrape timestamp in the standard export schema.
 
@@ -901,3 +901,8 @@ Last updated: 2026-08-19
 - 2026-08-19: Runtime verification against a copy of the live workspace (the original `webdata` was never opened): the image built from this worktree started healthy, all 15 application pages and 15 API routes returned 200, and the migrated database reported schema v7 with the original 1 job, 36 businesses, 36 source records, the legacy `ok` status, and `max_time` still serialized as nanoseconds. `/app/map` returned `X-Frame-Options: SAMEORIGIN` while `/app/results` returned `DENY`.
 - 2026-08-19: The Export Centre form was exercised end to end in the running application. A urlencoded POST to `/api/v1/exports` returned 303 and produced a real 13 KB XLSX; `openpyxl` parsed it independently as 37 rows x 24 columns with correct headers and data, which is the first validation of the hand-rolled OOXML writer by a third-party reader. Before the form-encoding fix this request failed at parsing.
 - 2026-08-19: Confirmed no local data was modified. `webdata/ba78441f-a048-4c9d-a8de-d0589e66f132.csv` still hashes to `D11CFD4D2511E2E12D8BAA09080FF34B43475E6E2DA3D49652E20D93343BDE62`, matching the value recorded on 2026-08-07, and the pre-existing backup and export files are unchanged.
+- 2026-08-20: Replaced sequential checkpoint execution with a bounded, configurable pool of leased task workers. A worker owns a task only while it holds an unexpired lease, so two workers never run the same task, a dead worker's lease expires and its task returns to the queue, and a reclaimed worker cannot overwrite the new owner's result. Migration 8 adds `lease_owner`, `lease_expires_at` and `heartbeat_at` to `job_tasks`.
+- 2026-08-20: The pool divides the job's concurrency and browser budget between workers rather than multiplying it, so raising the parallel task count changes resume granularity and latency, not load. The size is configurable per job in the wizard and as a Settings default, bounded to 16.
+- 2026-08-20: Cancellation, shutdown and the low-disk pause now release an in-flight task instead of failing it, so a restart resumes it exactly without consuming an attempt. CSV merges are serialised behind one lock and stay idempotent by business identity.
+- 2026-08-20: Validated the pool under concurrency (bounded parallelism proven by a four-way rendezvous, every task run exactly once), cancellation (in-flight work released, committed rows kept, nothing marked failed), restart (completed tasks never re-run, no duplicated rows), lease expiry (reclaimed without consuming an attempt, the stale owner's heartbeat refused), and a 24-task 8-worker claim race. The webrunner suite ran three times under `-race` in a container with zero data races.
+- 2026-08-20: A crashing task is now retried to its attempt limit while other workers continue, and the job ends partial with a task-failure reason rather than failed. The monitor Checkpoint card reports recovery state, last checkpoint time, and completed/running/remaining/failed counts.
