@@ -70,10 +70,16 @@ func (analyzer analyzerStub) Analyze(context.Context, string) (enrichment.Result
 
 type enrichmentRepositoryStub struct {
 	next          *EnrichmentTask
+	pending       []EnrichmentTask
 	stored        string
 	finished      string
 	finishedAudit *int64
 	finishErr     error
+	attachedAudit int64
+	attachedPath  string
+	attachErr     error
+	events        []string
+	eventDetails  []string
 }
 
 func (*enrichmentRepositoryStub) Get(context.Context, string) (Job, error) {
@@ -103,6 +109,12 @@ func (*enrichmentRepositoryStub) RecoverEnrichmentTasks(context.Context) (int, e
 }
 
 func (repository *enrichmentRepositoryStub) ClaimEnrichmentTask(context.Context) (EnrichmentTask, bool, error) {
+	if len(repository.pending) > 0 {
+		task := repository.pending[0]
+		repository.pending = repository.pending[1:]
+
+		return task, true, nil
+	}
 	if repository.next == nil {
 		return EnrichmentTask{}, false, nil
 	}
@@ -143,4 +155,27 @@ func (*enrichmentRepositoryStub) ListEnrichmentTasks(context.Context, int) ([]En
 
 func (*enrichmentRepositoryStub) WebsiteAuditHistory(context.Context, string, int) ([]WebsiteAuditView, error) {
 	return nil, nil
+}
+
+func (repository *enrichmentRepositoryStub) AttachAuditScreenshot(
+	_ context.Context,
+	auditID int64,
+	relativePath string,
+) error {
+	repository.attachedAudit = auditID
+	repository.attachedPath = relativePath
+
+	return repository.attachErr
+}
+
+func (repository *enrichmentRepositoryStub) RecordScreenshotEvent(
+	_ context.Context,
+	action string,
+	_ string,
+	details string,
+) error {
+	repository.events = append(repository.events, action)
+	repository.eventDetails = append(repository.eventDetails, details)
+
+	return nil
 }

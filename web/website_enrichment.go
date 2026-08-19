@@ -43,6 +43,7 @@ type JobEnrichmentOptions struct {
 	MaxInternalLinkChecks int    `json:"max_internal_link_checks,omitempty"`
 	DisableInternalChecks bool   `json:"disable_internal_link_checks,omitempty"`
 	CheckMX               bool   `json:"check_mx,omitempty"`
+	CaptureScreenshot     bool   `json:"capture_screenshot,omitempty"`
 }
 
 // EnrichmentOptionsForJob translates both the nested configuration and the
@@ -69,6 +70,7 @@ func EnrichmentOptionsForJob(data JobData) (EnrichmentOptions, bool, error) {
 		MaxInternalLinkChecks: data.Enrichment.MaxInternalLinkChecks,
 		DisableInternalChecks: data.Enrichment.DisableInternalChecks,
 		CheckMX:               data.Enrichment.CheckMX && data.Enrichment.Emails,
+		CaptureScreenshot:     data.Enrichment.CaptureScreenshot,
 		StaleAfterHours:       24,
 	}).normalized()
 
@@ -103,6 +105,7 @@ type EnrichmentOptions struct {
 	MaxInternalLinkChecks int    `json:"max_internal_link_checks,omitempty"`
 	DisableInternalChecks bool   `json:"disable_internal_link_checks,omitempty"`
 	CheckMX               bool   `json:"check_mx,omitempty"`
+	CaptureScreenshot     bool   `json:"capture_screenshot,omitempty"`
 	Force                 bool   `json:"force,omitempty"`
 	StaleAfterHours       int    `json:"stale_after_hours,omitempty"`
 }
@@ -217,6 +220,7 @@ type WebsiteAuditView struct {
 	Emails                  []enrichment.Email         `json:"emails,omitempty"`
 	Phones                  []enrichment.Phone         `json:"phones,omitempty"`
 	SocialProfiles          []enrichment.SocialProfile `json:"social_profiles,omitempty"`
+	ScreenshotPath          string                     `json:"screenshot_path,omitempty"`
 	Error                   string                     `json:"error,omitempty"`
 	StartedAt               time.Time                  `json:"started_at"`
 	CompletedAt             time.Time                  `json:"completed_at"`
@@ -238,6 +242,8 @@ type enrichmentRepository interface {
 	FinishEnrichmentTask(context.Context, string, *int64, error) error
 	ListEnrichmentTasks(context.Context, int) ([]EnrichmentTask, error)
 	WebsiteAuditHistory(context.Context, string, int) ([]WebsiteAuditView, error)
+	AttachAuditScreenshot(ctx context.Context, auditID int64, relativePath string) error
+	RecordScreenshotEvent(ctx context.Context, action string, entityID string, details string) error
 }
 
 // RecoverEnrichmentTasks returns tasks left running by an interrupted process
@@ -385,6 +391,16 @@ func (s *Service) processEnrichmentQueue(
 
 	processed := 0
 	failures := make([]error, 0)
+	// Homepage screenshots share one lazily started browser per queue pass,
+	// and a missing driver is reported at most once per pass. Screenshot
+	// problems are recorded as audit-log events and never fail a task.
+	var capturer screenshotCapturer
+	missingDriverLogged := false
+	defer func() {
+		if closer, ok := capturer.(interface{ Close() }); ok {
+			closer.Close()
+		}
+	}()
 	for processed < limit {
 		if err := ctx.Err(); err != nil {
 			return processed, errors.Join(append(failures, err)...)
@@ -450,6 +466,27 @@ func (s *Service) processEnrichmentQueue(
 		if finishErr := repository.FinishEnrichmentTask(context.WithoutCancel(ctx), task.ID, &auditID, nil); finishErr != nil {
 			failures = append(failures, fmt.Errorf("finish enrichment task %s: %w", task.ID, finishErr))
 			continue
+		}
+		// The homepage screenshot is best-effort extra evidence captured only
+		// for genuinely reachable audits. It runs after the task is durably
+		// completed so a slow browser can never hold an audit hostage.
+		if task.Options.CaptureScreenshot && analyzeErr == nil {
+			if !screenshotDriverAvailable() {
+				if !missingDriverLogged {
+					missingDriverLogged = true
+					_ = repository.RecordScreenshotEvent(
+						context.WithoutCancel(ctx),
+						"screenshot_skipped_no_driver",
+						task.ID,
+						`{"reason":"the Playwright browser driver is not installed on this host"}`,
+					)
+				}
+			} else {
+				if capturer == nil {
+					capturer = newScreenshotCapturer()
+				}
+				s.captureAuditScreenshot(ctx, repository, capturer, task, auditID, result.FinalURL)
+			}
 		}
 		if _, qualityErr := s.RecalculateQuality(context.WithoutCancel(ctx), []string{task.BusinessID}); qualityErr != nil &&
 			!errors.Is(qualityErr, ErrQualityScoringUnsupported) {
