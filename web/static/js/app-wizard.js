@@ -19,6 +19,35 @@
         return String(raw || "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
     }
 
+    function notify(message, kind) {
+        if (window.GMapsApp) window.GMapsApp.toast(message, kind || "success");
+    }
+
+    function setStatus(selector, message) {
+        const status = wizard.querySelector(selector);
+        if (status) status.textContent = message;
+    }
+
+    // appendUniqueLines adds new query lines to the keywords textarea,
+    // skipping exact duplicates of lines that are already present.
+    function appendUniqueLines(candidates) {
+        const target = field("keywords");
+        if (!target) return { added: 0, skipped: 0 };
+        const existing = lines(target.value);
+        const seen = new Set(existing);
+        let added = 0;
+        let skipped = 0;
+        candidates.map((item) => String(item || "").trim()).filter(Boolean).forEach((line) => {
+            if (seen.has(line)) { skipped += 1; return; }
+            seen.add(line);
+            existing.push(line);
+            added += 1;
+        });
+        if (added) target.value = existing.join("\n");
+        updatePreview();
+        return { added: added, skipped: skipped };
+    }
+
     function uniqueQueries() {
         const seen = new Set();
         const duplicate = [];
@@ -163,18 +192,113 @@
         updatePreview();
     }
 
-    async function loadTextFile(input, targetName) {
+    async function loadTextFile(input, target) {
         const file = input.files && input.files[0];
         if (!file) return;
-        if (file.size > 2 * 1024 * 1024) { if (window.GMapsApp) window.GMapsApp.toast("Files must be 2 MB or smaller.", "error"); input.value = ""; return; }
+        if (file.size > 2 * 1024 * 1024) { notify("Files must be 2 MB or smaller.", "error"); input.value = ""; return; }
         const text = await file.text();
-        const target = field(targetName);
         if (!target) return;
         const parsed = file.name.toLowerCase().endsWith(".csv")
             ? lines(text).map((line) => line.split(",")[0].replace(/^"|"$/g, ""))
             : lines(text);
         target.value = [target.value.trim(), parsed.join("\n")].filter(Boolean).join("\n");
         updatePreview();
+    }
+
+    async function insertKeywordSet(trigger) {
+        const picker = wizard.querySelector("[data-keyword-set-picker]");
+        if (!picker || !picker.value) { notify("Choose a saved keyword set first.", "error"); return; }
+        trigger.disabled = true;
+        try {
+            const response = await fetch("/api/v1/keyword-sets/" + encodeURIComponent(picker.value) + "/use", {
+                method: "POST",
+                credentials: "same-origin",
+                headers: { "Accept": "application/json", "X-CSRF-Token": value("csrf_token", "") }
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error((payload.error && payload.error.message) || "Could not load the keyword set");
+            const keywords = payload.data && Array.isArray(payload.data.keywords) ? payload.data.keywords : [];
+            if (!keywords.length) throw new Error("The keyword set has no keywords");
+            const result = appendUniqueLines(keywords);
+            notify(result.added + " keywords inserted" + (result.skipped ? "; " + result.skipped + " already present" : "") + ".", "success");
+        } catch (error) {
+            notify(error.message || "Could not load the keyword set.", "error");
+        } finally {
+            trigger.disabled = false;
+        }
+    }
+
+    async function saveKeywordSet(trigger) {
+        const nameInput = wizard.querySelector("[data-keyword-set-name]");
+        const name = nameInput ? nameInput.value.trim() : "";
+        if (!name) { setStatus("[data-keyword-set-status]", "Name the set before saving it."); return; }
+        const keywords = uniqueQueries().unique;
+        if (!keywords.length) { setStatus("[data-keyword-set-status]", "Add at least one query line first."); return; }
+        trigger.disabled = true;
+        try {
+            const response = await fetch("/api/v1/keyword-sets", {
+                method: "POST",
+                credentials: "same-origin",
+                headers: { "Accept": "application/json", "Content-Type": "application/json", "X-CSRF-Token": value("csrf_token", "") },
+                body: JSON.stringify({ name: name, keywords: keywords })
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error((payload.error && payload.error.message) || "Could not save the keyword set");
+            const saved = payload.data || {};
+            const picker = wizard.querySelector("[data-keyword-set-picker]");
+            if (picker && saved.id) {
+                let option = picker.querySelector('option[value="' + saved.id + '"]');
+                if (!option) { option = document.createElement("option"); option.value = saved.id; picker.appendChild(option); }
+                option.textContent = saved.name + " (" + keywords.length + " keywords, used " + (saved.use_count || 0) + "×)";
+            }
+            setStatus("[data-keyword-set-status]", "Saved “" + (saved.name || name) + "” with " + keywords.length + " keywords.");
+            notify("Keyword set saved.", "success");
+        } catch (error) {
+            setStatus("[data-keyword-set-status]", error.message || "Could not save the keyword set.");
+            notify(error.message || "Could not save the keyword set.", "error");
+        } finally {
+            trigger.disabled = false;
+        }
+    }
+
+    function commaTerms(selector) {
+        const input = wizard.querySelector(selector);
+        return input ? input.value.split(",").map((term) => term.trim().toLocaleLowerCase()).filter(Boolean) : [];
+    }
+
+    // applyKeywordFilters rewrites the queries textarea on an explicit click:
+    // a line survives when it contains at least one include term (if any are
+    // given) and none of the exclude terms. The preview count follows.
+    function applyKeywordFilters() {
+        const target = field("keywords");
+        if (!target) return;
+        const include = commaTerms("[data-include-terms]");
+        const exclude = commaTerms("[data-exclude-terms]");
+        const before = lines(target.value);
+        const kept = before.filter((line) => {
+            const lowered = line.toLocaleLowerCase();
+            if (include.length && !include.some((term) => lowered.includes(term))) return false;
+            return !exclude.some((term) => lowered.includes(term));
+        });
+        target.value = kept.join("\n");
+        updatePreview();
+        setStatus("[data-keyword-filter-status]", "Kept " + kept.length + " of " + before.length + " lines.");
+    }
+
+    function generateCombinations() {
+        const categoriesInput = wizard.querySelector("[data-combo-categories]");
+        const locationsInput = wizard.querySelector("[data-combo-locations]");
+        const categories = lines(categoriesInput && categoriesInput.value);
+        const comboLocations = lines(locationsInput && locationsInput.value);
+        if (!categories.length || !comboLocations.length) {
+            setStatus("[data-combo-status]", "Add at least one category and one location.");
+            return;
+        }
+        const combinations = [];
+        categories.forEach((category) => comboLocations.forEach((location) => combinations.push(category + " in " + location)));
+        const result = appendUniqueLines(combinations);
+        setStatus("[data-combo-status]", "Generated " + combinations.length + " combinations; added " + result.added +
+            " new queries" + (result.skipped ? ", skipped " + result.skipped + " duplicates" : "") + ".");
     }
 
     async function generateLocalAIKeywords(trigger) {
@@ -220,6 +344,10 @@
         else if (trigger.dataset.action === "use-san-francisco-preset") { event.preventDefault(); applySanFranciscoPreset(); }
         else if (trigger.dataset.action === "preview-queries") { event.preventDefault(); updatePreview(); }
         else if (trigger.dataset.action === "local-ai-keywords") { event.preventDefault(); generateLocalAIKeywords(trigger); }
+        else if (trigger.dataset.action === "insert-keyword-set") { event.preventDefault(); insertKeywordSet(trigger); }
+        else if (trigger.dataset.action === "save-keyword-set") { event.preventDefault(); saveKeywordSet(trigger); }
+        else if (trigger.dataset.action === "apply-keyword-filters") { event.preventDefault(); applyKeywordFilters(); }
+        else if (trigger.dataset.action === "generate-combinations") { event.preventDefault(); generateCombinations(); }
     });
 
     wizard.addEventListener("change", (event) => {
@@ -228,8 +356,9 @@
             if (areaID) window.location.assign("/app/scrapes/new?area_id=" + encodeURIComponent(areaID));
             return;
         }
-        if (event.target.matches("[data-keywords-file]")) loadTextFile(event.target, "keywords");
-        else if (event.target.matches("[data-locations-file]")) loadTextFile(event.target, "locations");
+        if (event.target.matches("[data-keywords-file]")) loadTextFile(event.target, field("keywords"));
+        else if (event.target.matches("[data-locations-file]")) loadTextFile(event.target, field("locations"));
+        else if (event.target.matches("[data-combo-locations-file]")) loadTextFile(event.target, wizard.querySelector("[data-combo-locations]"));
         else if (event.target.name === "performance_preset") applyPerformancePreset(event.target.value);
         else updatePreview();
     });

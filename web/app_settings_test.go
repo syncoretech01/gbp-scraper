@@ -48,6 +48,81 @@ func TestValidateSettingsFormPersistsAppearanceAndContainedStorage(t *testing.T)
 	}
 }
 
+func TestValidateSettingsFormPersistsScrapeLocationAndProxyDefaults(t *testing.T) {
+	form := completeSettingsForm()
+	form.Set("location_label", " Austin, Texas, United States ")
+	form.Set("latitude", "30.2672")
+	form.Set("longitude", "-97.7431")
+	form.Set("default_proxy_pool", "pool-1")
+
+	request := httptest.NewRequest("POST", "/api/v1/settings", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	values, err := validateSettingsForm(request)
+	if err != nil {
+		t.Fatalf("validateSettingsForm() error = %v", err)
+	}
+	for key, expected := range map[string]string{
+		"scrape.location_label":     "Austin, Texas, United States",
+		"scrape.latitude":           "30.2672",
+		"scrape.longitude":          "-97.7431",
+		"scrape.default_proxy_pool": "pool-1",
+	} {
+		if values[key] != expected {
+			t.Fatalf("%s = %q, want %q", key, values[key], expected)
+		}
+	}
+
+	defaults := scrapeSettingsFromMap(values)
+	if defaults.LocationLabel != "Austin, Texas, United States" ||
+		defaults.Lat != "30.2672" || defaults.Lon != "-97.7431" || defaults.ProxyPoolID != "pool-1" {
+		t.Fatalf("scrapeSettingsFromMap defaults = %+v", defaults)
+	}
+}
+
+func TestValidateSettingsFormKeepsAbsentLocationDefaultsEmpty(t *testing.T) {
+	// Older forms omit these fields entirely; the save must still succeed
+	// and keep the built-in empty defaults instead of failing validation.
+	request := httptest.NewRequest("POST", "/api/v1/settings", strings.NewReader(completeSettingsForm().Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	values, err := validateSettingsForm(request)
+	if err != nil {
+		t.Fatalf("validateSettingsForm() error = %v", err)
+	}
+	for _, key := range []string{
+		"scrape.location_label", "scrape.latitude", "scrape.longitude", "scrape.default_proxy_pool",
+	} {
+		if values[key] != "" {
+			t.Fatalf("%s = %q, want empty", key, values[key])
+		}
+	}
+
+	defaults := scrapeSettingsFromMap(values)
+	if defaults.LocationLabel != "" || defaults.Lat != "" || defaults.Lon != "" || defaults.ProxyPoolID != "" {
+		t.Fatalf("absent fields produced defaults = %+v", defaults)
+	}
+}
+
+func TestValidateSettingsFormRejectsInvalidLocationDefaults(t *testing.T) {
+	cases := map[string][2]string{
+		"long label":      {"location_label", strings.Repeat("a", 121)},
+		"label newline":   {"location_label", "two\nlines"},
+		"latitude range":  {"latitude", "90.5"},
+		"latitude text":   {"latitude", "north"},
+		"longitude range": {"longitude", "-180.5"},
+		"longitude text":  {"longitude", "west"},
+		"long pool":       {"default_proxy_pool", strings.Repeat("p", 65)},
+	}
+	for name, field := range cases {
+		form := completeSettingsForm()
+		form.Set(field[0], field[1])
+		request := httptest.NewRequest("POST", "/api/v1/settings", strings.NewReader(form.Encode()))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		if _, err := validateSettingsForm(request); err == nil {
+			t.Fatalf("%s: validateSettingsForm() accepted %q=%q", name, field[0], field[1])
+		}
+	}
+}
+
 func TestValidateSettingsFormRejectsEscapingStoragePaths(t *testing.T) {
 	for _, candidate := range []string{"../outside", "exports/../../outside", `C:\\outside`} {
 		form := completeSettingsForm()
@@ -56,6 +131,38 @@ func TestValidateSettingsFormRejectsEscapingStoragePaths(t *testing.T) {
 		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		if _, err := validateSettingsForm(request); err == nil {
 			t.Fatalf("validateSettingsForm() accepted %q", candidate)
+		}
+	}
+}
+
+func TestSettingsPageRendersScrapeLocationDefaults(t *testing.T) {
+	t.Parallel()
+
+	repository := newKeywordSetTestRepository()
+	repository.settings = map[string]string{
+		"scrape.location_label": "Austin, Texas, United States",
+		"scrape.latitude":       "30.2672",
+		"scrape.longitude":      "-97.7431",
+	}
+	srv, err := New(NewService(repository, t.TempDir()), ":0")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	srv.settingsPage(recorder, httptest.NewRequest("GET", "/app/settings", nil))
+
+	if recorder.Code != 200 {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	body := recorder.Body.String()
+	for _, expected := range []string{
+		`name="location_label"`, `name="latitude"`, `name="longitude"`,
+		"Austin, Texas, United States", "30.2672", "-97.7431",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("settings page missing %q", expected)
 		}
 	}
 }
