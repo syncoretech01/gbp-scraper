@@ -12,23 +12,30 @@ import (
 )
 
 type schedulesPageData struct {
-	Templates []namedAppOption
-	Schedules []scheduleCardView
-	Runs      []scheduleRunView
-	Notice    string
+	Templates     []namedAppOption
+	Schedules     []scheduleCardView
+	Runs          []scheduleRunView
+	ExportFormats []string
+	Notice        string
 }
 
 type scheduleCardView struct {
-	ID            string
-	Name          string
-	TemplateName  string
-	Enabled       bool
-	Recurrence    string
-	Timezone      string
-	NextRunAt     string
-	LastRunAt     string
-	OverlapPolicy string
-	MissedPolicy  string
+	ID                  string
+	Name                string
+	TemplateName        string
+	Enabled             bool
+	Recurrence          string
+	CustomCron          string
+	Timezone            string
+	NextRunAt           string
+	LastRunAt           string
+	OverlapPolicy       string
+	MissedPolicy        string
+	RetryCount          int
+	RetryBackoffSeconds int
+	AutoExportFormat    string
+	RunsRetentionDays   int
+	Runs                []scheduleRunView
 }
 
 type scheduleRunView struct {
@@ -36,6 +43,8 @@ type scheduleRunView struct {
 	State        string
 	DueAt        string
 	StartedAt    string
+	FinishedAt   string
+	Attempt      int
 	JobID        string
 	Message      string
 }
@@ -56,23 +65,35 @@ func (s *Server) schedulesPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not load schedule history", http.StatusInternalServerError)
 		return
 	}
-	page := schedulesPageData{Notice: strings.TrimSpace(r.URL.Query().Get("notice"))}
+	page := schedulesPageData{
+		ExportFormats: scheduleAutoExportFormats(),
+		Notice:        strings.TrimSpace(r.URL.Query().Get("notice")),
+	}
 	for _, template := range templates {
 		page.Templates = append(page.Templates, namedAppOption{ID: template.ID, Name: template.Name})
+	}
+	runsBySchedule := make(map[string][]scheduleRunView, len(schedules))
+	for _, run := range runs {
+		view := scheduleRunView{
+			ScheduleName: run.ScheduleName, State: run.State, DueAt: run.ScheduledFor.Format(time.RFC3339),
+			StartedAt: optionalTimeLabel(run.StartedAt), FinishedAt: optionalTimeLabel(run.FinishedAt),
+			Attempt: run.Attempt, JobID: run.JobID, Message: run.Error,
+		}
+		page.Runs = append(page.Runs, view)
+		if len(runsBySchedule[run.ScheduleID]) < 5 {
+			runsBySchedule[run.ScheduleID] = append(runsBySchedule[run.ScheduleID], view)
+		}
 	}
 	for _, schedule := range schedules {
 		page.Schedules = append(page.Schedules, scheduleCardView{
 			ID: schedule.ID, Name: schedule.Name, TemplateName: schedule.TemplateName,
 			Enabled: schedule.Enabled, Recurrence: scheduleRecurrenceLabel(schedule.Spec),
-			Timezone: schedule.Timezone, NextRunAt: optionalTimeLabel(schedule.NextRunAt),
+			CustomCron: schedule.Spec.CustomCron,
+			Timezone:   schedule.Timezone, NextRunAt: optionalTimeLabel(schedule.NextRunAt),
 			LastRunAt: optionalTimeLabel(schedule.LastRunAt), OverlapPolicy: schedule.Spec.OverlapPolicy,
-			MissedPolicy: schedule.Spec.MissedPolicy,
-		})
-	}
-	for _, run := range runs {
-		page.Runs = append(page.Runs, scheduleRunView{
-			ScheduleName: run.ScheduleName, State: run.State, DueAt: run.ScheduledFor.Format(time.RFC3339),
-			StartedAt: optionalTimeLabel(run.StartedAt), JobID: run.JobID, Message: run.Error,
+			MissedPolicy: schedule.Spec.MissedPolicy, RetryCount: schedule.RetryCount,
+			RetryBackoffSeconds: schedule.RetryBackoffSeconds, AutoExportFormat: schedule.AutoExportFormat,
+			RunsRetentionDays: schedule.RunsRetentionDays, Runs: runsBySchedule[schedule.ID],
 		})
 	}
 	activity, _ := s.appActivity(r)
@@ -92,6 +113,24 @@ func scheduleRecurrenceLabel(spec ScheduleSpec) string {
 		return "cron " + spec.CustomCron
 	}
 	return spec.Recurrence
+}
+
+// scheduleAutoExportFormats lists the advertised export formats offered for
+// the per-schedule automatic export. Every entry must be accepted by
+// exportExtension so the automation path can build the file.
+func scheduleAutoExportFormats() []string {
+	return []string{
+		"csv", "xlsx", "json", "jsonl", "geojson", "kml",
+		"vcard", "txt", "postgresql_sql", "mysql_sql", "sqlite",
+	}
+}
+
+func parseScheduleFormInt(raw string, fallback int) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fallback, nil
+	}
+	return strconv.Atoi(raw)
 }
 
 func optionalTimeLabel(value *time.Time) string {
@@ -133,13 +172,36 @@ func (s *Server) createSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	overlapPolicy := strings.TrimSpace(r.FormValue("overlap_policy"))
-	if overlapPolicy != "skip" && overlapPolicy != "queue" {
-		http.Error(w, "overlap policy must be skip or queue", http.StatusUnprocessableEntity)
+	if !validScheduleOverlapPolicy(overlapPolicy) {
+		http.Error(w, "overlap policy must be queue, skip, or replace", http.StatusUnprocessableEntity)
 		return
 	}
 	missedPolicy := strings.TrimSpace(r.FormValue("missed_policy"))
-	if missedPolicy != "skip" && missedPolicy != "run_once" {
+	if !validScheduleMissedPolicy(missedPolicy) {
 		http.Error(w, "missed-run policy must be skip or run once", http.StatusUnprocessableEntity)
+		return
+	}
+	retryCount, err := parseScheduleFormInt(r.FormValue("retry_count"), 0)
+	if err != nil || validateScheduleRetryCount(retryCount) != nil {
+		http.Error(w, fmt.Sprintf("retry count must be between 0 and %d", MaxScheduleRetryCount),
+			http.StatusUnprocessableEntity)
+		return
+	}
+	retryBackoff, err := parseScheduleFormInt(r.FormValue("retry_backoff_seconds"), DefaultScheduleRetryBackoffSeconds)
+	if err != nil || validateScheduleRetryBackoff(retryBackoff) != nil {
+		http.Error(w, fmt.Sprintf("retry backoff must be between %d and %d seconds",
+			MinScheduleRetryBackoffSeconds, MaxScheduleRetryBackoffSeconds), http.StatusUnprocessableEntity)
+		return
+	}
+	autoExportFormat := normalizeScheduleAutoExportFormat(r.FormValue("auto_export_format"))
+	if !validScheduleAutoExportFormat(autoExportFormat) {
+		http.Error(w, "unsupported automatic export format", http.StatusUnprocessableEntity)
+		return
+	}
+	retentionDays, err := parseScheduleFormInt(r.FormValue("runs_retention_days"), 0)
+	if err != nil || validateScheduleRetentionDays(retentionDays) != nil {
+		http.Error(w, fmt.Sprintf("run retention must be between 0 (keep all) and %d days",
+			MaxScheduleRunsRetentionDays), http.StatusUnprocessableEntity)
 		return
 	}
 	spec := ScheduleSpec{
@@ -176,7 +238,9 @@ func (s *Server) createSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	schedule := ScheduleRecord{
 		ID: uuid.NewString(), Name: name, TemplateID: templateID, Timezone: timezone,
-		Enabled: enabled, Spec: spec, NextRunAt: nextPointer, CreatedAt: now, UpdatedAt: now,
+		Enabled: enabled, Spec: spec, RetryCount: retryCount, RetryBackoffSeconds: retryBackoff,
+		AutoExportFormat: autoExportFormat, RunsRetentionDays: retentionDays,
+		NextRunAt: nextPointer, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.svc.SaveSchedule(r.Context(), schedule); err != nil {
 		http.Error(w, "could not save schedule", http.StatusInternalServerError)
