@@ -51,6 +51,7 @@ func (s *Server) renderAppPage(w http.ResponseWriter, key string, data appPageDa
 
 	entry := "app/page/" + strings.ReplaceAll(key, "_", "-")
 	data.Features = s.appFeatures()
+	data.AuthEnabled = s.authEnabled()
 	data.Preferences = defaultAppPreferences()
 	if s.svc != nil {
 		values, err := s.svc.LoadSettings(context.Background())

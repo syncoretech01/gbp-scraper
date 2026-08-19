@@ -13,6 +13,7 @@
     </form>
 
     <div class="topbar-actions">
+        {{if .AuthEnabled}}<form method="post" action="/logout" class="inline-form"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button button-small" type="submit">Sign out</button></form>{{end}}
         <a class="activity-pill" href="/app/jobs?state=running,queued" data-action="navigate" data-endpoint="/app/jobs?state=running,queued" aria-label="Open active jobs">
             <span class="activity-dot" aria-hidden="true"></span>
             <span data-activity-label>{{if .Activity.Running}}{{.Activity.Running}} running{{else}}No active jobs{{end}}</span>

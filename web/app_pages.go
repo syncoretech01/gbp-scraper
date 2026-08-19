@@ -21,6 +21,7 @@ type appPageData struct {
 	Theme       string
 	Preferences appPreferences
 	CSRFToken   string
+	AuthEnabled bool
 	Activity    appActivity
 	Features    appFeatureFlags
 	Flash       []appNotice
