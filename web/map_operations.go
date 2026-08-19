@@ -33,12 +33,24 @@ type MapCellActivity struct {
 	WarningCount   int64  `json:"warning_count"`
 	ResultCount    int64  `json:"result_count"`
 	RawResultCount int64  `json:"raw_result_count"`
+	// DuplicatesSkipped and RowsReplaced aggregate the JobTaskCheckpoint
+	// metadata recorded by the cell's durable tasks. Repositories that do not
+	// track task checkpoints leave both at zero.
+	DuplicatesSkipped int64 `json:"duplicates_skipped,omitempty"`
+	RowsReplaced      int64 `json:"rows_replaced,omitempty"`
 }
 
 // DuplicateCount reports repeated observations beyond the unique businesses
 // attributed to a cell.
 func (activity MapCellActivity) DuplicateCount() int64 {
 	return max(activity.RawResultCount-activity.ResultCount, 0)
+}
+
+// CheckpointDuplicates reports the duplicate evidence committed by the cell's
+// durable task checkpoints: source rows skipped as exact duplicates plus rows
+// that replaced an earlier copy of the same business.
+func (activity MapCellActivity) CheckpointDuplicates() int64 {
+	return max(activity.DuplicatesSkipped, 0) + max(activity.RowsReplaced, 0)
 }
 
 // MapCoverageSummary provides inexpensive totals for the live coverage UI.
@@ -66,6 +78,42 @@ type MapCoveragePreview struct {
 
 type mapCoverageRepository interface {
 	MapCellActivity(context.Context, string) ([]MapCellActivity, error)
+}
+
+// mapCellTaskRepository optionally exposes the durable job_tasks rows behind
+// MapCellActivity so coverage can also surface the duplicate evidence each
+// task checkpoint recorded (JobTaskCheckpoint.DuplicatesSkipped and
+// RowsReplaced). Repositories without this capability degrade gracefully: the
+// per-cell duplicates count simply stays at zero.
+type mapCellTaskRepository interface {
+	MapCellTasks(context.Context, string) ([]JobTask, error)
+}
+
+// mapCellCheckpointDuplicates decodes each task's bounded checkpoint JSON and
+// sums the recorded duplicate evidence by source cell. Tasks without a source
+// cell or a parseable checkpoint contribute nothing, so historic rows written
+// before checkpoints carried duplicate counts stay harmless.
+func mapCellCheckpointDuplicates(tasks []JobTask) map[string]JobTaskCheckpoint {
+	totals := make(map[string]JobTaskCheckpoint, len(tasks))
+	for _, task := range tasks {
+		sourceCell := strings.TrimSpace(task.SourceCell)
+		if sourceCell == "" || len(task.Checkpoint) == 0 {
+			continue
+		}
+		var checkpoint JobTaskCheckpoint
+		if err := json.Unmarshal(task.Checkpoint, &checkpoint); err != nil {
+			continue
+		}
+		if checkpoint.DuplicatesSkipped <= 0 && checkpoint.RowsReplaced <= 0 {
+			continue
+		}
+		total := totals[sourceCell]
+		total.DuplicatesSkipped += max(checkpoint.DuplicatesSkipped, 0)
+		total.RowsReplaced += max(checkpoint.RowsReplaced, 0)
+		totals[sourceCell] = total
+	}
+
+	return totals
 }
 
 // PreviewMapCoverage overlays checkpointed task and source aggregates on the
@@ -111,6 +159,19 @@ func (s *Service) PreviewMapCoverage(
 		}
 		bySource[activity.SourceCell] = activity
 	}
+	if taskSource, ok := s.repo.(mapCellTaskRepository); ok {
+		tasks, tasksErr := taskSource.MapCellTasks(ctx, jobID)
+		if tasksErr != nil {
+			return MapCoveragePreview{}, tasksErr
+		}
+		for sourceCell, checkpointTotals := range mapCellCheckpointDuplicates(tasks) {
+			activity := bySource[sourceCell]
+			activity.SourceCell = sourceCell
+			activity.DuplicatesSkipped += checkpointTotals.DuplicatesSkipped
+			activity.RowsReplaced += checkpointTotals.RowsReplaced
+			bySource[sourceCell] = activity
+		}
+	}
 	matched := make(map[string]struct{}, len(activities))
 	coverage := MapCoveragePreview{
 		MapGridPreview: preview,
@@ -152,6 +213,7 @@ func applyMapCellActivity(cell *MapGridCell, activity MapCellActivity, jobState 
 	cell.WarningCount = activity.WarningCount
 	cell.ResultCount = activity.ResultCount
 	cell.DuplicateCount = activity.DuplicateCount()
+	cell.Duplicates = activity.CheckpointDuplicates()
 	cell.Empty = activity.TaskCount > 0 && activity.PendingTasks == 0 && activity.RunningTasks == 0 &&
 		activity.ResultCount == 0
 	cell.State = mapCellCoverageState(activity, jobState)

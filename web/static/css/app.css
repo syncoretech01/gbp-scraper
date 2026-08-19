@@ -602,3 +602,10 @@ html[data-reduced-motion="true"] *, html[data-reduced-motion="true"] *::before, 
 .heat-empty-cell { background: #e8b45a; }
 .heat-muted-cell { background: #d9dee7; }
 .map-heat-toggle[aria-pressed="true"] { border-color: var(--primary); background: var(--primary-soft); box-shadow: inset 0 0 0 1px var(--primary); }
+
+/* Duplicate-heavy coverage shading: a 4-step purple ramp mirrored by
+   duplicateHeatRamp in app-map.js so legend swatches match the map cells. */
+.heat-duplicate-1 { background: #e2d2f3; }
+.heat-duplicate-2 { background: #c3a2e4; }
+.heat-duplicate-3 { background: #9f66d3; }
+.heat-duplicate-4 { background: #6d3aa8; }
