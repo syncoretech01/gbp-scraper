@@ -193,6 +193,7 @@ func New(svc *Service, addr string) (*Server, error) {
 	ans.registerProxyRetestRoutes(mux)
 	ans.registerScheduleAutomationRoutes(mux)
 	ans.registerManualEditRoutes(mux)
+	ans.registerLiveControlRoutes(mux)
 	ans.registerCheckpointRoutes(mux)
 	ans.registerResultRoutes(mux)
 	ans.registerDuplicateRoutes(mux)

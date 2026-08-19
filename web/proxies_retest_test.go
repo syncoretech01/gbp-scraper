@@ -231,4 +231,17 @@ func (repository *retestProxyRepository) SetProxyEnabled(_ context.Context, id s
 func (repository *retestProxyRepository) DeleteProxy(context.Context, string) error     { return nil }
 func (repository *retestProxyRepository) DeleteProxyPool(context.Context, string) error { return nil }
 
+func (repository *retestProxyRepository) ResolveProxyPlan(ctx context.Context, id string) (ProxyPlan, error) {
+	proxies, err := repository.ResolveProxyPool(ctx, id)
+	if err != nil {
+		return ProxyPlan{}, err
+	}
+
+	return ProxyPlan{PoolID: id, Strategy: "round_robin", Proxies: proxies}, nil
+}
+
+func (repository *retestProxyRepository) SetProxyPoolTaskCap(context.Context, string, int) error {
+	return nil
+}
+
 var _ proxyRepository = (*retestProxyRepository)(nil)

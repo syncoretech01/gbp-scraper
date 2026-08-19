@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -51,11 +52,23 @@ type ProxyTestResult struct {
 	CheckedAt time.Time
 }
 
+// ProxyPlan is what the task pool needs to assign proxies to tasks: the
+// usable proxies in a stable order, the pool's rotation strategy, and an
+// optional per-proxy task cap.
+type ProxyPlan struct {
+	PoolID           string
+	Strategy         string
+	Proxies          []string
+	MaxTasksPerProxy int
+}
+
 type proxyRepository interface {
 	ListProxyPools(context.Context) ([]ProxyPoolRecord, error)
 	ListProxies(context.Context, string) ([]ProxyRecord, error)
 	ImportProxyPool(context.Context, string, string, []string) (ProxyPoolRecord, int, error)
 	ResolveProxyPool(context.Context, string) ([]string, error)
+	ResolveProxyPlan(context.Context, string) (ProxyPlan, error)
+	SetProxyPoolTaskCap(context.Context, string, int) error
 	GetProxySecret(context.Context, string) (string, error)
 	RecordProxyTest(context.Context, string, ProxyTestResult) error
 	SetProxyEnabled(context.Context, string, bool) error
@@ -101,6 +114,32 @@ func (s *Service) ResolveProxyPool(ctx context.Context, id string) ([]string, er
 		return nil, err
 	}
 	return repository.ResolveProxyPool(ctx, id)
+}
+
+// ResolveProxyPlan returns the proxies, strategy, and per-proxy task cap the
+// worker needs for sticky assignment and limits.
+func (s *Service) ResolveProxyPlan(ctx context.Context, id string) (ProxyPlan, error) {
+	repository, err := s.proxyRepository()
+	if err != nil {
+		return ProxyPlan{}, err
+	}
+
+	return repository.ResolveProxyPlan(ctx, id)
+}
+
+// SetProxyPoolTaskCap bounds how many tasks one run may assign to a single
+// proxy of the pool (0 removes the cap; at most 10,000).
+func (s *Service) SetProxyPoolTaskCap(ctx context.Context, id string, taskCap int) error {
+	repository, err := s.proxyRepository()
+	if err != nil {
+		return err
+	}
+
+	if taskCap < 0 || taskCap > 10_000 {
+		return fmt.Errorf("per-proxy task cap must be between 0 and 10000")
+	}
+
+	return repository.SetProxyPoolTaskCap(ctx, id, taskCap)
 }
 
 func (s *Service) GetProxySecret(ctx context.Context, id string) (string, error) {

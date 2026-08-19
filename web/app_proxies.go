@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -112,11 +113,27 @@ func (s *Server) importProxyPool(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "proxy import exceeds 5,000 entries", http.StatusUnprocessableEntity)
 		return
 	}
-	_, imported, err := s.svc.ImportProxyPool(r.Context(), name, strings.TrimSpace(r.FormValue("strategy")), values)
+	pool, imported, err := s.svc.ImportProxyPool(r.Context(), name, strings.TrimSpace(r.FormValue("strategy")), values)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
+
+	if raw := strings.TrimSpace(r.FormValue("max_tasks_per_proxy")); raw != "" && raw != "0" {
+		capValue, capErr := strconv.Atoi(raw)
+		if capErr != nil || capValue < 0 || capValue > 10_000 {
+			http.Error(w, "tasks per proxy must be between 0 and 10000", http.StatusUnprocessableEntity)
+
+			return
+		}
+
+		if capErr := s.svc.SetProxyPoolTaskCap(r.Context(), pool.ID, capValue); capErr != nil {
+			http.Error(w, "could not store the per-proxy task cap", http.StatusInternalServerError)
+
+			return
+		}
+	}
+
 	http.Redirect(w, r, fmt.Sprintf("/app/proxies?notice=%d+proxies+imported", imported), http.StatusSeeOther)
 }
 

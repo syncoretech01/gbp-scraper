@@ -33,6 +33,9 @@ type webrunner struct {
 	cfg             *runner.Config
 	setupMate       func(context.Context, io.Writer, *web.Job) (mateRunner, error)
 	sampleResources func(context.Context, string) (workerResourceSample, error)
+	// resolveProxyPlanForTest lets tests supply a proxy plan without a real
+	// encrypted pool; production always goes through the service.
+	resolveProxyPlanForTest func(context.Context, string) (web.ProxyPlan, error)
 }
 
 type mateRunner interface {
@@ -221,7 +224,16 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) error {
 		return w.failJob(ctx, job, fmt.Errorf("job has no queries"))
 	}
 	if job.Data.ProxyPoolID != "" {
-		proxies, resolveErr := w.svc.ResolveProxyPool(ctx, job.Data.ProxyPoolID)
+		resolvePool := w.svc.ResolveProxyPool
+		if w.resolveProxyPlanForTest != nil {
+			resolvePool = func(ctx context.Context, id string) ([]string, error) {
+				plan, planErr := w.resolveProxyPlanForTest(ctx, id)
+
+				return plan.Proxies, planErr
+			}
+		}
+
+		proxies, resolveErr := resolvePool(ctx, job.Data.ProxyPoolID)
 		if resolveErr != nil {
 			return w.failJob(ctx, job, fmt.Errorf("resolve proxy pool: %w", resolveErr))
 		}

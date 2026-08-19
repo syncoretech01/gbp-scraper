@@ -231,14 +231,38 @@ func (w *webrunner) scrapeJobCheckpointed(
 			allowedSeconds = int(job.Data.MaxTime.Seconds())
 		}
 	}
-	runCtx, runCancel := context.WithTimeout(ctx, time.Duration(allowedSeconds)*time.Second)
+	// The deadline is enforced by the pool supervisor rather than a timeout
+	// context, so an operator can extend the runtime while the job runs.
+	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
+
+	if err := w.svc.ResetJobLiveControls(ctx, job.ID); err != nil &&
+		!errors.Is(err, web.ErrLiveControlsUnsupported) {
+		return w.failJob(ctx, job, fmt.Errorf("reset live controls: %w", err))
+	}
+
 	stopReasons := make(chan jobruntime.StopReason, 4)
 	go w.watchRequestedStop(runCtx, job.ID, runCancel, stopReasons)
 	exitMonitor.SetCancelFunc(runCancel)
 	go exitMonitor.Run(runCtx)
 
 	startedAt := time.Now().UTC()
+	deadline := startedAt.Add(time.Duration(allowedSeconds) * time.Second)
+
+	// Sticky assignment and per-proxy caps need the pool's plan, not just its
+	// resolved URL list. Absence of a plan keeps the job's own proxies as-is.
+	var proxyPlan *web.ProxyPlan
+
+	if job.Data.ProxyPoolID != "" {
+		resolve := w.svc.ResolveProxyPlan
+		if w.resolveProxyPlanForTest != nil {
+			resolve = w.resolveProxyPlanForTest
+		}
+
+		if plan, planErr := resolve(ctx, job.Data.ProxyPoolID); planErr == nil && len(plan.Proxies) > 0 {
+			proxyPlan = &plan
+		}
+	}
 	desiredConcurrency := job.Data.Concurrency
 
 	if desiredConcurrency <= 0 {
@@ -273,7 +297,7 @@ func (w *webrunner) scrapeJobCheckpointed(
 
 	stopReason := w.runTaskPool(
 		ctx, runCtx, runCancel, job, outpath, seedsByKey, exitMonitor,
-		stopReasons, plan, desiredConcurrency, startedAt,
+		stopReasons, plan, desiredConcurrency, startedAt, deadline, proxyPlan,
 	)
 
 	if stopReason == jobruntime.StopReasonNone {

@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -90,7 +91,8 @@ func (repo *repo) ImportProxyPool(
 	strategy string,
 	values []string,
 ) (web.ProxyPoolRecord, int, error) {
-	if strategy != "round_robin" && strategy != "random" && strategy != "fastest" && strategy != "lowest_failure" {
+	if strategy != "round_robin" && strategy != "random" && strategy != "fastest" &&
+		strategy != "lowest_failure" && strategy != "sticky_query" && strategy != "sticky_cell" {
 		return web.ProxyPoolRecord{}, 0, fmt.Errorf("unsupported proxy strategy")
 	}
 	key, err := repo.loadProxyKey()
@@ -203,6 +205,8 @@ func (repo *repo) ResolveProxyPool(ctx context.Context, id string) ([]string, er
 
 	query := queryPrefix + "proxies.id"
 	switch strategy {
+	// sticky_query and sticky_cell keep the deterministic id order so the
+	// task pool's hashed assignment is stable across resolves.
 	case "random":
 		query = queryPrefix + "random()"
 	case "fastest":
@@ -236,6 +240,73 @@ func (repo *repo) ResolveProxyPool(ctx context.Context, id string) ([]string, er
 		_, _ = repo.db.ExecContext(ctx, "UPDATE proxies SET usage_count = usage_count + 1 WHERE id = ?", proxyID)
 	}
 	return values, nil
+}
+
+// ResolveProxyPlan returns the pool's usable proxies together with its
+// rotation strategy and per-proxy task cap, which the task pool needs to make
+// sticky assignments and enforce limits. Sticky strategies use a stable
+// identifier order so a hashed assignment stays deterministic across polls.
+func (repo *repo) ResolveProxyPlan(ctx context.Context, id string) (web.ProxyPlan, error) {
+	var (
+		strategy string
+		settings string
+	)
+
+	if err := repo.db.QueryRowContext(
+		ctx, "SELECT strategy, settings FROM proxy_pools WHERE id = ?", id,
+	).Scan(&strategy, &settings); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return web.ProxyPlan{}, web.ErrProxyNotFound
+		}
+
+		return web.ProxyPlan{}, err
+	}
+
+	proxies, err := repo.ResolveProxyPool(ctx, id)
+	if err != nil {
+		return web.ProxyPlan{}, err
+	}
+
+	plan := web.ProxyPlan{PoolID: id, Strategy: strategy, Proxies: proxies}
+
+	var options struct {
+		MaxTasksPerProxy int `json:"max_tasks_per_proxy"`
+	}
+
+	if json.Unmarshal([]byte(settings), &options) == nil && options.MaxTasksPerProxy > 0 {
+		plan.MaxTasksPerProxy = options.MaxTasksPerProxy
+	}
+
+	return plan, nil
+}
+
+// SetProxyPoolTaskCap stores the per-proxy task cap in the pool settings.
+func (repo *repo) SetProxyPoolTaskCap(ctx context.Context, id string, cap int) error {
+	payload, err := json.Marshal(map[string]int{"max_tasks_per_proxy": cap})
+	if err != nil {
+		return fmt.Errorf("encode pool settings: %w", err)
+	}
+
+	if cap <= 0 {
+		payload = []byte("{}")
+	}
+
+	result, err := repo.db.ExecContext(
+		ctx,
+		"UPDATE proxy_pools SET settings = ?, updated_at = ? WHERE id = ?",
+		string(payload), time.Now().UTC().Unix(), id,
+	)
+	if err != nil {
+		return fmt.Errorf("store pool settings: %w", err)
+	}
+
+	if affected, affectedErr := result.RowsAffected(); affectedErr != nil {
+		return affectedErr
+	} else if affected == 0 {
+		return web.ErrProxyNotFound
+	}
+
+	return nil
 }
 
 func (repo *repo) GetProxySecret(ctx context.Context, id string) (string, error) {

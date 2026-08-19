@@ -106,6 +106,10 @@ type taskPoolRun struct {
 	windowFailures  atomic.Int64
 	windowSuccesses atomic.Int64
 	failureBudget   atomic.Int64
+
+	// live carries the between-task reconfiguration state: extendable
+	// deadline, switchable proxy plan, and retry-current signalling.
+	live *liveRunState
 }
 
 // requestStop latches the first stop reason. Later reasons are ignored so the
@@ -169,12 +173,18 @@ func (w *webrunner) runTaskPool(
 	plan taskPoolPlan,
 	desiredConcurrency int,
 	startedAt time.Time,
+	deadline time.Time,
+	proxyPlan *web.ProxyPlan,
 ) jobruntime.StopReason {
-	run := &taskPoolRun{job: job, outpath: outpath}
+	run := &taskPoolRun{job: job, outpath: outpath, live: newLiveRunState(deadline)}
 	run.desiredConcurrency.Store(int64(desiredConcurrency))
 	run.effectiveConcurrency.Store(int64(plan.PerTaskConcurrency * plan.Workers))
 	run.workers.Store(int64(plan.Workers))
 	run.failureBudget.Store(int64(desiredConcurrency))
+
+	if proxyPlan != nil {
+		run.live.setProxyPlan(proxyPlan, false)
+	}
 
 	supervisorDone := make(chan struct{})
 
@@ -345,6 +355,28 @@ func (w *webrunner) executeLeasedTask(
 		return false
 	}
 
+	// Proxy assignment happens per task so sticky pools pin a query or cell to
+	// one exit and caps are enforceable. An exhausted pool pauses the job
+	// rather than burning attempts against dead proxies.
+	assignment, assignErr := run.live.assignTaskProxies(task)
+	if assignErr != nil {
+		_ = w.svc.ReleaseJobTask(
+			context.Background(), job.ID, task.Key, owner,
+			"every proxy in the pool is failed or at its task cap",
+		)
+
+		if run.requestStop(jobruntime.StopReasonProxiesUnavailable) {
+			_ = w.svc.RecordJobWorkerEvent(
+				context.Background(), job.ID, "proxy-failure", "warning",
+				"Pausing: every proxy in the pool has failed or reached its task cap",
+				map[string]any{"task_key": task.Key},
+			)
+			runCancel()
+		}
+
+		return false
+	}
+
 	run.activeTasks.Add(1)
 	defer run.activeTasks.Add(-1)
 
@@ -354,6 +386,10 @@ func (w *webrunner) executeLeasedTask(
 	// its share of the budget as it stands, which is the safe reconfiguration
 	// point the engine supports.
 	taskJob.Data.Concurrency = max(1, int(run.effectiveConcurrency.Load())/max(1, plan.Workers))
+
+	if assignment.override {
+		taskJob.Data.Proxies = assignment.proxies
+	}
 
 	if plan.PerTaskBrowserPool > 0 {
 		taskJob.Data.BrowserPool = plan.PerTaskBrowserPool
@@ -369,6 +405,7 @@ func (w *webrunner) executeLeasedTask(
 	}()
 
 	taskCtx, cancelTask := context.WithCancel(runCtx)
+	run.live.registerTaskCancel(task.Key, cancelTask)
 
 	go func() {
 		select {
@@ -380,12 +417,35 @@ func (w *webrunner) executeLeasedTask(
 
 	runPath, taskErr := w.runCheckpointTask(taskCtx, &taskJob, seed, exitMonitor)
 
+	run.live.unregisterTaskCancel(task.Key)
 	cancelTask()
 	stopHeartbeat()
 	<-heartbeatDone
 
 	if runPath != "" {
 		defer func() { _ = os.Remove(runPath) }()
+	}
+
+	// A retry-current request cancels only this task: keep committed rows,
+	// give the task back without consuming an attempt, and keep claiming.
+	if run.live.consumeRetryFlag(task.Key) &&
+		runCtx.Err() == nil && run.currentStop() == jobruntime.StopReasonNone {
+		if runPath != "" {
+			if _, mergeErr := run.mergeTaskOutput(runPath, sample.DiskFreeBytes); mergeErr != nil {
+				_ = w.svc.RecordJobWorkerEvent(
+					context.Background(), job.ID, "task-merge-failed", "warning",
+					"Could not merge rows from a task requeued by retry-current",
+					map[string]any{"task_key": task.Key, "error": jobruntime.RedactString(mergeErr.Error())},
+				)
+			}
+		}
+
+		_ = w.svc.ReleaseJobTask(
+			context.Background(), job.ID, task.Key, owner,
+			"Requeued by an operator retry-current request",
+		)
+
+		return true
 	}
 
 	// A cancelled run must leave the task exactly resumable rather than
@@ -434,6 +494,28 @@ func (w *webrunner) executeLeasedTask(
 		}
 
 		return true
+	}
+
+	failureKind := classifyTaskFailure(taskErr)
+	_ = w.svc.RecordJobWorkerEvent(
+		context.Background(), job.ID, failureKind, "warning",
+		fmt.Sprintf("Task attempt failed (%s); a retry gets a fresh browser context", failureKind),
+		map[string]any{"task_key": task.Key, "error": jobruntime.RedactString(taskErr.Error())},
+	)
+
+	if failureKind == "proxy-failure" && assignment.index >= 0 {
+		if run.live.markProxyFailed(assignment.index) {
+			// The last usable proxy just failed: pause instead of burning the
+			// remaining attempts of every task against a dead pool.
+			if run.requestStop(jobruntime.StopReasonProxiesUnavailable) {
+				_ = w.svc.RecordJobWorkerEvent(
+					context.Background(), job.ID, "proxy-failure", "warning",
+					"Pausing: the last usable proxy in the pool failed",
+					map[string]any{"task_key": task.Key},
+				)
+				runCancel()
+			}
+		}
 	}
 
 	w.failLeasedTask(run, task, taskErr, checkpoint)
@@ -617,6 +699,8 @@ func (w *webrunner) superviseTaskPool(
 				w.adaptTaskPool(run, sample)
 			}
 		}
+
+		w.pollLiveControls(run, runCancel)
 
 		select {
 		case <-ctx.Done():

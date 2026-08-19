@@ -603,6 +603,26 @@ func (s *Server) buildJobMonitorPage(r *http.Request, id string) (jobMonitorPage
 			page.Job.CurrentCell = execution.Progress.CurrentCell
 		}
 		page.Job.WebsiteQueue = strconv.FormatInt(execution.Progress.WebsiteQueue, 10)
+
+		liveControlsAvailable := s.svc != nil && s.svc.SupportsLiveControls()
+		jobActive := runtime.State == jobruntime.StateRunning || runtime.State == jobruntime.StateStarting
+		page.Job.CanAddRuntime = liveControlsAvailable && jobActive
+		page.Job.CanChangeConcurrency = liveControlsAvailable && jobActive
+		page.Job.CanChangeProxyPool = liveControlsAvailable && jobActive
+		page.Job.CanRetryCurrent = liveControlsAvailable && jobActive
+		page.Job.HasRuntimeControls = page.Job.CanAddRuntime || page.Job.CanChangeConcurrency ||
+			page.Job.CanChangeProxyPool || page.Job.CanRetryCurrent
+
+		if page.Job.CanChangeProxyPool {
+			if pools, poolsErr := s.svc.ListProxyPools(r.Context()); poolsErr == nil {
+				for _, pool := range pools {
+					page.ProxyPools = append(page.ProxyPools, jobProxyPoolView{
+						ID: pool.ID, Name: pool.Name, Healthy: int(pool.HealthyCount),
+					})
+				}
+			}
+		}
+
 		page.Job.PlacesPerMinute = strconv.FormatFloat(execution.Progress.PlacesPerMinute, 'f', 1, 64)
 		if execution.Progress.ETASeconds != nil {
 			page.Job.ETA = humanDuration(time.Duration(*execution.Progress.ETASeconds) * time.Second)
