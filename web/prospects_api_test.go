@@ -556,3 +556,35 @@ func TestProspectExportColumnsComputeFromBusinessRow(t *testing.T) {
 		t.Fatalf("call_opener = %v, %v", opener, err)
 	}
 }
+
+func TestReadTimeSignalsTreatUnknownWebsiteStatusAsUnaudited(t *testing.T) {
+	t.Parallel()
+
+	// The placeholder website_status "unknown" means "never audited"; it must
+	// not masquerade as audit evidence, or every live-but-unaudited site
+	// would classify as DEAD at read time.
+	signals := prospectSignalsFromBusiness(BusinessResult{
+		Website:       "http://marinagrinsdental.com",
+		WebsiteStatus: "unknown",
+	})
+
+	if signals.AuditPerformed {
+		t.Fatal("website_status \"unknown\" was treated as a performed audit")
+	}
+
+	status, conclusive := prospect.Classify(signals)
+	if conclusive || status != "" {
+		t.Fatalf("unaudited custom domain classified as %q (conclusive=%v), want inconclusive", status, conclusive)
+	}
+
+	// A genuine audit outcome still concludes.
+	audited := prospectSignalsFromBusiness(BusinessResult{
+		Website:       "http://marinagrinsdental.com",
+		WebsiteStatus: "error",
+	})
+
+	status, conclusive = prospect.Classify(audited)
+	if !conclusive || status != prospect.StatusDead {
+		t.Fatalf("audited error site = %q (conclusive=%v), want DEAD", status, conclusive)
+	}
+}

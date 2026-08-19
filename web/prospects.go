@@ -354,10 +354,17 @@ func (s *Service) prospectExportConfiguration(ctx context.Context) (prospect.Sco
 func prospectSignalsFromBusiness(business BusinessResult) prospect.Signals {
 	website := strings.TrimSpace(business.Website)
 	status := strings.ToLower(strings.TrimSpace(business.WebsiteStatus))
+
+	// Only genuine audit outcomes count as audit evidence. Un-audited
+	// businesses carry the placeholder "unknown" (or nothing), and treating
+	// that as a performed audit would misclassify every live-but-unaudited
+	// site as DEAD.
+	audited := status == "active" || status == "inactive" || status == "error"
+
 	signals := prospect.Signals{
 		WebsiteURL:     website,
 		MapsURL:        business.MapsURL,
-		AuditPerformed: status != "",
+		AuditPerformed: audited,
 		Reachable:      status == "active",
 		HTTPS:          strings.HasPrefix(strings.ToLower(website), "https://"),
 		PhonePresent:   business.Phone != "" || business.NormalizedPhone != "",
@@ -405,7 +412,15 @@ func computeProspectExportData(business BusinessResult, weights prospect.ScoreWe
 		}
 	} else {
 		status, _ = prospect.Classify(signals)
-		score, tier, reasons = prospect.Score(status, signals, weights)
+		if status != "" {
+			score, tier, reasons = prospect.Score(status, signals, weights)
+		}
+	}
+
+	// An unclassified business carries no score or tier, matching the durable
+	// columns: scoring an unknown website status would rank noise.
+	if status == "" {
+		score, tier, reasons = 0, "", nil
 	}
 
 	template := prospect.OpenerTemplateFor(templates, status)

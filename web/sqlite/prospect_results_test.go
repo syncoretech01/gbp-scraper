@@ -54,8 +54,25 @@ func TestSearchBusinessesReturnsAndFiltersProspectSignals(t *testing.T) {
 	ids := make(map[string]string, len(page.Results))
 	for _, result := range page.Results {
 		ids[result.Name] = result.ID
+	}
+
+	// The import hook classifies automatically (a no-website row already
+	// carries NO_WEBSITE here). This test is about the SELECT/scan/filter
+	// plumbing, so reset to a known state and seed explicit values.
+	if _, err := repository.db.ExecContext(ctx,
+		`UPDATE businesses SET prospect_status = '', prospect_score = NULL,
+			prospect_tier = '', prospect_reasons = '[]', prospect_updated_at = NULL`,
+	); err != nil {
+		t.Fatalf("reset prospect columns: %v", err)
+	}
+
+	cleared, err := repository.SearchBusinesses(ctx, web.ResultSearch{Limit: 10})
+	if err != nil {
+		t.Fatalf("SearchBusinesses() after reset error = %v", err)
+	}
+	for _, result := range cleared.Results {
 		if result.ProspectStatus != "" || result.ProspectScore != nil || result.ProspectTier != "" {
-			t.Fatalf("unscored business %q already reports prospect fields: %+v", result.Name, result)
+			t.Fatalf("cleared business %q still reports prospect fields: %+v", result.Name, result)
 		}
 	}
 
