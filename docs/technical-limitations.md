@@ -125,9 +125,9 @@ The build provides the following working paths:
 ### 05: Map Explorer
 
 - Heat layers exist for result density (screen-space buckets over the loaded
-  results) and for failed and empty coverage cells, rendered with vendored
-  Leaflet primitives only. A duplicate-heavy-cells heat layer is not
-  implemented because per-cell duplicate counts are not recorded.
+  results), for failed and empty coverage cells, and for duplicate-heavy cells
+  (per-cell duplicate counts aggregated from task checkpoints), all rendered
+  with vendored Leaflet primitives only.
 - Individual cells cannot be resized or grouped. Cell geometry is derived
   deterministically from one cell-size input; cells can be selected, excluded,
   and rescraped, but not edited.
@@ -141,9 +141,10 @@ The build provides the following working paths:
   that never touches lifecycle state; archiving is refused while a job is still
   active. Ownership labels, job tags and folders still have no routes, and the
   `folder` column is never written.
-- Live runtime extension, live concurrency change, live proxy switching, and
-  current-task retry have no routes and never render. Concurrency does adapt
-  automatically between tasks, but not on operator command.
+- Live controls are implemented: add runtime, change concurrency, switch the
+  proxy pool (including to a direct connection), and retry-current all store a
+  durable, audited request that the worker applies at the next safe task
+  boundary — a change is never instant mid-task, and the UI says so.
 - Exact scraper version, owner, proxy performance, retries, warnings, and errors
   on the job detail page are shown as not recorded.
 - The pipeline view renders generic stage status. Per-stage counters (keyword
@@ -151,9 +152,10 @@ The build provides the following working paths:
   merges, conflicts) are not emitted by the engine.
 - Eleven of the thirteen live monitor values are genuinely sampled and durable.
   The website queue depth and active page count are not reported.
-- The log severity filter offers ten levels, but the worker emits only
-  `information`, `warning`, and `error`. Rate-limit, proxy-failure, browser-
-  failure, website-timeout, and parsing-failure events are not produced.
+- Task failures are classified into browser-failure, proxy-failure,
+  website-timeout, parsing-failure, and task-failed event types. Rate-limit
+  events specifically cannot be produced because the engine emits no
+  block/rate-limit signal (see the genuinely-infeasible list).
 - No per-listing cursor and no durable in-run deduplication state. An
   interrupted task restarts from the beginning of that task; committed rows are
   preserved and merged rather than duplicated.
@@ -222,11 +224,14 @@ The build provides the following working paths:
   detection, title and meta description, contact/about/phone/email/social
   presence, mobile viewport, page size, broken internal links, mixed content,
   old copyright year, template indicators, CMS signatures, and tracker
-  signatures. Screenshots are not captured anywhere; `websites.screenshot_path`
-  is declared and read but never written. Website-visible postal address
-  extraction, accessibility and performance audits, cookie inspection, and
-  certificate-date reporting are absent. Certificate-error detection is
-  substring matching over the fetch error and has no dedicated test.
+  signatures. Homepage screenshots are captured on request through headless
+  Playwright when the driver is installed (the Docker image installs it; the
+  capture is skipped honestly when absent and never fails a task), stored under
+  the screenshots directory and shown in the record drawer. Error-page
+  screenshots, website-visible postal address extraction, accessibility and
+  performance audits, cookie inspection, and certificate-date reporting are
+  absent. Certificate-error detection is substring matching over the fetch
+  error and has no dedicated test.
 - Quality scoring is configurable and explainable per component, with versioned
   rules. Score-change history and alternative ranking profiles are absent.
 - Provenance covers core normalized fields, every raw source observation, and
@@ -238,9 +243,14 @@ The build provides the following working paths:
 - Change tracking records new businesses, changed fields, website active/
   inactive transitions, domain redirects, and newly discovered contacts, and
   change data can be included in exports. Version retention is configurable and
-  executed (each business always keeps its newest snapshot). Listing removal,
-  closure, and reopen detection are not implemented, and there are no
-  incremental-only scrape modes or threshold alerts.
+  executed (each business always keeps its newest snapshot). Rescan modes exist:
+  a job can be marked new-only or new-and-changed, imports classify every
+  business as new/changed/unchanged, businesses missing from a rescan are
+  flagged possibly_removed with a not_seen_in_rescan change row (evidence,
+  never deletion) and restored as reappeared when seen again, and each import
+  records a summary event. Detection happens at import — the scraper still
+  visits listings, because a listing must be fetched to know it changed.
+  Threshold alerts are absent.
 
 ### 17-18: schedules and reusable configurations
 
@@ -250,7 +260,8 @@ The build provides the following working paths:
   backoff, tracked per run. Auto-export after a completed run is available in
   every advertised export format; a completion webhook is not wired to
   schedules (webhooks fire on export creation).
-- There is no incremental-only mode and no run-on-start toggle.
+- Schedules inherit the job's rescan mode through the template configuration;
+  there is no run-on-start toggle.
 - Old schedule runs are pruned per-schedule by a configurable retention window.
   Log-file retention remains an operator-triggered System action.
 - Templates store the full implemented job configuration with tags, folder,
@@ -264,10 +275,13 @@ The build provides the following working paths:
 - Proxy import is pasted text only. Tests report Maps reachability and latency
   but call no IP-geolocation service, so exit IP and country remain unknown, and
   the slow/rate-limited/auth-failed/offline status taxonomy is not implemented.
-- Least-recently-used, sticky-per-query, sticky-per-cell rotation and per-proxy
-  task caps are not implemented. Disabled proxies can be batch-retested per
-  pool (up to 50 at a time) and healthy ones are re-enabled; the retest is
-  operator-triggered, not automatic.
+- Sticky-per-query and sticky-per-cell strategies pin each task to one proxy
+  by a stable hash, and pools carry an optional per-proxy task cap. Caps and
+  failure attribution require sticky assignment; non-sticky pools keep their
+  whole-list rotation, where per-proxy accounting is not possible. A
+  least-recently-used strategy is a deferred optional feature. Disabled proxies
+  can be batch-retested per pool (up to 50 at a time) and healthy ones are
+  re-enabled; the retest is operator-triggered, not automatic.
 - Adaptive concurrency reacts to CPU, available memory, free disk, and the
   recent task failure rate: a window where at least half the attempts failed
   halves the budget, and only a fully clean window recovers one step, so decay
@@ -275,9 +289,12 @@ The build provides the following working paths:
   rate specifically is not measurable (the engine emits no block callback),
   and adaptation adjusts worker concurrency rather than browser count or pages
   per browser.
-- Browser-process crash restart, automatic retry with a fresh context or another
-  proxy, all-proxies-failed pause/resume, and adaptive website timeout are not
-  implemented. `StopReasonProxiesUnavailable` is defined but never emitted.
+- Browser crashes are classified, recorded as browser-failure events, and every
+  retry constructs a fresh browser context, so a crash never fails the job by
+  itself. When a sticky pool's last usable proxy fails or caps out, the job
+  pauses as proxies_unavailable and resumes recoverably (resume is an operator
+  action, not automatic polling of the pool). Adaptive website timeout for the
+  enrichment crawler is a deferred optional feature.
 - Per-query and per-grid-cell continuation is implemented and tested.
   Per-listing continuation is not. The monitor's Checkpoint card now renders the
   recovery state, the last checkpoint time, and the completed/running/remaining/
@@ -288,7 +305,7 @@ The build provides the following working paths:
 
 ### 22: Export Centre
 
-- Parquet is not implemented and is not offered.
+- Parquet is a deferred optional format (see the deferred list below).
 - PostgreSQL/MySQL output is a portable transaction of `INSERT` statements, not
   a native server backup or restore archive.
 - The SQLite export is a standalone portable subset file, not a copy of the
@@ -304,8 +321,8 @@ The build provides the following working paths:
 - Integrations cover local webhooks, a watch folder, and allowlisted post-run
   command hooks. Direct database sync to local PostgreSQL, MySQL/MariaDB, or
   another SQLite file is not implemented; those appear only as export formats.
-  Google Sheets sync and custom plugin hooks for enrichment, validation,
-  scoring, and export are absent.
+  Google Sheets sync and custom plugin hooks are deferred optional features
+  (see the deferred list below).
 - Optional local AI is implemented for the supported task set and stays
   disabled by default; its status/assist handlers are route-tested. Only the
   keyword-variation and result-filter tasks are exercised end-to-end in the
@@ -428,6 +445,53 @@ The build provides the following working paths:
 - **Cancelled enrichment work is not failed.** A task interrupted by worker
   shutdown is left in its running state so startup recovery requeues it, rather
   than being recorded as a permanent website failure.
+
+## Deferred optional features
+
+These are implementable locally but deliberately deferred: each needs either a
+new dependency, an external account, or a product decision that outweighs its
+value for a local-first tool. None is a technical limitation.
+
+- **Parquet export** — needs a columnar-format dependency; every dataset is
+  already exportable as CSV/JSON/SQLite for downstream conversion.
+- **Google Sheets sync** — needs the user's own Google OAuth credentials and
+  consent flow; exports plus the watch folder cover the workflow offline.
+- **Custom plugin hooks** for enrichment/validation/scoring/export — needs a
+  stable plugin ABI decision; the post-run command hook covers scripted
+  extension today.
+- **PostgreSQL as the application workspace** — a full second repository
+  implementation; SQLite/WAL covers local scale, and the CLI's PostgreSQL run
+  modes remain available.
+- **Curated business-category taxonomy** — needs a maintained dataset; the
+  free-text category x location generator covers the workflow.
+- **Client-side virtual scrolling** — indexed server pagination is the chosen
+  responsiveness design.
+- **Encrypted backups** — needs a passphrase UX decision (the proxy master key
+  must never double as a backup key).
+- **Least-recently-used and per-request proxy rotation** — per-request
+  rotation lives inside the browser layer; per-task sticky assignment covers
+  attribution.
+- **Adaptive website timeout** for the enrichment crawler.
+- **Error-page screenshots** (homepage screenshots exist).
+- **Collection-skipping incremental mode** — skipping detail fetches for
+  already-known Place IDs would save time on rescans; detection-at-import
+  covers correctness today.
+- **Spreadsheet keyboard model and a formal WCAG conformance audit.**
+
+## Genuinely infeasible locally or without paid services
+
+- **Block/rate-limit measurement** and **per-request browser telemetry**: the
+  upstream scraping engine emits no such signals, and adding them would mean
+  forking the engine, which the compatibility constraint (preserve existing
+  scraper behaviour) rules out. Everything downstream that would consume a
+  block rate is labelled honestly instead of estimated.
+- **Per-listing checkpoint cursors inside one task** for the same reason; the
+  merge-deduplicated task restart makes the gap harmless in practice.
+- **Exit-IP geolocation** for proxies — requires an external geolocation
+  service or licensed database.
+- **Large, stable residential/mobile proxy networks, CAPTCHA solving,
+  high-confidence mailbox verification, and commercial company/person
+  databases** — external paid services by nature.
 
 ## Field issue: 37 spreadsheet lines and a pending job
 

@@ -235,7 +235,7 @@ Last updated: 2026-08-19
 
 - [ ] Marker clustering for large datasets.
 - [ ] Business popup with name, category, rating, reviews, website status, email, phone, and links.
-- [ ] Heatmaps for result density, failed cells, empty cells, and duplicate-heavy cells.
+- [x] Heatmaps for result density, failed cells, empty cells, and duplicate-heavy cells.
 - [x] Filter markers using the same rules as the Results Explorer.
 - [x] Export businesses inside a drawn area.
 - [ ] Retry selected failed/empty cells or run a new keyword only in selected cells.
@@ -260,7 +260,7 @@ Last updated: 2026-08-19
 ### Controls
 
 - [x] Start, pause, resume, cancel, delete, archive, rename, duplicate, and restart.
-- [ ] Add runtime, change concurrency, switch proxy pool, and retry failed tasks.
+- [x] Add runtime, change concurrency, switch proxy pool, and retry failed tasks.
 - [x] Restart safely from committed output/retry files without replacing earlier results; per-task cursor limitations are documented.
 - [x] Download committed partial CSV results at any time.
 - [ ] Apply tags, folders, notes, and ownership labels.
@@ -288,7 +288,7 @@ Last updated: 2026-08-19
 
 ### Real-time controls and diagnostics
 
-- [ ] Pause, resume, cancel, reduce/increase concurrency, change proxy pool, add runtime, retry current task, and download partial results.
+- [x] Pause, resume, cancel, reduce/increase concurrency, change proxy pool, add runtime, retry current task, and download partial results.
 - [ ] Show current keyword, location, cell, active proxy, browser count, pages, places per minute, CPU, RAM, database writes, website queue, and ETA.
 - [x] Use durable Server-Sent Events with cursor replay, plus bounded progress fallback.
 
@@ -474,7 +474,7 @@ Last updated: 2026-08-19
 ### Tracked changes
 
 - [ ] New business discovered.
-- [ ] Listing removed, closed, reopened, or status changed.
+- [x] Listing removed, closed, reopened, or status changed.
 - [ ] Phone, website, address, category, rating, review count, opening hours, or email changed.
 - [ ] Website became active/inactive or redirected to another domain.
 - [ ] New social profile or contact information discovered.
@@ -503,7 +503,7 @@ Last updated: 2026-08-19
 
 - [ ] Section complete and verified against the specification.
 - [x] Save complete implemented job configurations including keywords, geography, enrichment flags, performance, and proxy pool; unsupported filter/output automation is documented.
-- [ ] Duplicate, rename, tag, organize into folders, pin favourites, and add notes.
+- [x] Duplicate, rename, tag, organize into folders, pin favourites, and add notes.
 - [x] Export and import validated templates as JSON without accepting inline proxy credentials.
 - [ ] Parameterised templates such as one category applied to many cities.
 - [ ] Track last run, use count, average result count, and average duration.
@@ -528,7 +528,7 @@ Last updated: 2026-08-19
 ### Rotation strategies
 
 - [ ] Round robin, random, least recently used, lowest failure rate, fastest, sticky per query, and sticky per grid cell.
-- [ ] Automatically disable repeated failures, cool down rate-limited proxies, retest disabled proxies, and cap tasks per proxy.
+- [x] Automatically disable repeated failures, cool down rate-limited proxies, retest disabled proxies, and cap tasks per proxy.
 
 ## 20 Adaptive Performance
 
@@ -537,9 +537,9 @@ Last updated: 2026-08-19
 - [x] Increase concurrency cautiously after a stable success window.
 - [ ] Reduce browser count or pages per browser when RAM pressure rises.
 - [x] Pause new tasks when disk space becomes low.
-- [ ] Retry failed pages with another proxy or a fresh browser context.
-- [ ] Restart crashed browser processes automatically.
-- [ ] Pause the job when all proxies fail and resume after recovery.
+- [x] Retry failed pages with another proxy or a fresh browser context.
+- [x] Restart crashed browser processes automatically.
+- [x] Pause the job when all proxies fail and resume after recovery.
 - [ ] Adjust website timeout using recent response history.
 - [x] Display every automatic change and the reason it occurred.
 
@@ -653,7 +653,7 @@ Last updated: 2026-08-19
 - [x] **businesses:** Current preferred normalized business record.
 - [x] **business_versions:** Immutable historical snapshots and field changes.
 - [x] **business_sources:** Query, cell, Maps/source URL, raw snapshot, timestamp, and provenance.
-- [ ] **websites:** Availability, metadata, technologies, screenshots, and audit results.
+- [x] **websites:** Availability, metadata, technologies, screenshots, and audit results.
 - [ ] **emails / phones / social_profiles:** Contact values, source, confidence, and status.
 - [x] **proxies / proxy_health:** Pools, encrypted credentials, tests, usage, failures, disable state, and cooldown.
 - [x] **schedules:** Recurrence/cron expression, template, policies, next/last run, and execution history.
@@ -796,7 +796,7 @@ Last updated: 2026-08-19
 
 ### Release 3 — Best-in-class local edition
 
-- [ ] Add adaptive concurrency, browser recovery, proxy cooldown, and low-resource safeguards.
+- [x] Add adaptive concurrency, browser recovery, proxy cooldown, and low-resource safeguards.
 - [ ] Add coverage heatmaps, missing-area retry, and selected-cell re-scraping.
 - [ ] Add advanced version history and field-level confidence.
 - [x] Add optional local AI through Ollama.
@@ -852,7 +852,7 @@ Last updated: 2026-08-19
 - [x] **Data:** Results table • Map view • Saved views • Bulk actions • Record drawer • Advanced filters • Normalization • Deduplication • Scoring • Provenance • Change history
 - [ ] **Enrichment:** Website reachability • HTTP/HTTPS • Redirects • Screenshots • Email extraction • MX checks • Social profiles • CMS/technology detection • Basic website audit
 - [ ] **Automation:** Templates • Schedules • Incremental runs • Export presets • Webhooks • Post-run scripts • Local API
-- [ ] **Scale:** Proxy pools • Proxy testing • Rotation • Adaptive concurrency • Browser recovery • Low-resource safeguards
+- [x] **Scale:** Proxy pools • Proxy testing • Rotation • Adaptive concurrency • Browser recovery • Low-resource safeguards
 - [ ] **Experience:** Dark mode • Keyboard shortcuts • Accessibility • Onboarding • Embedded help • Diagnostics
 
 ### Appendix B — Suggested local directory layout
@@ -921,3 +921,8 @@ Last updated: 2026-08-19
 - 2026-08-20: Optional local login: bcrypt password in settings, in-memory sessions with configurable timeout, per-address rate limiting, session invalidation on credential change, API-key path preserved for API clients; disabled by default so loopback behaviour is unchanged.
 - 2026-08-20: Starter content seeds once into an empty workspace: five starter templates and six example saved views, all validated through the real service paths. POST /api/v1/jobs/validate provides create-identical dry-run validation. Disabled proxies can be batch-retested and healthy ones re-enabled. Onboarding checks disk capacity.
 - 2026-08-20: Final gate for the completion pass. `go build`, `go vet`, and the full `-race` suite pass over the merged tree (19 packages, zero failures, zero data races, in a golang:1.26.6 container). Runtime verification against a copy of the live workspace: schema migrated v8 to v9, all 13 application pages plus the login form respond, starter content seeded exactly once across a restart, and end-to-end exercises succeeded for keyword sets (create/use), dry-run job validation, retention apply, a manual phone edit on a real business (persisted with provenance across a restart), the map heat toggles, and the full login lifecycle (enable, page gated, API 401 without key, session unlock, remove). The original `webdata` was never opened; the job CSV still hashes to `D11CFD4D...BDE62`.
+- 2026-08-20: Specification-closure pass. Live job controls landed end to end: add runtime (supervisor-enforced extendable deadline replaces the timeout context), change concurrency, switch proxy pool (including to direct), and retry-current, each durable, audited, applied at the next safe task boundary, and exposed by the monitor forms that were previously capability-gated off.
+- 2026-08-20: Sticky proxy strategies (per query, per grid cell) pin every task to one proxy by stable hash, enabling per-proxy task caps stored on the pool and honest failure attribution; when the last usable proxy fails or caps out, the job pauses as proxies_unavailable and resumes recoverably. Task failures are classified into browser-failure, proxy-failure, website-timeout, parsing-failure and task-failed events, making the fresh-browser retry an explicit crash-recovery path.
+- 2026-08-20: Incremental rescan modes: JobData.incremental_mode (new_only/new_changed) flows through wizard, templates and schedules; imports classify new/changed/unchanged, flag businesses missing from a rescan as possibly_removed with a not_seen_in_rescan change row (evidence, never deletion), restore reappeared ones, and record an incremental-summary event. change_status was already filterable in Results.
+- 2026-08-20: Homepage screenshots through the browser-capable path: an opt-in enrichment option captures the final URL with headless Playwright when the driver is present (never fatal, skips honestly without it), stores under webdata/screenshots, records the path on the audit and website, serves via a safe-pathed PNG-only route, and renders in the record drawer.
+- 2026-08-20: Per-cell duplicate metrics aggregate DuplicatesSkipped and RowsReplaced from task checkpoints into the coverage payload, with a fourth map heat toggle for duplicate-heavy cells; templates gained a dedicated rename action.
