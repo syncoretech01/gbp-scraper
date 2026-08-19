@@ -260,3 +260,112 @@ func (s *Server) deleteProxyPool(w http.ResponseWriter, r *http.Request) {
 	}
 	http.Redirect(w, r, "/app/proxies?notice=Proxy+pool+deleted", http.StatusSeeOther)
 }
+
+// proxyRetestReport is one disabled proxy's retest outcome, with the
+// credential kept masked and the re-enable decision recorded.
+type proxyRetestReport struct {
+	ID        string `json:"id"`
+	PoolID    string `json:"pool_id"`
+	PoolName  string `json:"pool_name,omitempty"`
+	MaskedURL string `json:"masked_url"`
+	Status    string `json:"status"`
+	LatencyMS *int64 `json:"latency_ms,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Reenabled bool   `json:"reenabled"`
+}
+
+// proxyAccessCheck is the live Maps probe used by the disabled-proxy retest.
+// It is a variable only so package tests can substitute a hermetic probe;
+// the application always uses checkProxyAccess.
+var proxyAccessCheck = checkProxyAccess
+
+func (s *Server) registerProxyRetestRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /api/v1/proxy-pools/{id}/retest-disabled", s.retestDisabledProxies)
+}
+
+// retestDisabledProxies implements the specification's "retest disabled
+// proxies" action as an on-demand, bounded pass: up to maximumProxyTestBatch
+// disabled proxies of one pool are tested against Maps, each result is
+// recorded, and a proxy whose test reports "healthy" is re-enabled so the
+// rotation can use it again.
+func (s *Server) retestDisabledProxies(w http.ResponseWriter, r *http.Request) {
+	if !s.requireCSRF(w, r) {
+		return
+	}
+
+	poolID := strings.TrimSpace(r.PathValue("id"))
+
+	proxies, err := s.svc.ListProxies(r.Context(), poolID)
+	if err != nil {
+		if errors.Is(err, ErrProxyStoreUnsupported) {
+			renderLocalAPIError(w, http.StatusNotImplemented, "proxies_unavailable", "The proxy manager is unavailable")
+
+			return
+		}
+
+		renderLocalAPIError(w, http.StatusInternalServerError, "proxy_retest_failed", "Could not read the proxy pool")
+
+		return
+	}
+
+	reports := make([]proxyRetestReport, 0)
+	reenabled := 0
+
+	for _, proxy := range proxies {
+		if proxy.Enabled {
+			continue
+		}
+
+		if len(reports) >= maximumProxyTestBatch {
+			break
+		}
+
+		report := proxyRetestReport{
+			ID: proxy.ID, PoolID: proxy.PoolID, PoolName: proxy.PoolName, MaskedURL: proxy.MaskedURL,
+		}
+
+		secret, secretErr := s.svc.GetProxySecret(r.Context(), proxy.ID)
+		if secretErr != nil {
+			report.Status = "offline"
+			report.Error = "proxy credential is unavailable"
+			reports = append(reports, report)
+
+			continue
+		}
+
+		result := proxyAccessCheck(r.Context(), secret)
+		report.Status = result.Status
+		report.LatencyMS = result.LatencyMS
+		report.Error = result.Error
+
+		if saveErr := s.svc.RecordProxyTest(r.Context(), proxy.ID, result); saveErr != nil {
+			report.Error = strings.TrimSpace(report.Error + " (result not saved)")
+		}
+
+		if result.Status == "healthy" {
+			if enableErr := s.svc.SetProxyEnabled(r.Context(), proxy.ID, true); enableErr == nil {
+				report.Reenabled = true
+				reenabled++
+			} else {
+				report.Error = strings.TrimSpace(report.Error + " (could not re-enable)")
+			}
+		}
+
+		reports = append(reports, report)
+	}
+
+	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+		renderJSON(w, http.StatusOK, localAPIEnvelope{Data: map[string]any{
+			"pool_id":    poolID,
+			"tested":     len(reports),
+			"reenabled":  reenabled,
+			"checked_at": time.Now().UTC(),
+			"results":    reports,
+		}})
+
+		return
+	}
+
+	notice := fmt.Sprintf("%d disabled proxies retested; %d re-enabled", len(reports), reenabled)
+	http.Redirect(w, r, "/app/proxies?notice="+url.QueryEscape(notice), http.StatusSeeOther)
+}
