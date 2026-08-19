@@ -134,8 +134,10 @@ The build provides the following working paths:
 
 ### 06-07: jobs and live monitor
 
-- Job archive, rename, ownership, and folders have no routes. The markup is
-  capability-gated and never renders.
+- Job rename, archive/restore and operator notes are implemented as metadata
+  that never touches lifecycle state; archiving is refused while a job is still
+  active. Ownership labels, job tags and folders still have no routes, and the
+  `folder` column is never written.
 - Live runtime extension, live concurrency change, live proxy switching, and
   current-task retry have no routes and never render. Concurrency does adapt
   automatically between tasks, but not on operator command.

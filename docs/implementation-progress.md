@@ -259,7 +259,7 @@ Last updated: 2026-08-19
 
 ### Controls
 
-- [ ] Start, pause, resume, cancel, delete, archive, rename, duplicate, and restart.
+- [x] Start, pause, resume, cancel, delete, archive, rename, duplicate, and restart.
 - [ ] Add runtime, change concurrency, switch proxy pool, and retry failed tasks.
 - [x] Restart safely from committed output/retry files without replacing earlier results; per-task cursor limitations are documented.
 - [x] Download committed partial CSV results at any time.
@@ -908,3 +908,4 @@ Last updated: 2026-08-19
 - 2026-08-20: A crashing task is now retried to its attempt limit while other workers continue, and the job ends partial with a task-failure reason rather than failed. The monitor Checkpoint card reports recovery state, last checkpoint time, and completed/running/remaining/failed counts.
 - 2026-08-20: Implemented duplicate review and bulk delete, the two Results controls that were rendered but permanently capability-gated off. Merging is non-destructive: the merged record keeps its row, versions and provenance, its source observations and per-job links move to the surviving record, and a reversible snapshot plus an audit entry record the decision. Keep-both writes a permanent non-match rule so the pair is never suggested again. Deleting is a reversible soft delete that hides a record from results and exports without touching its evidence, and a restore action brings it back.
 - 2026-08-20: Verified on a copy of the live workspace: schema migrated v7 to v8 cleanly, and merging a real candidate pair took the visible result count from 36 to 35 while the stored business and source counts both stayed at 36, which is the non-destructive guarantee in practice.
+- 2026-08-20: Implemented job rename, archive/restore and notes, completing the job-control set (start, pause, resume, cancel, delete, archive, rename, duplicate, restart). All three are metadata-only and never touch lifecycle state, task plan or result file, verified by asserting the runtime state and its version are unchanged by a rename. Archiving is refused while a job is still active so live work cannot be hidden, archived jobs leave the default queue view behind a "Show archived" toggle, and every change is audited. Ownership labels, job tags and folders remain unimplemented, so the tags/folders/notes line stays unticked.

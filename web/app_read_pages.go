@@ -35,6 +35,7 @@ type jobsPageData struct {
 	PreviousURL     string
 	NextURL         string
 	CanViewArchived bool
+	ShowArchived    bool
 }
 
 type appSelectOption struct {
@@ -74,6 +75,7 @@ type jobsPageJob struct {
 	CanDuplicate    bool
 	HasMoreActions  bool
 	CanArchive      bool
+	CanRename       bool
 	CanDelete       bool
 	Archived        bool
 	updatedAt       time.Time
@@ -320,9 +322,27 @@ func (s *Server) buildJobsPage(r *http.Request) (jobsPageData, appActivity, erro
 	}
 
 	lifecycleAvailable := s.lifecycleAvailable()
+	organisationAvailable := s.jobOrganisationAvailable()
 	rows := make([]jobsPageJob, 0, len(jobs))
 	activity := appActivity{}
 	states := parseStateFilter(page.ActiveState)
+
+	// Archived jobs stay out of the default queue view but remain one query
+	// parameter away, so nothing is hidden permanently.
+	archived := map[string]struct{}{}
+	page.CanViewArchived = organisationAvailable
+	page.ShowArchived = strings.TrimSpace(r.URL.Query().Get("archived")) == "1"
+
+	if organisationAvailable {
+		known, archivedErr := s.svc.ArchivedJobIDs(r.Context())
+		if archivedErr != nil && !errors.Is(archivedErr, ErrJobOrganisationUnsupported) {
+			return jobsPageData{}, appActivity{}, archivedErr
+		}
+
+		if known != nil {
+			archived = known
+		}
+	}
 
 	for _, job := range jobs {
 		runtime, runtimeErr := s.runtimeForJob(r.Context(), job)
@@ -388,10 +408,21 @@ func (s *Server) buildJobsPage(r *http.Request) (jobsPageData, appActivity, erro
 			CanRetry: lifecycleAvailable &&
 				(runtime.State == jobruntime.StatePartial || runtime.State == jobruntime.StateFailed) &&
 				canApplyControl(runtime, jobruntime.ControlRestart),
-			updatedAt: updatedAt,
-			createdAt: job.Date,
+			CanRename: organisationAvailable,
+			// Archiving is only offered once a job has stopped, so an operator
+			// cannot hide work that is still running.
+			CanArchive: organisationAvailable && runtime.State.Terminal(),
+			updatedAt:  updatedAt,
+			createdAt:  job.Date,
 		}
-		row.HasMoreActions = row.CanDuplicate || row.CanRetry || row.CanCancel || row.CanArchive || row.CanDelete
+		if _, isArchived := archived[job.ID]; isArchived {
+			row.Archived = true
+			if !page.ShowArchived {
+				continue
+			}
+		}
+		row.HasMoreActions = row.CanDuplicate || row.CanRetry || row.CanCancel ||
+			row.CanArchive || row.CanRename || row.CanDelete
 		rows = append(rows, row)
 	}
 

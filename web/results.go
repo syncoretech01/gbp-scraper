@@ -324,6 +324,12 @@ type resultMutationRepository interface {
 
 // duplicateReviewAvailable reports whether an operator decision on a duplicate
 // pair can be recorded durably.
+// jobOrganisationAvailable reports whether job metadata such as rename and
+// archive state can be stored durably.
+func (s *Server) jobOrganisationAvailable() bool {
+	return s != nil && s.svc != nil && s.svc.SupportsJobOrganisation()
+}
+
 func (s *Server) duplicateReviewAvailable() bool {
 	return s != nil && s.svc != nil && s.svc.SupportsDuplicateReview()
 }

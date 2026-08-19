@@ -183,6 +183,7 @@ func New(svc *Service, addr string) (*Server, error) {
 		ans.jobLogsDownload(w, r)
 	})
 	ans.registerLifecycleRoutes(mux)
+	ans.registerJobOrganisationRoutes(mux)
 	ans.registerCheckpointRoutes(mux)
 	ans.registerResultRoutes(mux)
 	ans.registerDuplicateRoutes(mux)

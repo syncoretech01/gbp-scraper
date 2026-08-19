@@ -2,7 +2,7 @@
 
 {{define "app/page-actions"}}
 <div class="page-actions">
-    {{if .Page.CanViewArchived}}<a class="button" href="/app/jobs?archived=true" data-action="navigate" data-endpoint="/app/jobs?archived=true">Archived jobs</a>{{end}}
+    {{if .Page.CanViewArchived}}{{if .Page.ShowArchived}}<a class="button" href="/app/jobs" data-action="navigate" data-endpoint="/app/jobs">Hide archived</a>{{else}}<a class="button" href="/app/jobs?archived=1" data-action="navigate" data-endpoint="/app/jobs?archived=1">Show archived</a>{{end}}{{end}}
     <a class="button button-primary" href="/app/scrapes/new" data-action="navigate" data-endpoint="/app/scrapes/new">New scrape</a>
 </div>
 {{end}}
@@ -74,6 +74,7 @@
                                 {{if .CanDuplicate}}<form action="/api/v1/jobs/{{.ID}}/duplicate" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button type="submit" data-endpoint="/api/v1/jobs/{{.ID}}/duplicate">Duplicate configuration</button></form>{{end}}
                                 {{if .CanRetry}}<form action="/api/v1/jobs/{{.ID}}/retry" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button type="submit" data-endpoint="/api/v1/jobs/{{.ID}}/retry">Retry failed tasks</button></form>{{end}}
                                 {{if .CanCancel}}<form action="/api/v1/jobs/{{.ID}}/cancel" method="post" data-confirm="Cancel this job after its current write completes?"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button type="submit" data-endpoint="/api/v1/jobs/{{.ID}}/cancel">Cancel safely</button></form>{{end}}
+                                {{if .CanRename}}<form action="/api/v1/jobs/{{.ID}}/rename" method="post" class="inline-form"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><label class="visually-hidden" for="rename-{{.ID}}">New name for {{.Name}}</label><input class="input input-small" id="rename-{{.ID}}" name="name" type="text" maxlength="120" placeholder="{{.Name}}" required><button type="submit" data-endpoint="/api/v1/jobs/{{.ID}}/rename">Rename</button></form>{{end}}
                                 {{if .CanArchive}}<form action="/api/v1/jobs/{{.ID}}/archive" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button type="submit" data-endpoint="/api/v1/jobs/{{.ID}}/archive">{{if .Archived}}Restore from archive{{else}}Archive{{end}}</button></form>{{end}}
                                 {{if .CanDelete}}<form action="/api/v1/jobs/{{.ID}}" method="post" data-confirm="Delete this job? Saved business records are retained unless you explicitly choose otherwise."><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><input type="hidden" name="_method" value="DELETE"><button class="danger-text" type="submit" data-endpoint="/api/v1/jobs/{{.ID}}">Delete job</button></form>{{end}}
                             </div></details>{{end}}
