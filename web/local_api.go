@@ -36,17 +36,18 @@ type jobConfigSummary struct {
 }
 
 type jobProgressDTO struct {
-	JobID        string           `json:"job_id"`
-	Name         string           `json:"name"`
-	State        string           `json:"state"`
-	LegacyStatus string           `json:"legacy_status"`
-	Stage        string           `json:"stage"`
-	Percent      float64          `json:"percent"`
-	Message      string           `json:"message,omitempty"`
-	StopReason   string           `json:"stop_reason,omitempty"`
-	Config       jobConfigSummary `json:"config"`
-	Results      ResultStats      `json:"results"`
-	Warnings     []string         `json:"warnings"`
+	JobID        string                `json:"job_id"`
+	Name         string                `json:"name"`
+	State        string                `json:"state"`
+	LegacyStatus string                `json:"legacy_status"`
+	Stage        string                `json:"stage"`
+	Percent      float64               `json:"percent"`
+	Message      string                `json:"message,omitempty"`
+	StopReason   string                `json:"stop_reason,omitempty"`
+	Config       jobConfigSummary      `json:"config"`
+	Results      ResultStats           `json:"results"`
+	Execution    *JobExecutionSnapshot `json:"execution,omitempty"`
+	Warnings     []string              `json:"warnings"`
 }
 
 type dashboardDTO struct {
@@ -58,6 +59,25 @@ type dashboardDTO struct {
 	WithWebsite      int            `json:"with_website"`
 	WithPhone        int            `json:"with_phone"`
 	WithEmail        int            `json:"with_email"`
+}
+
+// sanitizedJobForAPI preserves the legacy job response shape while removing
+// inline proxy URLs. Older jobs may contain credentialed proxy URLs in their
+// compatible configuration snapshot; those values must never leave the
+// process through a job API response.
+func sanitizedJobForAPI(job Job) Job {
+	job.Data.Proxies = []string{}
+
+	return job
+}
+
+func sanitizedJobsForAPI(jobs []Job) []Job {
+	result := make([]Job, len(jobs))
+	for index := range jobs {
+		result[index] = sanitizedJobForAPI(jobs[index])
+	}
+
+	return result
 }
 
 func (s *Server) apiJobProgress(w http.ResponseWriter, r *http.Request) {
@@ -95,7 +115,16 @@ func (s *Server) apiJobProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	renderJSON(w, http.StatusOK, localAPIEnvelope{Data: newJobProgressDTO(job, stats, runtime)})
+	dto := newJobProgressDTO(job, stats, runtime)
+	if execution, executionErr := s.svc.GetJobExecution(r.Context(), id.String()); executionErr == nil {
+		dto.Execution = &execution
+	} else if !errors.Is(executionErr, ErrCheckpointUnsupported) {
+		renderLocalAPIError(w, http.StatusInternalServerError, "checkpoint_failed", "Could not load job checkpoint evidence")
+
+		return
+	}
+
+	renderJSON(w, http.StatusOK, localAPIEnvelope{Data: dto})
 }
 
 func (s *Server) apiDashboard(w http.ResponseWriter, r *http.Request) {

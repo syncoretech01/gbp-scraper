@@ -28,10 +28,11 @@ import (
 )
 
 type webrunner struct {
-	srv       *web.Server
-	svc       *web.Service
-	cfg       *runner.Config
-	setupMate func(context.Context, io.Writer, *web.Job) (mateRunner, error)
+	srv             *web.Server
+	svc             *web.Service
+	cfg             *runner.Config
+	setupMate       func(context.Context, io.Writer, *web.Job) (mateRunner, error)
+	sampleResources func(context.Context, string) (workerResourceSample, error)
 }
 
 type mateRunner interface {
@@ -90,6 +91,26 @@ func (w *webrunner) Run(ctx context.Context) error {
 		log.Printf("warning: some legacy result CSV files could not be imported: %v", err)
 	}
 
+	if recovered, err := w.svc.RecoverEnrichmentTasks(ctx); err != nil &&
+		!errors.Is(err, web.ErrEnrichmentUnsupported) {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		log.Printf("warning: interrupted website enrichment tasks could not be recovered: %v", err)
+	} else if recovered > 0 {
+		log.Printf("recovered %d interrupted website enrichment tasks", recovered)
+	}
+
+	if recovered, err := w.svc.RecoverAbandonedJobs(ctx); err != nil &&
+		!errors.Is(err, web.ErrCheckpointUnsupported) {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return fmt.Errorf("recover abandoned jobs: %w", err)
+	} else if recovered > 0 {
+		log.Printf("recovered %d abandoned active jobs at their last safe checkpoints", recovered)
+	}
+
 	egroup, ctx := errgroup.WithContext(ctx)
 
 	egroup.Go(func() error {
@@ -116,11 +137,13 @@ func (w *webrunner) work(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			if scheduled, err := w.svc.StartDueSchedules(ctx, time.Now().UTC(), 10); err != nil {
-				if !errors.Is(err, web.ErrScheduleStoreUnsupported) {
-					return err
-				}
-			} else if len(scheduled) > 0 {
+			now := time.Now().UTC()
+			w.svc.RecordSchedulerHeartbeat(now)
+			scheduled, scheduleErr := w.svc.StartDueSchedules(ctx, now, 10)
+			if scheduleErr != nil && !errors.Is(scheduleErr, web.ErrScheduleStoreUnsupported) {
+				log.Printf("schedule polling failed; the worker will retry: %s", jobruntime.RedactString(scheduleErr.Error()))
+			}
+			if len(scheduled) > 0 {
 				log.Printf("queued %d due scheduled jobs", len(scheduled))
 			}
 			jobs, err := w.svc.SelectPending(ctx)
@@ -157,6 +180,13 @@ func (w *webrunner) work(ctx context.Context) error {
 						log.Printf("job %s scraped successfully", jobs[i].ID)
 					}
 				}
+			}
+			processed, enrichmentErr := w.svc.ProcessEnrichmentQueue(ctx, 1)
+			if enrichmentErr != nil && !errors.Is(enrichmentErr, web.ErrEnrichmentUnsupported) {
+				log.Printf("website enrichment task failed; the worker will continue: %s",
+					jobruntime.RedactString(enrichmentErr.Error()))
+			} else if processed > 0 {
+				log.Printf("processed %d queued website enrichment task", processed)
 			}
 		}
 	}
@@ -240,11 +270,23 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) error {
 	}
 
 	dedup := deduper.New()
-	exitMonitor := exiter.New()
+	exitOptions := make([]exiter.Option, 0, 1)
+	if job.Data.MaxRecords > 0 {
+		exitOptions = append(exitOptions, exiter.WithMaximumPlaces(job.Data.MaxRecords))
+	}
+	exitMonitor := exiter.New(exitOptions...)
 
 	var seedJobs []scrapemate.IJob
+	seedMetadata := make(map[string]seedTaskMetadata)
 
-	if job.Data.GridBBox != "" {
+	if job.Data.AreaGeoJSON != "" && !job.Data.FastMode {
+		seedJobs, seedMetadata, err = createAreaSeedJobs(
+			job,
+			dedup,
+			exitMonitor,
+			w.cfg.ExtraReviews || job.Data.ExtraReviews,
+		)
+	} else if job.Data.GridBBox != "" {
 		var bbox grid.BoundingBox
 
 		bbox, err = grid.ParseBoundingBox(job.Data.GridBBox)
@@ -260,6 +302,7 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) error {
 				dedup,
 				exitMonitor,
 				w.cfg.ExtraReviews || job.Data.ExtraReviews,
+				runner.WithDeterministicSeedIDs(),
 			)
 		}
 	} else {
@@ -281,10 +324,46 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) error {
 			dedup,
 			exitMonitor,
 			w.cfg.ExtraReviews || job.Data.ExtraReviews,
+			runner.WithDeterministicSeedIDs(),
 		)
 	}
 	if err != nil {
 		return w.failJob(ctx, job, err)
+	}
+	runner.ConfigureSeedRuntime(seedJobs, runner.SeedRuntimeOptions{
+		Timeout:           job.Data.PageTimeout,
+		MaxRetries:        job.Data.RetryCount,
+		MaxRetryDelay:     job.Data.RetryDelay,
+		RetriesConfigured: job.Data.RetryConfigured,
+		RandomDelayMin:    job.Data.RandomDelayMin,
+		RandomDelayMax:    job.Data.RandomDelayMax,
+	})
+
+	if w.svc.SupportsJobCheckpoints() {
+		if err := mate.Close(); err != nil {
+			return w.failJob(ctx, job, fmt.Errorf("close initial checkpoint worker: %w", err))
+		}
+		mateClosed = true
+		if !useRunFile {
+			if err := ensureCheckpointCSV(outfile); err != nil {
+				return w.failJob(ctx, job, err)
+			}
+		}
+		if err := outfile.Sync(); err != nil {
+			return w.failJob(ctx, job, fmt.Errorf("flush initial checkpoint CSV: %w", err))
+		}
+		if err := outfile.Close(); err != nil {
+			return w.failJob(ctx, job, fmt.Errorf("close initial checkpoint CSV: %w", err))
+		}
+		outfileClosed = true
+		if useRunFile {
+			if err := os.Remove(runPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return w.failJob(ctx, job, fmt.Errorf("remove unused initial checkpoint CSV: %w", err))
+			}
+		}
+		removeRunOnReturn = false
+
+		return w.scrapeJobCheckpointed(ctx, job, outpath, seedJobs, seedMetadata, exitMonitor)
 	}
 
 	stopReason := make(chan jobruntime.StopReason, 1)
@@ -323,6 +402,9 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) error {
 	}
 
 	reason := stoppedBecause(ctx, err, stopReason)
+	if exiter.LimitReached(exitMonitor) {
+		reason = jobruntime.StopReasonMaximumRecords
+	}
 	var fatalRunErr error
 	if err != nil &&
 		!errors.Is(err, context.DeadlineExceeded) &&
@@ -403,6 +485,17 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) error {
 	if _, err := w.svc.ImportJobResults(importCtx, job.ID); err != nil &&
 		!errors.Is(err, web.ErrResultStoreUnsupported) {
 		return errors.Join(fatalRunErr, fmt.Errorf("import normalized job results: %w", err))
+	}
+	if options, enabled, optionsErr := web.EnrichmentOptionsForJob(job.Data); optionsErr != nil {
+		return errors.Join(fatalRunErr, fmt.Errorf("validate website enrichment: %w", optionsErr))
+	} else if enabled {
+		batch, queueErr := w.svc.QueueJobEnrichment(importCtx, job.ID, options)
+		if queueErr != nil && !errors.Is(queueErr, web.ErrEnrichmentUnsupported) {
+			return errors.Join(fatalRunErr, fmt.Errorf("queue website enrichment: %w", queueErr))
+		}
+		if batch.Queued > 0 {
+			log.Printf("job %s queued %d website enrichment tasks", job.ID, batch.Queued)
+		}
 	}
 
 	return fatalRunErr
@@ -547,9 +640,16 @@ func defaultSetupMate(cfg *runner.Config) func(context.Context, io.Writer, *web.
 		}
 
 		if !job.Data.FastMode {
-			opts = append(opts,
-				scrapemateapp.WithJS(scrapemateapp.DisableImages()),
-			)
+			switch {
+			case job.Data.Headfull && job.Data.LoadImages:
+				opts = append(opts, scrapemateapp.WithJS(scrapemateapp.Headfull()))
+			case job.Data.Headfull:
+				opts = append(opts, scrapemateapp.WithJS(scrapemateapp.Headfull(), scrapemateapp.DisableImages()))
+			case job.Data.LoadImages:
+				opts = append(opts, scrapemateapp.WithJS())
+			default:
+				opts = append(opts, scrapemateapp.WithJS(scrapemateapp.DisableImages()))
+			}
 		} else {
 			opts = append(opts,
 				scrapemateapp.WithStealth("firefox"),

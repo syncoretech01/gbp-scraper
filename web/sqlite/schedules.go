@@ -10,7 +10,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gosom/google-maps-scraper/web"
+	"github.com/gosom/google-maps-scraper/web/jobruntime"
 )
+
+var errInvalidScheduleConfiguration = errors.New("invalid schedule configuration")
 
 func (repo *repo) ListSchedules(ctx context.Context) ([]web.ScheduleRecord, error) {
 	rows, err := repo.db.QueryContext(ctx,
@@ -166,39 +169,60 @@ func (repo *repo) StartDueSchedules(ctx context.Context, now time.Time, limit in
 	}
 	defer func() { _ = tx.Rollback() }()
 	rows, err := tx.QueryContext(ctx,
-		"SELECT id FROM schedules WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ? "+
+		"SELECT id, next_run_at FROM schedules WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ? "+
 			"ORDER BY next_run_at, id LIMIT ?",
 		now.UTC().Unix(), limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("find due schedules: %w", err)
 	}
-	ids := make([]string, 0)
+	type dueSchedule struct {
+		id  string
+		due time.Time
+	}
+	dueSchedules := make([]dueSchedule, 0)
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var item dueSchedule
+		var dueUnix int64
+		if err := rows.Scan(&item.id, &dueUnix); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
-		ids = append(ids, id)
+		item.due = time.Unix(dueUnix, 0).UTC()
+		dueSchedules = append(dueSchedules, item)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
 
-	jobs := make([]web.Job, 0, len(ids))
-	for _, id := range ids {
-		schedule, err := repo.getSchedule(ctx, tx, id)
+	jobs := make([]web.Job, 0, len(dueSchedules))
+	for _, dueSchedule := range dueSchedules {
+		schedule, err := repo.getSchedule(ctx, tx, dueSchedule.id)
 		if err != nil {
-			return nil, err
+			if errors.Is(err, web.ErrScheduleNotFound) {
+				continue
+			}
+			if quarantineErr := quarantineDueSchedule(
+				ctx, tx, dueSchedule.id, dueSchedule.due, now.UTC(), err,
+			); quarantineErr != nil {
+				return nil, quarantineErr
+			}
+			continue
 		}
-		due := *schedule.NextRunAt
+		due := dueSchedule.due
+		next, err := web.NextScheduleTime(schedule.Spec, schedule.Timezone, now.UTC())
+		if err != nil {
+			if quarantineErr := quarantineDueSchedule(ctx, tx, schedule.ID, due, now.UTC(), err); quarantineErr != nil {
+				return nil, quarantineErr
+			}
+			continue
+		}
 		skipReason := ""
 		if schedule.Spec.MissedPolicy == "skip" && now.Sub(due) > time.Minute {
 			skipReason = "missed while the scheduler was offline"
 		}
 		if skipReason == "" && schedule.Spec.OverlapPolicy == "skip" {
-			active, activeErr := scheduleHasActiveJob(ctx, tx, id)
+			active, activeErr := scheduleHasActiveJob(ctx, tx, schedule.ID)
 			if activeErr != nil {
 				return nil, activeErr
 			}
@@ -209,22 +233,26 @@ func (repo *repo) StartDueSchedules(ctx context.Context, now time.Time, limit in
 		if skipReason != "" {
 			if _, err := tx.ExecContext(ctx,
 				"INSERT INTO schedule_runs(schedule_id, state, scheduled_for, finished_at, error) VALUES (?, 'skipped', ?, ?, ?)",
-				id, due.Unix(), now.UTC().Unix(), skipReason,
+				schedule.ID, due.Unix(), now.UTC().Unix(), skipReason,
 			); err != nil {
 				return nil, fmt.Errorf("record skipped schedule: %w", err)
 			}
 		} else {
 			job, err := repo.enqueueSchedule(ctx, tx, schedule, due)
 			if err != nil {
+				if errors.Is(err, errInvalidScheduleConfiguration) {
+					if quarantineErr := quarantineDueSchedule(
+						ctx, tx, schedule.ID, due, now.UTC(), err,
+					); quarantineErr != nil {
+						return nil, quarantineErr
+					}
+					continue
+				}
 				return nil, err
 			}
 			jobs = append(jobs, job)
 		}
 
-		next, err := web.NextScheduleTime(schedule.Spec, schedule.Timezone, now.UTC())
-		if err != nil {
-			return nil, err
-		}
 		enabled := schedule.Enabled && !next.IsZero()
 		var nextValue any
 		if enabled {
@@ -232,7 +260,7 @@ func (repo *repo) StartDueSchedules(ctx context.Context, now time.Time, limit in
 		}
 		if _, err := tx.ExecContext(ctx,
 			"UPDATE schedules SET enabled = ?, next_run_at = ?, last_run_at = ?, updated_at = ? WHERE id = ? AND next_run_at = ?",
-			enabled, nextValue, now.UTC().Unix(), now.UTC().Unix(), id, due.Unix(),
+			enabled, nextValue, now.UTC().Unix(), now.UTC().Unix(), schedule.ID, due.Unix(),
 		); err != nil {
 			return nil, fmt.Errorf("advance schedule: %w", err)
 		}
@@ -243,6 +271,52 @@ func (repo *repo) StartDueSchedules(ctx context.Context, now time.Time, limit in
 	return jobs, nil
 }
 
+func quarantineDueSchedule(
+	ctx context.Context,
+	tx *sql.Tx,
+	scheduleID string,
+	due time.Time,
+	now time.Time,
+	cause error,
+) error {
+	message := jobruntime.RedactString(cause.Error())
+	details, err := json.Marshal(map[string]string{"error": message})
+	if err != nil {
+		return fmt.Errorf("encode invalid schedule audit: %w", err)
+	}
+	result, err := tx.ExecContext(ctx,
+		"UPDATE schedules SET enabled = 0, next_run_at = NULL, last_run_at = ?, updated_at = ? "+
+			"WHERE id = ? AND enabled = 1 AND next_run_at = ?",
+		now.Unix(), now.Unix(), scheduleID, due.Unix(),
+	)
+	if err != nil {
+		return fmt.Errorf("quarantine invalid schedule: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read invalid schedule quarantine result: %w", err)
+	}
+	if affected == 0 {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx,
+		"INSERT INTO schedule_runs(schedule_id, state, scheduled_for, finished_at, error) "+
+			"VALUES (?, 'failed', ?, ?, ?)",
+		scheduleID, due.Unix(), now.Unix(), message,
+	); err != nil {
+		return fmt.Errorf("record invalid schedule run: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		"INSERT INTO audit_logs(action, entity_type, entity_id, details, created_at) "+
+			"VALUES ('schedule_quarantined', 'schedule', ?, ?, ?)",
+		scheduleID, string(details), now.Unix(),
+	); err != nil {
+		return fmt.Errorf("audit invalid schedule: %w", err)
+	}
+
+	return nil
+}
+
 func (repo *repo) enqueueSchedule(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -251,6 +325,9 @@ func (repo *repo) enqueueSchedule(
 ) (web.Job, error) {
 	template, err := getTemplateConfiguration(ctx, tx, schedule.TemplateID)
 	if err != nil {
+		if errors.Is(err, web.ErrReusableNotFound) {
+			return web.Job{}, fmt.Errorf("%w: scrape template is unavailable", errInvalidScheduleConfiguration)
+		}
 		return web.Job{}, err
 	}
 	now := time.Now().UTC()
@@ -259,7 +336,7 @@ func (repo *repo) enqueueSchedule(
 		Date: now, Status: web.StatusPending, Data: template,
 	}
 	if err := job.Validate(); err != nil {
-		return web.Job{}, fmt.Errorf("scheduled template is invalid: %w", err)
+		return web.Job{}, fmt.Errorf("%w: scheduled template is invalid: %v", errInvalidScheduleConfiguration, err)
 	}
 	item, err := jobToRow(&job)
 	if err != nil {
@@ -275,8 +352,8 @@ func (repo *repo) enqueueSchedule(
 		return web.Job{}, err
 	}
 	if _, err := tx.ExecContext(ctx,
-		"INSERT INTO schedule_runs(schedule_id, job_id, state, scheduled_for, started_at) VALUES (?, ?, 'queued', ?, ?)",
-		schedule.ID, job.ID, scheduledFor.Unix(), now.Unix(),
+		"INSERT INTO schedule_runs(schedule_id, job_id, state, scheduled_for) VALUES (?, ?, 'queued', ?)",
+		schedule.ID, job.ID, scheduledFor.Unix(),
 	); err != nil {
 		return web.Job{}, fmt.Errorf("record scheduled job: %w", err)
 	}

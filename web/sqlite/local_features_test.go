@@ -218,6 +218,100 @@ func TestReusableConfigurationsAndDueScheduleSurviveQueueing(t *testing.T) {
 	}
 }
 
+func TestInvalidDueScheduleIsQuarantinedWithoutBlockingValidWork(t *testing.T) {
+	t.Parallel()
+
+	repository, _, closeRepository := newLocalFeatureRepository(t)
+	defer closeRepository()
+	ctx := context.Background()
+	now := time.Unix(1_800_100_000, 0).UTC()
+	due := now.Add(-30 * time.Second)
+
+	validTemplate := web.ScrapeTemplate{
+		ID: "template-valid", Name: "Valid dentists", Configuration: validScheduledJobData(),
+		CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour),
+	}
+	removedTemplate := web.ScrapeTemplate{
+		ID: "template-removed", Name: "Removed dentists", Configuration: validScheduledJobData(),
+		CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour),
+	}
+	for _, template := range []web.ScrapeTemplate{validTemplate, removedTemplate} {
+		if err := repository.SaveScrapeTemplate(ctx, template); err != nil {
+			t.Fatalf("SaveScrapeTemplate(%s) error = %v", template.ID, err)
+		}
+	}
+
+	spec := web.ScheduleSpec{
+		Recurrence: "once", FirstRunAt: due, OverlapPolicy: "queue", MissedPolicy: "run_once",
+	}
+	for _, schedule := range []web.ScheduleRecord{
+		{
+			ID: "a-invalid", Name: "Missing template", TemplateID: removedTemplate.ID,
+			Timezone: "UTC", Enabled: true, Spec: spec, NextRunAt: &due,
+			CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour),
+		},
+		{
+			ID: "z-valid", Name: "Valid schedule", TemplateID: validTemplate.ID,
+			Timezone: "UTC", Enabled: true, Spec: spec, NextRunAt: &due,
+			CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour),
+		},
+	} {
+		if err := repository.SaveSchedule(ctx, schedule); err != nil {
+			t.Fatalf("SaveSchedule(%s) error = %v", schedule.ID, err)
+		}
+	}
+	if err := repository.DeleteScrapeTemplate(ctx, removedTemplate.ID); err != nil {
+		t.Fatalf("DeleteScrapeTemplate() error = %v", err)
+	}
+
+	jobs, err := repository.StartDueSchedules(ctx, now, 10)
+	if err != nil {
+		t.Fatalf("StartDueSchedules() error = %v", err)
+	}
+	if len(jobs) != 1 || !strings.HasPrefix(jobs[0].Name, "Valid schedule") {
+		t.Fatalf("queued jobs = %+v", jobs)
+	}
+
+	schedules, err := repository.ListSchedules(ctx)
+	if err != nil {
+		t.Fatalf("ListSchedules() error = %v", err)
+	}
+	for _, schedule := range schedules {
+		if schedule.Enabled || schedule.NextRunAt != nil {
+			t.Errorf("schedule %s was not advanced/disabled: %+v", schedule.ID, schedule)
+		}
+	}
+
+	runs, err := repository.ListScheduleRuns(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListScheduleRuns() error = %v", err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("schedule runs = %+v", runs)
+	}
+	states := make(map[string]web.ScheduleRunRecord, len(runs))
+	for _, run := range runs {
+		states[run.ScheduleID] = run
+	}
+	failed := states["a-invalid"]
+	if failed.State != "failed" || failed.FinishedAt == nil || failed.Error == "" || failed.JobID != "" {
+		t.Errorf("quarantined run = %+v", failed)
+	}
+	queued := states["z-valid"]
+	if queued.State != string(jobruntime.StateQueued) || queued.StartedAt != nil || queued.JobID == "" {
+		t.Errorf("queued run = %+v", queued)
+	}
+	var quarantineAudits int
+	if err := repository.db.QueryRow(
+		"SELECT COUNT(*) FROM audit_logs WHERE action = 'schedule_quarantined' AND entity_id = 'a-invalid'",
+	).Scan(&quarantineAudits); err != nil {
+		t.Fatalf("read quarantine audit: %v", err)
+	}
+	if quarantineAudits != 1 {
+		t.Fatalf("quarantine audits = %d, want 1", quarantineAudits)
+	}
+}
+
 func TestProxySecretsAreEncryptedDeduplicatedAndPersistent(t *testing.T) {
 	t.Parallel()
 

@@ -34,6 +34,7 @@ type SearchJob struct {
 	params                  *MapSearchParams
 	ExitMonitor             exiter.Exiter
 	WriterManagedCompletion bool
+	Runtime                 RuntimeOptions
 }
 
 func NewSearchJob(params *MapSearchParams, opts ...SearchJobOptions) *SearchJob {

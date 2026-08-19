@@ -26,12 +26,27 @@ const maximumExportRows = int64(1_000_000)
 type exportsPageData struct {
 	Query             string
 	JobID             string
+	SourceScope       string
+	SelectedIDs       string
 	Jobs              []resultJobOption
+	SavedViews        []namedAppOption
 	Filters           []ResultFilter
+	FilterJSON        string
 	Sort              string
 	IncludeDuplicates bool
+	ColumnSpec        string
+	AvailableColumns  []ExportColumnSelection
+	Presets           []exportPresetView
 	Exports           []exportHistoryView
 	Notice            string
+}
+
+type exportPresetView struct {
+	ID        string
+	Name      string
+	Format    string
+	Summary   string
+	UpdatedAt string
 }
 
 type exportHistoryView struct {
@@ -44,7 +59,10 @@ type exportHistoryView struct {
 	Checksum    string
 	CreatedAt   string
 	Error       string
+	Source      string
+	Options     string
 	CanDownload bool
+	CanRepeat   bool
 }
 
 func (s *Server) exportsPage(w http.ResponseWriter, r *http.Request) {
@@ -63,29 +81,73 @@ func (s *Server) exportsPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not load jobs", http.StatusInternalServerError)
 		return
 	}
+	sourceScope := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("source_scope")))
+	if sourceScope == "" {
+		sourceScope = "filtered"
+	}
+	if sourceScope != "all" && sourceScope != "filtered" && sourceScope != "saved_view" && sourceScope != "selected" {
+		http.Error(w, "unsupported export source scope", http.StatusUnprocessableEntity)
+		return
+	}
+	selectedIDs := ""
+	if sourceScope == "selected" {
+		ids, parseErr := parseSelectedExportIDs(r.URL.Query().Get("selected_ids"))
+		if parseErr != nil {
+			http.Error(w, parseErr.Error(), http.StatusUnprocessableEntity)
+			return
+		}
+		selectedIDs = strings.Join(ids, ",")
+	}
 	page := exportsPageData{
 		Query:             strings.TrimSpace(r.URL.Query().Get("q")),
 		JobID:             strings.TrimSpace(r.URL.Query().Get("job_id")),
+		SourceScope:       sourceScope,
+		SelectedIDs:       selectedIDs,
 		Filters:           search.Filters,
+		FilterJSON:        resultFilterGroupJSON(search.FilterGroup),
 		Sort:              search.Sort,
 		IncludeDuplicates: search.IncludeDuplicates,
+		ColumnSpec:        defaultExportColumnSpec(),
+		AvailableColumns:  availableExportColumnOptions(),
 		Notice:            strings.TrimSpace(r.URL.Query().Get("notice")),
+	}
+	if views, viewErr := s.svc.ListSavedResultViews(r.Context(), ""); viewErr == nil {
+		for _, view := range views {
+			page.SavedViews = append(page.SavedViews, namedAppOption{ID: view.ID, Name: view.Name})
+		}
+	}
+	if presets, presetErr := s.svc.ListExportPresets(r.Context(), 100); presetErr == nil {
+		for _, preset := range presets {
+			options, _ := decodeExportOptions(preset.Options)
+			page.Presets = append(page.Presets, exportPresetView{
+				ID: preset.ID, Name: preset.Name, Format: preset.Format,
+				Summary: exportOptionsSummary(options), UpdatedAt: preset.UpdatedAt.Format(time.RFC3339),
+			})
+		}
 	}
 	for _, job := range jobs {
 		page.Jobs = append(page.Jobs, resultJobOption{ID: job.ID, Name: job.Name, Selected: job.ID == page.JobID})
 	}
 	for _, record := range records {
+		options, _ := decodeExportOptions(record.Options)
+		format := record.Format
+		if strings.HasSuffix(strings.ToLower(record.RelativePath), ".zip") {
+			format += " + ZIP"
+		}
 		page.Exports = append(page.Exports, exportHistoryView{
 			ID:          record.ID,
 			Name:        record.Name,
-			Format:      record.Format,
+			Format:      format,
 			State:       record.State,
 			Rows:        record.RecordCount,
 			Size:        humanBytes(record.FileSize),
 			Checksum:    shortChecksum(record.Checksum),
 			CreatedAt:   record.CreatedAt.Format(time.RFC3339),
 			Error:       record.Error,
+			Source:      exportRecordSource(record),
+			Options:     exportOptionsSummary(options),
 			CanDownload: record.State == "completed" && record.RelativePath != "",
+			CanRepeat:   record.Filters != "" && record.Columns != "",
 		})
 	}
 	activity, _ := s.appActivity(r)
@@ -101,94 +163,95 @@ func (s *Server) exportsPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createResultsExport(w http.ResponseWriter, r *http.Request) {
-	if !s.requireCSRF(w, r) {
+	if r.Header.Get("Origin") != "" && !s.requireCSRF(w, r) {
 		return
 	}
-	format := strings.ToLower(strings.TrimSpace(r.FormValue("format")))
-	extension, ok := exportExtension(format)
-	if !ok {
-		http.Error(w, "unsupported export format", http.StatusUnprocessableEntity)
+	if err := prepareExportCreationForm(w, r); err != nil {
+		http.Error(w, "invalid export form", http.StatusBadRequest)
 		return
 	}
-	name := strings.TrimSpace(r.FormValue("name"))
-	if name == "" {
-		name = "business-results"
-	}
-	if len(name) > 120 {
-		http.Error(w, "export name is too long", http.StatusUnprocessableEntity)
+	if strings.TrimSpace(r.FormValue("action")) == "delete_preset" {
+		s.deleteExportPresetFromBuilder(w, r)
 		return
 	}
-	search, err := resultSearchFromForm(r)
+	request, err := s.resolveExportCreation(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
-	search.Limit = 250
-	if search.Sort == "" {
-		search.Sort = "updated_desc"
-	}
-	if len(search.Query) > maximumResultQueryLength || len(search.JobID) > 128 {
-		http.Error(w, "export filter is too long", http.StatusUnprocessableEntity)
+	filterJSON, err := json.Marshal(request.Search)
+	if err != nil {
+		http.Error(w, "could not encode export filter", http.StatusUnprocessableEntity)
 		return
 	}
-	filterJSON, _ := json.Marshal(search)
+	columnJSON, optionJSON, err := encodeExportConfiguration(request.Columns, request.Options)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	if request.SavePresetName != "" {
+		preset, err := s.svc.SaveExportPreset(r.Context(), ExportPreset{
+			ID: uuid.NewString(), Name: request.SavePresetName, Format: request.Format,
+			Columns: columnJSON, Filters: string(filterJSON), Sort: request.Search.Sort, Options: optionJSON,
+			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		})
+		if err != nil {
+			http.Error(w, "could not save export preset", http.StatusInternalServerError)
+			return
+		}
+		request.PresetID = preset.ID
+	}
 	now := time.Now().UTC()
 	record := ExportRecord{
-		ID:         uuid.NewString(),
-		Name:       name,
-		Format:     format,
-		State:      "running",
-		SourceType: "results",
-		SourceID:   search.JobID,
-		Filters:    string(filterJSON),
-		Columns:    exportColumnsJSON(),
-		CreatedAt:  now,
-		StartedAt:  &now,
+		ID:          uuid.NewString(),
+		Name:        request.Name,
+		Format:      request.Format,
+		State:       "running",
+		SourceType:  request.SourceType,
+		SourceID:    request.Search.JobID,
+		PresetID:    request.PresetID,
+		SavedViewID: request.SavedViewID,
+		Filters:     string(filterJSON),
+		Columns:     columnJSON,
+		Options:     optionJSON,
+		CreatedAt:   now,
+		StartedAt:   &now,
 	}
 	if err := s.svc.CreateExport(r.Context(), record); err != nil {
 		renderLocalAPIError(w, http.StatusInternalServerError, "export_create_failed", "Could not register local export")
 		return
 	}
 
-	relativePath := filepath.ToSlash(filepath.Join("exports", record.ID+"-"+exportSlug(name)+"."+extension))
-	fullPath, err := safeDataPath(s.svc.dataFolder, relativePath)
-	if err == nil {
-		err = os.MkdirAll(filepath.Dir(fullPath), 0o700)
-	}
-	var rowCount int64
-	if err == nil {
-		rowCount, err = s.writeResultExport(r, fullPath, format, search)
-	}
+	artifact, err := s.generateConfiguredExport(r.Context(), record, request.Search, request.Columns, request.Options)
 	finished := time.Now().UTC()
 	record.FinishedAt = &finished
 	if err != nil {
 		record.State = "failed"
 		record.Error = publicExportError(err)
-		if fullPath != "" {
-			_ = os.Remove(fullPath)
-		}
 		_ = s.svc.UpdateExport(r.Context(), record)
 		renderLocalAPIError(w, http.StatusInternalServerError, "export_failed", "Could not create the local export: "+record.Error)
 		return
 	}
-	checksum, size, err := checksumLocalFile(fullPath)
-	if err != nil {
+	if err := s.svc.ReplaceExportParts(r.Context(), record.ID, artifact.Parts); err != nil {
 		record.State = "failed"
-		record.Error = "could not verify generated file"
-		_ = os.Remove(fullPath)
+		record.Error = "could not register generated parts"
+		removeExportArtifact(s.svc.dataFolder, artifact)
 		_ = s.svc.UpdateExport(r.Context(), record)
-		renderLocalAPIError(w, http.StatusInternalServerError, "export_verify_failed", "Could not verify the local export")
+		renderLocalAPIError(w, http.StatusInternalServerError, "export_register_failed", "Could not register generated export parts")
 		return
 	}
 	record.State = "completed"
-	record.RelativePath = relativePath
-	record.RecordCount = rowCount
-	record.FileSize = size
-	record.Checksum = checksum
+	record.RelativePath = artifact.RelativePath
+	record.RecordCount = artifact.RecordCount
+	record.FileSize = artifact.FileSize
+	record.Checksum = artifact.Checksum
 	if err := s.svc.UpdateExport(r.Context(), record); err != nil {
-		_ = os.Remove(fullPath)
+		removeExportArtifact(s.svc.dataFolder, artifact)
 		renderLocalAPIError(w, http.StatusInternalServerError, "export_register_failed", "Generated file could not be registered")
 		return
+	}
+	if exportPath, pathErr := safeDataPath(s.svc.dataFolder, artifact.RelativePath); pathErr == nil {
+		s.deliverCompletedExport(record, exportPath)
 	}
 	if strings.Contains(r.Header.Get("Accept"), "application/json") {
 		renderJSON(w, http.StatusCreated, localAPIEnvelope{Data: record})
@@ -201,7 +264,7 @@ func exportExtension(format string) (string, bool) {
 	extensions := map[string]string{
 		"csv": "csv", "json": "json", "jsonl": "jsonl", "geojson": "geojson",
 		"kml": "kml", "vcard": "vcf", "txt": "txt",
-		"postgresql_sql": "sql", "mysql_sql": "sql",
+		"postgresql_sql": "sql", "mysql_sql": "sql", "xlsx": "xlsx", "sqlite": "sqlite",
 	}
 	extension, ok := extensions[format]
 	return extension, ok
@@ -525,6 +588,9 @@ func (s *Server) downloadExport(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 	w.Header().Set("Content-Type", exportContentType(record.Format))
+	if strings.HasSuffix(strings.ToLower(path), ".zip") {
+		w.Header().Set("Content-Type", "application/zip")
+	}
 	w.Header().Set("Content-Disposition", "attachment; filename=\""+filepath.Base(path)+"\"")
 	w.Header().Set("X-Checksum-SHA256", record.Checksum)
 	_, _ = io.Copy(w, file)
@@ -542,13 +608,17 @@ func exportContentType(format string) string {
 		return "application/vnd.google-earth.kml+xml"
 	case "vcard":
 		return "text/vcard; charset=utf-8"
+	case "xlsx":
+		return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	case "sqlite":
+		return "application/vnd.sqlite3"
 	default:
 		return "text/plain; charset=utf-8"
 	}
 }
 
 func (s *Server) deleteExport(w http.ResponseWriter, r *http.Request) {
-	if !s.requireCSRF(w, r) {
+	if r.Header.Get("Origin") != "" && !s.requireCSRF(w, r) {
 		return
 	}
 	id := strings.TrimSpace(r.PathValue("id"))
@@ -564,7 +634,7 @@ func (s *Server) deleteExport(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+	if strings.Contains(r.Header.Get("Accept"), "application/json") || r.Method == http.MethodDelete {
 		renderJSON(w, http.StatusOK, localAPIEnvelope{Data: map[string]string{"message": "Export deleted"}})
 		return
 	}

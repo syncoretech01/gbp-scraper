@@ -29,6 +29,7 @@ type GmapJob struct {
 	ExitMonitor             exiter.Exiter
 	ExtractExtraReviews     bool
 	WriterManagedCompletion bool
+	Runtime                 RuntimeOptions
 }
 
 func NewGmapJob(
@@ -151,6 +152,7 @@ func (j *GmapJob) Process(ctx context.Context, resp *scrapemate.Response) (any, 
 		if j.WriterManagedCompletion {
 			jopts = append(jopts, WithPlaceJobWriterManagedCompletion())
 		}
+		jopts = append(jopts, withPlaceJobRuntime(j.Runtime))
 
 		placeJob := NewPlaceJob(j.ID, j.LangCode, resp.URL, j.ExtractEmail, j.ExtractExtraReviews, jopts...)
 
@@ -166,6 +168,7 @@ func (j *GmapJob) Process(ctx context.Context, resp *scrapemate.Response) (any, 
 				if j.WriterManagedCompletion {
 					jopts = append(jopts, WithPlaceJobWriterManagedCompletion())
 				}
+				jopts = append(jopts, withPlaceJobRuntime(j.Runtime))
 
 				nextJob := NewPlaceJob(j.ID, j.LangCode, href, j.ExtractEmail, j.ExtractExtraReviews, jopts...)
 
@@ -188,6 +191,10 @@ func (j *GmapJob) Process(ctx context.Context, resp *scrapemate.Response) (any, 
 
 func (j *GmapJob) BrowserActions(ctx context.Context, page scrapemate.BrowserPage) scrapemate.Response {
 	var resp scrapemate.Response
+	if err := waitRuntimeDelay(ctx, j.Runtime); err != nil {
+		resp.Error = err
+		return resp
+	}
 
 	pageResponse, err := page.Goto(j.GetFullURL(), scrapemate.WaitUntilDOMContentLoaded)
 	if err != nil {

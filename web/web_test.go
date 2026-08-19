@@ -142,6 +142,60 @@ func TestSecurityHeadersSeparateLegacyAndLocalPolicies(t *testing.T) {
 	}
 }
 
+func TestVersionedAPIMutationsRequireCSRFOnlyForBrowserOrigins(t *testing.T) {
+	t.Parallel()
+
+	repository := &captureJobRepository{}
+	server, err := New(NewService(repository, t.TempDir()), ":0")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	jobPayload := `{"name":"Dentists","keywords":["dentists"],"lang":"en","zoom":12,"depth":10,"max_time":180}`
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader(jobPayload))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", "https://malicious.example")
+	recorder := httptest.NewRecorder()
+	server.srv.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden || repository.createCount != 0 {
+		t.Fatalf("browser request status = %d, creates = %d", recorder.Code, repository.createCount)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader(jobPayload))
+	request.Header.Set("Content-Type", "application/json")
+	recorder = httptest.NewRecorder()
+	server.srv.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated || repository.createCount != 1 {
+		t.Fatalf("local API request status = %d, creates = %d, body = %s", recorder.Code, repository.createCount, recorder.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/jobs", strings.NewReader(jobPayload))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", "http://127.0.0.1:8080")
+	request.Header.Set("X-CSRF-Token", server.csrfToken)
+	recorder = httptest.NewRecorder()
+	server.srv.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated || repository.createCount != 2 {
+		t.Fatalf("trusted browser request status = %d, creates = %d, body = %s", recorder.Code, repository.createCount, recorder.Body.String())
+	}
+
+	const jobID = "11111111-1111-1111-1111-111111111111"
+	request = httptest.NewRequest(http.MethodDelete, "/api/v1/jobs/"+jobID, http.NoBody)
+	request.Header.Set("Origin", "https://malicious.example")
+	recorder = httptest.NewRecorder()
+	server.srv.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden || repository.deleteCount != 0 {
+		t.Fatalf("browser delete status = %d, deletes = %d", recorder.Code, repository.deleteCount)
+	}
+
+	request = httptest.NewRequest(http.MethodDelete, "/api/v1/jobs/"+jobID, http.NoBody)
+	recorder = httptest.NewRecorder()
+	server.srv.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || repository.deleteCount != 1 {
+		t.Fatalf("local API delete status = %d, deletes = %d", recorder.Code, repository.deleteCount)
+	}
+}
+
 func TestScrapeAcceptsGridCoverage(t *testing.T) {
 	t.Parallel()
 
@@ -185,7 +239,9 @@ func TestScrapeAcceptsGridCoverage(t *testing.T) {
 }
 
 type captureJobRepository struct {
-	created *Job
+	created     *Job
+	createCount int
+	deleteCount int
 }
 
 func (r *captureJobRepository) Get(context.Context, string) (Job, error) {
@@ -195,11 +251,14 @@ func (r *captureJobRepository) Get(context.Context, string) (Job, error) {
 func (r *captureJobRepository) Create(_ context.Context, job *Job) error {
 	copy := *job
 	r.created = &copy
+	r.createCount++
 
 	return nil
 }
 
 func (r *captureJobRepository) Delete(context.Context, string) error {
+	r.deleteCount++
+
 	return nil
 }
 
@@ -209,4 +268,39 @@ func (r *captureJobRepository) Select(context.Context, SelectParams) ([]Job, err
 
 func (r *captureJobRepository) Update(context.Context, *Job) error {
 	return nil
+}
+
+func TestFramePolicyAllowsOnlyTheSelfEmbeddedMapPage(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		path          string
+		wantOptions   string
+		wantAncestors string
+	}{
+		{path: "/app/map", wantOptions: "SAMEORIGIN", wantAncestors: "frame-ancestors 'self'"},
+		{path: "/app/results", wantOptions: "DENY", wantAncestors: "frame-ancestors 'none'"},
+		{path: "/app/dashboard", wantOptions: "DENY", wantAncestors: "frame-ancestors 'none'"},
+		{path: "/legacy", wantOptions: "DENY", wantAncestors: "frame-ancestors 'none'"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.path, func(t *testing.T) {
+			t.Parallel()
+
+			recorder := httptest.NewRecorder()
+			handler := securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, test.path, http.NoBody))
+
+			if got := recorder.Header().Get("X-Frame-Options"); got != test.wantOptions {
+				t.Fatalf("X-Frame-Options for %s = %q, want %q", test.path, got, test.wantOptions)
+			}
+
+			if policy := recorder.Header().Get("Content-Security-Policy"); !strings.Contains(policy, test.wantAncestors) {
+				t.Fatalf("CSP for %s = %q, want %q", test.path, policy, test.wantAncestors)
+			}
+		})
+	}
 }

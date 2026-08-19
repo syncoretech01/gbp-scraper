@@ -44,15 +44,27 @@ type ResultFilter struct {
 	Value    string `json:"value"`
 }
 
+// ResultFilterGroup is a bounded recursive expression used by the Results,
+// Map, saved-view, and export APIs. Logic is "and" or "or"; Not negates the
+// complete group. The legacy flat Filters field remains supported and is
+// combined with this expression using AND for backwards compatibility.
+type ResultFilterGroup struct {
+	Logic   string              `json:"logic"`
+	Not     bool                `json:"not,omitempty"`
+	Filters []ResultFilter      `json:"filters,omitempty"`
+	Groups  []ResultFilterGroup `json:"groups,omitempty"`
+}
+
 // ResultSearch controls indexed result queries and pagination.
 type ResultSearch struct {
-	Query             string         `json:"query,omitempty"`
-	JobID             string         `json:"job_id,omitempty"`
-	Sort              string         `json:"sort,omitempty"`
-	Filters           []ResultFilter `json:"filters,omitempty"`
-	IncludeDuplicates bool           `json:"include_duplicates"`
-	Limit             int            `json:"limit"`
-	Offset            int            `json:"offset"`
+	Query             string             `json:"query,omitempty"`
+	JobID             string             `json:"job_id,omitempty"`
+	Sort              string             `json:"sort,omitempty"`
+	Filters           []ResultFilter     `json:"filters,omitempty"`
+	FilterGroup       *ResultFilterGroup `json:"filter_group,omitempty"`
+	IncludeDuplicates bool               `json:"include_duplicates"`
+	Limit             int                `json:"limit"`
+	Offset            int                `json:"offset"`
 }
 
 // BusinessResult is the normalized, display-safe row returned by result
@@ -123,6 +135,7 @@ type ResultOverview struct {
 type BusinessSourceView struct {
 	ID               int64     `json:"id"`
 	JobID            string    `json:"job_id,omitempty"`
+	TaskID           string    `json:"task_id,omitempty"`
 	SourceType       string    `json:"source_type"`
 	SourceURL        string    `json:"source_url,omitempty"`
 	SourceQuery      string    `json:"source_query,omitempty"`
@@ -131,25 +144,161 @@ type BusinessSourceView struct {
 	ExtractionMethod string    `json:"extraction_method"`
 	Confidence       float64   `json:"confidence"`
 	ExtractedAt      time.Time `json:"extracted_at"`
+	RawJSON          string    `json:"raw_json,omitempty"`
+	NormalizedJSON   string    `json:"normalized_json,omitempty"`
+	RecordHash       string    `json:"record_hash,omitempty"`
 }
 
 // BusinessVersionView is an immutable normalized snapshot reference.
 type BusinessVersionView struct {
+	ID                int64     `json:"id"`
+	Version           int64     `json:"version"`
+	PreviousVersionID *int64    `json:"previous_version_id,omitempty"`
+	JobID             string    `json:"job_id,omitempty"`
+	SourceID          *int64    `json:"source_id,omitempty"`
+	ChangeType        string    `json:"change_type"`
+	ChangedFields     []string  `json:"changed_fields"`
+	Snapshot          string    `json:"snapshot"`
+	ObservedAt        time.Time `json:"observed_at"`
+}
+
+// FieldProvenanceView explains where one stored value came from and whether
+// it is the current preferred observation.
+type FieldProvenanceView struct {
+	ID               int64      `json:"id"`
+	FieldName        string     `json:"field_name"`
+	OriginalValue    string     `json:"original_value,omitempty"`
+	NormalizedValue  string     `json:"normalized_value,omitempty"`
+	OriginalJSON     string     `json:"original_json,omitempty"`
+	NormalizedJSON   string     `json:"normalized_json,omitempty"`
+	Preferred        bool       `json:"preferred"`
+	SourceID         *int64     `json:"source_id,omitempty"`
+	SourceType       string     `json:"source_type"`
+	SourceURL        string     `json:"source_url,omitempty"`
+	SourceQuery      string     `json:"source_query,omitempty"`
+	SourceCell       string     `json:"source_cell,omitempty"`
+	ExtractionMethod string     `json:"extraction_method,omitempty"`
+	Confidence       float64    `json:"confidence"`
+	ExtractedAt      time.Time  `json:"extracted_at"`
+	SupersededAt     *time.Time `json:"superseded_at,omitempty"`
+	Operator         string     `json:"operator,omitempty"`
+	EditReason       string     `json:"edit_reason,omitempty"`
+}
+
+// WebsiteView contains the most recent locally stored website audit.
+type WebsiteView struct {
+	ID                   int64      `json:"id"`
+	URL                  string     `json:"url"`
+	FinalURL             string     `json:"final_url,omitempty"`
+	Domain               string     `json:"domain,omitempty"`
+	Status               string     `json:"status"`
+	HTTPStatus           *int64     `json:"http_status,omitempty"`
+	HTTPS                *bool      `json:"https,omitempty"`
+	ResponseTimeMS       *int64     `json:"response_time_ms,omitempty"`
+	RedirectChain        string     `json:"redirect_chain"`
+	PageTitle            string     `json:"page_title,omitempty"`
+	MetaDescription      string     `json:"meta_description,omitempty"`
+	Language             string     `json:"language,omitempty"`
+	Technologies         string     `json:"technologies"`
+	SocialLinks          string     `json:"social_links"`
+	ScreenshotPath       string     `json:"screenshot_path,omitempty"`
+	LastCheckedAt        *time.Time `json:"last_checked_at,omitempty"`
+	TLSValid             *bool      `json:"tls_valid,omitempty"`
+	CertificateError     string     `json:"certificate_error,omitempty"`
+	PagesChecked         int        `json:"pages_checked"`
+	InternalLinksChecked int        `json:"internal_links_checked"`
+	BrokenInternalLinks  int        `json:"broken_internal_links"`
+	MixedContent         bool       `json:"mixed_content"`
+	Parked               bool       `json:"parked"`
+	ComingSoon           bool       `json:"coming_soon"`
+	Placeholder          bool       `json:"placeholder"`
+	Trackers             string     `json:"trackers"`
+}
+
+// EmailView is one locally extracted and classified email address.
+type EmailView struct {
+	ID               int64      `json:"id"`
+	Value            string     `json:"value"`
+	NormalizedValue  string     `json:"normalized_value"`
+	Kind             string     `json:"kind"`
+	Status           string     `json:"status"`
+	DomainHasMX      *bool      `json:"domain_has_mx,omitempty"`
+	Disposable       bool       `json:"disposable"`
+	SourceURL        string     `json:"source_url,omitempty"`
+	ExtractionMethod string     `json:"extraction_method,omitempty"`
+	Confidence       float64    `json:"confidence"`
+	LastCheckedAt    *time.Time `json:"last_checked_at,omitempty"`
+	ValidSyntax      bool       `json:"valid_syntax"`
+	Role             string     `json:"role,omitempty"`
+	PersonalLikely   bool       `json:"personal_likely"`
+	MXStatus         string     `json:"mx_status"`
+	MXRecords        string     `json:"mx_records"`
+	Relevance        int        `json:"relevance"`
+	Rank             int        `json:"rank"`
+}
+
+// PhoneView is one normalized phone observation.
+type PhoneView struct {
+	ID              int64   `json:"id"`
+	Value           string  `json:"value"`
+	NormalizedValue string  `json:"normalized_value"`
+	Kind            string  `json:"kind"`
+	SourceURL       string  `json:"source_url,omitempty"`
+	Confidence      float64 `json:"confidence"`
+}
+
+// SocialProfileView is one detected business social profile.
+type SocialProfileView struct {
+	ID         int64   `json:"id"`
+	Platform   string  `json:"platform"`
+	URL        string  `json:"url"`
+	SourceURL  string  `json:"source_url,omitempty"`
+	Confidence float64 `json:"confidence"`
+}
+
+// BusinessChangeView is a field-level before/after change between versions.
+type BusinessChangeView struct {
 	ID            int64     `json:"id"`
-	Version       int64     `json:"version"`
-	ChangeType    string    `json:"change_type"`
-	ChangedFields []string  `json:"changed_fields"`
-	ObservedAt    time.Time `json:"observed_at"`
+	FromVersionID *int64    `json:"from_version_id,omitempty"`
+	ToVersionID   *int64    `json:"to_version_id,omitempty"`
+	FieldName     string    `json:"field_name"`
+	BeforeValue   string    `json:"before_value"`
+	AfterValue    string    `json:"after_value"`
+	ChangeKind    string    `json:"change_kind"`
+	DetectedAt    time.Time `json:"detected_at"`
+}
+
+// DuplicateMatchView contains the evidence recorded for a possible duplicate.
+type DuplicateMatchView struct {
+	CandidateID     int64     `json:"candidate_id"`
+	BusinessID      string    `json:"business_id"`
+	Name            string    `json:"name"`
+	PrimaryCategory string    `json:"primary_category,omitempty"`
+	Address         string    `json:"address,omitempty"`
+	Domain          string    `json:"domain,omitempty"`
+	Score           float64   `json:"score"`
+	Signals         string    `json:"signals"`
+	State           string    `json:"state"`
+	ResolutionNote  string    `json:"resolution_note,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 // BusinessDetail combines the preferred row with its local history and raw
 // normalized JSON snapshot.
 type BusinessDetail struct {
-	Business   BusinessResult        `json:"business"`
-	RawJSON    string                `json:"raw_json"`
-	Sources    []BusinessSourceView  `json:"sources"`
-	Versions   []BusinessVersionView `json:"versions"`
-	Duplicates []string              `json:"duplicate_ids,omitempty"`
+	Business         BusinessResult        `json:"business"`
+	RawJSON          string                `json:"raw_json"`
+	Sources          []BusinessSourceView  `json:"sources"`
+	Provenance       []FieldProvenanceView `json:"provenance"`
+	Websites         []WebsiteView         `json:"websites"`
+	Emails           []EmailView           `json:"emails"`
+	Phones           []PhoneView           `json:"phones"`
+	SocialProfiles   []SocialProfileView   `json:"social_profiles"`
+	Versions         []BusinessVersionView `json:"versions"`
+	Changes          []BusinessChangeView  `json:"changes"`
+	Duplicates       []string              `json:"duplicate_ids,omitempty"`
+	DuplicateMatches []DuplicateMatchView  `json:"duplicate_matches,omitempty"`
+	Quality          BusinessQualityReport `json:"quality"`
 }
 
 // ResultRepository is an additive local-data capability. Keeping it separate

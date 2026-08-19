@@ -14,6 +14,8 @@ import (
 	"github.com/gosom/google-maps-scraper/runner"
 	"github.com/gosom/google-maps-scraper/web"
 	"github.com/gosom/google-maps-scraper/web/jobruntime"
+	"github.com/gosom/google-maps-scraper/web/resultimport"
+	"github.com/gosom/google-maps-scraper/web/sqlite"
 	"github.com/gosom/scrapemate"
 )
 
@@ -254,6 +256,115 @@ func TestStoppedBecausePrefersOperatorRequest(t *testing.T) {
 	}
 }
 
+func TestCheckpointedJobPausesBeforeLowDiskAndResumesOnlyPendingTask(t *testing.T) {
+	t.Parallel()
+
+	dataFolder := t.TempDir()
+	repository, err := sqlite.New(filepath.Join(dataFolder, "jobs.db"))
+	if err != nil {
+		t.Fatalf("create SQLite repository: %v", err)
+	}
+
+	t.Cleanup(func() {
+		if closer, ok := repository.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+	})
+	service := web.NewService(repository, dataFolder)
+	job := testScrapeJob("66666666-6666-4666-8666-666666666666")
+	job.Data.LowDiskBytes = 1 << 30
+	job.Data.Adaptive = true
+	job.Data.Concurrency = 4
+	if err := service.CreateWithState(context.Background(), &job, jobruntime.StateQueued); err != nil {
+		t.Fatalf("create checkpointed job: %v", err)
+	}
+
+	lowDisk := true
+	worker := &webrunner{
+		svc: service,
+		cfg: &runner.Config{DataFolder: dataFolder, Concurrency: 4},
+		setupMate: func(_ context.Context, output io.Writer, _ *web.Job) (mateRunner, error) {
+			return &checkpointOutputMate{output: output}, nil
+		},
+		sampleResources: func(context.Context, string) (workerResourceSample, error) {
+			diskFree := uint64(8 << 30)
+			if lowDisk {
+				diskFree = 512 << 20
+			}
+
+			return workerResourceSample{
+				CPUPercent: 10, MemoryUsedBytes: 2 << 30,
+				MemoryAvailableBytes: 4 << 30, DiskFreeBytes: diskFree,
+			}, nil
+		},
+	}
+
+	if err := worker.scrapeJob(context.Background(), &job); err != nil {
+		t.Fatalf("low-disk scrape: %v", err)
+	}
+	runtime, err := service.GetRuntime(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("get paused runtime: %v", err)
+	}
+	if runtime.State != jobruntime.StatePaused || runtime.OutcomeReason != jobruntime.StopReasonLowDisk {
+		t.Fatalf("low-disk runtime = %#v", runtime)
+	}
+	execution, err := service.GetJobExecution(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("get paused execution: %v", err)
+	}
+	if execution.Tasks.Total != 1 || execution.Tasks.Pending != 1 || execution.Tasks.Completed != 0 {
+		t.Fatalf("paused tasks = %#v", execution.Tasks)
+	}
+
+	if _, _, err := service.ApplyControl(context.Background(), job.ID, jobruntime.ControlResume); err != nil {
+		t.Fatalf("resume checkpointed job: %v", err)
+	}
+	lowDisk = false
+	if err := worker.scrapeJob(context.Background(), &job); err != nil {
+		t.Fatalf("resumed scrape: %v", err)
+	}
+	runtime, err = service.GetRuntime(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("get completed runtime: %v", err)
+	}
+	if runtime.State != jobruntime.StateCompleted {
+		t.Fatalf("resumed runtime = %#v", runtime)
+	}
+	execution, err = service.GetJobExecution(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("get completed execution: %v", err)
+	}
+	if execution.Tasks.Total != 1 || execution.Tasks.Completed != 1 || execution.Tasks.Pending != 0 || execution.Checkpoint == nil {
+		t.Fatalf("completed execution = %#v", execution)
+	}
+	rows := readMergeFixture(t, filepath.Join(dataFolder, job.ID+".csv"))
+	if len(rows) != 2 {
+		t.Fatalf("resumed CSV rows = %d, want header plus one result", len(rows))
+	}
+}
+
+func TestWorkerContinuesToPollJobsAfterScheduleFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	repository := &scheduleFailureRepo{cancelAfterSelect: cancel}
+	worker := &webrunner{
+		svc: web.NewService(repository, t.TempDir()),
+		cfg: &runner.Config{DataFolder: t.TempDir(), Concurrency: 1},
+	}
+
+	if err := worker.work(ctx); err != nil {
+		t.Fatalf("work() error = %v", err)
+	}
+	if repository.schedulePolls != 1 {
+		t.Fatalf("schedule polls = %d, want 1", repository.schedulePolls)
+	}
+	if repository.jobPolls != 1 {
+		t.Fatalf("job polls = %d, want 1 after the schedule error", repository.jobPolls)
+	}
+}
+
 func testScrapeJob(id string) web.Job {
 	return web.Job{
 		ID:     id,
@@ -280,6 +391,41 @@ type fakeMate struct {
 	startErr error
 }
 
+type checkpointOutputMate struct {
+	output io.Writer
+}
+
+func (mate *checkpointOutputMate) Start(_ context.Context, _ ...scrapemate.IJob) error {
+	header := resultimport.LegacyHeaders()
+	row := make([]string, len(header))
+	for index, name := range header {
+		switch name {
+		case "place_id":
+			row[index] = "checkpoint-place"
+		case "title":
+			row[index] = "Checkpoint Dental"
+		case "address":
+			row[index] = "1 Market Street, San Francisco"
+		case "latitude":
+			row[index] = "37.7749"
+		case "longitude":
+			row[index] = "-122.4194"
+		}
+	}
+	writer := csv.NewWriter(mate.output)
+	if err := writer.Write(header); err != nil {
+		return err
+	}
+	if err := writer.Write(row); err != nil {
+		return err
+	}
+	writer.Flush()
+
+	return writer.Error()
+}
+
+func (*checkpointOutputMate) Close() error { return nil }
+
 func (m fakeMate) Start(_ context.Context, jobs ...scrapemate.IJob) error {
 	if m.onStart != nil {
 		m.onStart(jobs)
@@ -299,6 +445,52 @@ func (m fakeMate) Close() error {
 type memoryJobRepo struct {
 	mu   sync.Mutex
 	jobs map[string]web.Job
+}
+
+type scheduleFailureRepo struct {
+	memoryJobRepo
+	cancelAfterSelect context.CancelFunc
+	schedulePolls     int
+	jobPolls          int
+}
+
+func (r *scheduleFailureRepo) Select(context.Context, web.SelectParams) ([]web.Job, error) {
+	r.jobPolls++
+	if r.cancelAfterSelect != nil {
+		r.cancelAfterSelect()
+	}
+
+	return nil, nil
+}
+
+func (r *scheduleFailureRepo) ListSchedules(context.Context) ([]web.ScheduleRecord, error) {
+	return nil, nil
+}
+
+func (r *scheduleFailureRepo) ListScheduleRuns(context.Context, int) ([]web.ScheduleRunRecord, error) {
+	return nil, nil
+}
+
+func (r *scheduleFailureRepo) SaveSchedule(context.Context, web.ScheduleRecord) error {
+	return nil
+}
+
+func (r *scheduleFailureRepo) SetScheduleEnabled(context.Context, string, bool) error {
+	return nil
+}
+
+func (r *scheduleFailureRepo) DeleteSchedule(context.Context, string) error {
+	return nil
+}
+
+func (r *scheduleFailureRepo) RunScheduleNow(context.Context, string, time.Time) (web.Job, error) {
+	return web.Job{}, nil
+}
+
+func (r *scheduleFailureRepo) StartDueSchedules(context.Context, time.Time, int) ([]web.Job, error) {
+	r.schedulePolls++
+
+	return nil, errors.New("synthetic schedule failure")
 }
 
 func (r *memoryJobRepo) Get(_ context.Context, id string) (web.Job, error) {

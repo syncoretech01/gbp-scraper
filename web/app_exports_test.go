@@ -106,8 +106,10 @@ func TestExportHelpersBoundNamesFormatsAndEmptyJSON(t *testing.T) {
 	if slug := exportSlug("  San Francisco / Dentists !!! "); slug != "san-francisco-dentists" {
 		t.Fatalf("exportSlug() = %q", slug)
 	}
-	if _, ok := exportExtension("xlsx"); ok {
-		t.Fatal("unimplemented XLSX format was advertised")
+	for _, format := range []string{"xlsx", "sqlite"} {
+		if _, ok := exportExtension(format); !ok {
+			t.Fatalf("implemented %s format was not advertised", format)
+		}
 	}
 	for _, format := range []string{"json", "geojson"} {
 		var output bytes.Buffer

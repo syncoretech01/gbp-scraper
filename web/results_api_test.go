@@ -53,13 +53,33 @@ func TestResultsPageAndDetailDrawerRenderRepositoryData(t *testing.T) {
 		t.Fatalf("results status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 	body := recorder.Body.String()
-	for _, expected := range []string{"Bay Smile Dental", "2 source records", "dentists in San Francisco", "/app/results/biz_abcde/drawer"} {
+	for _, expected := range []string{
+		"Bay Smile Dental", "2 source records", "dentists in San Francisco", "/app/results/biz_abcde/drawer",
+		`data-results-workspace-view`, `data-column="name"`, `data-copy-value="Bay Smile Dental"`,
+		`data-results-map-frame`, `data-layout-select`,
+	} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("results body missing %q", expected)
 		}
 	}
 	if strings.Contains(body, "/app/exports?source=results") {
 		t.Fatal("results page advertised an export route that is not enabled")
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/static/js/app-results.js", nil)
+	recorder = httptest.NewRecorder()
+	server.srv.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("results script status = %d", recorder.Code)
+	}
+	script := recorder.Body.String()
+	for _, expected := range []string{
+		"gmaps-results-layout-v1", "maximumNamedLayouts = 12", "maximumClipboardBytes",
+		"openSelectedWebsites", "updateReviewed", "handleTableKeydown",
+	} {
+		if !strings.Contains(script, expected) {
+			t.Fatalf("results script missing %q", expected)
+		}
 	}
 
 	request = httptest.NewRequest(http.MethodGet, "/app/results/biz_abcde/drawer", nil)

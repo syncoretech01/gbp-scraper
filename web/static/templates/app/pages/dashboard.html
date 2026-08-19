@@ -12,23 +12,23 @@
     <section class="grid metrics-grid" aria-label="Workspace summary">
         <article class="card metric">
             <div class="metric-label"><span>Unique businesses</span><span aria-hidden="true">▦</span></div>
-            <p class="metric-value">{{.Page.Metrics.UniqueBusinesses}}</p>
+            <p class="metric-value" data-number="{{.Page.Metrics.UniqueBusinesses}}">{{.Page.Metrics.UniqueBusinesses}}</p>
             <p class="metric-detail">{{.Page.Metrics.RawRecords}} raw records · {{.Page.Metrics.Duplicates}} duplicates</p>
         </article>
         <article class="card metric">
             <div class="metric-label"><span>Collected today</span><span aria-hidden="true">↗</span></div>
-            <p class="metric-value">{{.Page.Metrics.CollectedToday}}</p>
+            <p class="metric-value" data-number="{{.Page.Metrics.CollectedToday}}">{{.Page.Metrics.CollectedToday}}</p>
             <p class="metric-detail">{{.Page.Metrics.CollectedWeek}} this week · {{.Page.Metrics.CollectedMonth}} this month</p>
         </article>
         <article class="card metric">
             <div class="metric-label"><span>Active jobs</span><span aria-hidden="true">◉</span></div>
-            <p class="metric-value">{{.Page.Metrics.ActiveJobs}}</p>
+            <p class="metric-value" data-number="{{.Page.Metrics.ActiveJobs}}">{{.Page.Metrics.ActiveJobs}}</p>
             <p class="metric-detail">{{.Page.Metrics.QueuedJobs}} queued · {{.Page.Metrics.PausedJobs}} paused · {{.Page.Metrics.PartialJobs}} partial</p>
         </article>
         <article class="card metric">
             <div class="metric-label"><span>Contact coverage</span><span aria-hidden="true">@</span></div>
             <p class="metric-value">{{.Page.Metrics.EmailCoverage}}%</p>
-            <p class="metric-detail">{{.Page.Metrics.Emails}} emails · {{.Page.Metrics.Phones}} phones</p>
+            <p class="metric-detail">{{.Page.Metrics.Emails}} email · {{.Page.Metrics.Phones}} phone · {{.Page.Metrics.SocialProfiles}} social</p>
         </article>
         <article class="card metric">
             <div class="metric-label"><span>Collection speed</span><span aria-hidden="true">⚡</span></div>
@@ -38,7 +38,12 @@
         <article class="card metric">
             <div class="metric-label"><span>Local storage</span><span aria-hidden="true">◫</span></div>
             <p class="metric-value">{{.Page.Metrics.DatabaseSize}}</p>
-            <p class="metric-detail">{{.Page.Metrics.DiskFree}} free on data volume</p>
+            <p class="metric-detail">{{.Page.Metrics.DiskFree}} free · {{.Page.Metrics.ExportStorage}} exports · {{.Page.Metrics.ScreenshotStorage}} screenshots · {{.Page.Metrics.LogStorage}} logs</p>
+        </article>
+        <article class="card metric">
+            <div class="metric-label"><span>Proxy pool</span><span aria-hidden="true">↔</span></div>
+            <p class="metric-value">{{.Page.Metrics.ProxySuccessRate}}</p>
+            <p class="metric-detail">success · {{.Page.Metrics.ProxyBlockRate}} blocked · {{.Page.Metrics.HealthyProxies}}/{{.Page.Metrics.TotalProxies}} healthy · {{.Page.Metrics.ProxyLatency}}</p>
         </article>
     </section>
 
@@ -64,8 +69,23 @@
                 {{range .Page.Availability}}
                 <div class="storage-meter"><div class="metric-label"><span>{{.Label}}</span><strong>{{.Percent}}%</strong></div><progress max="100" value="{{.Percent}}">{{.Percent}}%</progress></div>
                 {{else}}<div class="empty-state"><div><strong>No results to analyse</strong><span>Availability metrics appear after the first result is saved.</span></div></div>{{end}}
+                {{if gt .Page.Metrics.Websites 0}}<p class="field-hint">Website checks: {{.Page.Metrics.ActiveWebsites}} active · {{.Page.Metrics.InactiveWebsites}} inactive/error · {{.Page.Metrics.Websites}} discovered.</p>{{end}}
             </div>
         </article>
+    </section>
+
+    <section class="grid grid-2" aria-label="Business breakdowns">
+        <article class="card"><div class="card-header"><div><h2>Businesses by city</h2><p>Top normalized cities</p></div></div><div class="card-body">{{if .Page.Cities}}<table class="data-table"><thead><tr><th>City</th><th>Businesses</th></tr></thead><tbody>{{range .Page.Cities}}<tr><td>{{.Label}}</td><td>{{.Value}}</td></tr>{{end}}</tbody></table>{{else}}<p class="field-hint">No city data yet.</p>{{end}}</div></article>
+        <article class="card"><div class="card-header"><div><h2>Businesses by category</h2><p>Top primary categories</p></div></div><div class="card-body">{{if .Page.Categories}}<table class="data-table"><thead><tr><th>Category</th><th>Businesses</th></tr></thead><tbody>{{range .Page.Categories}}<tr><td>{{.Label}}</td><td>{{.Value}}</td></tr>{{end}}</tbody></table>{{else}}<p class="field-hint">No category data yet.</p>{{end}}</div></article>
+        <article class="card"><div class="card-header"><div><h2>Business status</h2><p>Stored Maps status signal</p></div></div><div class="card-body">{{if .Page.Statuses}}<table class="data-table"><thead><tr><th>Status</th><th>Businesses</th></tr></thead><tbody>{{range .Page.Statuses}}<tr><td>{{.Label}}</td><td>{{.Value}}</td></tr>{{end}}</tbody></table>{{else}}<p class="field-hint">No business status data yet.</p>{{end}}</div></article>
+        <article class="card"><div class="card-header"><div><h2>Rating bands</h2><p>Unique businesses by rating</p></div></div><div class="card-body">{{if .Page.RatingBands}}<table class="data-table"><thead><tr><th>Rating</th><th>Businesses</th></tr></thead><tbody>{{range .Page.RatingBands}}<tr><td>{{.Label}}</td><td>{{.Value}}</td></tr>{{end}}</tbody></table>{{else}}<p class="field-hint">No rating data yet.</p>{{end}}</div></article>
+    </section>
+
+    <section class="grid grid-2" aria-label="Operational trends">
+        <article class="card"><div class="card-header"><div><h2>Job outcomes over time</h2><p>Terminal states by UTC day</p></div></div><div class="card-body">{{if .Page.JobTrends}}<div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Completed</th><th>Partial</th><th>Failed</th><th>Cancelled</th></tr></thead><tbody>{{range .Page.JobTrends}}<tr><td>{{.Label}}</td><td>{{.Completed}}</td><td>{{.Partial}}</td><td>{{.Failed}}</td><td>{{.Cancelled}}</td></tr>{{end}}</tbody></table></div>{{else}}<p class="field-hint">No terminal job history in the last 30 days.</p>{{end}}</div></article>
+        <article class="card"><div class="card-header"><div><h2>Speed and warnings</h2><p>Recorded throughput and worker warning/error events</p></div></div><div class="card-body">{{if .Page.SpeedTrends}}<div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Places/min</th><th>Warning events</th></tr></thead><tbody>{{range .Page.SpeedTrends}}<tr><td>{{.Label}}</td><td>{{printf "%.1f" .PlacesPerMinute}}</td><td>{{.WarningEvents}}</td></tr>{{end}}</tbody></table></div>{{else}}<p class="field-hint">Speed and warning telemetry appears as checkpoint-enabled jobs run.</p>{{end}}</div></article>
+        <article class="card"><div class="card-header"><div><h2>Proxy latency distribution</h2><p>Latest stored latency by proxy</p></div></div><div class="card-body">{{if .Page.ProxyLatency}}<table class="data-table"><thead><tr><th>Latency</th><th>Proxies</th></tr></thead><tbody>{{range .Page.ProxyLatency}}<tr><td>{{.Label}}</td><td>{{.Value}}</td></tr>{{end}}</tbody></table>{{else}}<p class="field-hint">No proxies configured.</p>{{end}}</div></article>
+        <article class="card"><div class="card-header"><div><h2>Proxy reliability distribution</h2><p>Success share from local test and use counters</p></div></div><div class="card-body">{{if .Page.ProxyReliability}}<table class="data-table"><thead><tr><th>Reliability</th><th>Proxies</th></tr></thead><tbody>{{range .Page.ProxyReliability}}<tr><td>{{.Label}}</td><td>{{.Value}}</td></tr>{{end}}</tbody></table>{{else}}<p class="field-hint">No proxy reliability evidence yet.</p>{{end}}</div></article>
     </section>
 
     <section class="card" aria-labelledby="recent-jobs-heading">
@@ -80,12 +100,15 @@
                         <td><strong><a href="/app/jobs/{{.ID}}" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}">{{.Name}}</a></strong><br><small>{{.Stage}}</small></td>
                         <td><span class="status status-{{.State}}">{{.State}}</span></td>
                         <td><div class="progress-track" role="progressbar" aria-label="{{.Name}} progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{.Percent}}"><div class="progress-bar" style="--progress: {{.Percent}}%"></div></div><small>{{.Percent}}% · ETA {{.ETA}}</small></td>
-                        <td>{{.UniqueRecords}} unique<br><small>{{.Emails}} emails</small></td>
+                        <td>{{.RawRecords}} found · {{.UniqueRecords}} unique<br><small>{{.Emails}} emails</small></td>
                         <td>{{.Runtime}}</td>
                         <td><div class="table-actions">
                             <a class="button button-small" href="/app/jobs/{{.ID}}" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}">Open</a>
                             {{if .CanPause}}<form action="/api/v1/jobs/{{.ID}}/pause" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-small" type="submit" data-action="pause-job" data-endpoint="/api/v1/jobs/{{.ID}}/pause">Pause</button></form>{{end}}
                             {{if .CanResume}}<form action="/api/v1/jobs/{{.ID}}/resume" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-small" type="submit" data-action="resume-job" data-endpoint="/api/v1/jobs/{{.ID}}/resume">Resume</button></form>{{end}}
+                            {{if .CanCancel}}<form action="/api/v1/jobs/{{.ID}}/cancel" method="post" data-confirm="Stop this job at its next safe checkpoint?"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-small" type="submit">Stop</button></form>{{end}}
+                            {{if .CanRetry}}<form action="/api/v1/jobs/{{.ID}}/retry" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-small" type="submit">Retry failures</button></form>{{end}}
+                            <a class="button button-small" href="/app/scrapes/new?duplicate_job={{.ID}}">Duplicate config</a>
                             {{if .HasResults}}<a class="button button-small" href="/api/v1/jobs/{{.ID}}/download" download data-action="download-results" data-endpoint="/api/v1/jobs/{{.ID}}/download">CSV</a>{{end}}
                         </div></td>
                     </tr>

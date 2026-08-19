@@ -45,6 +45,23 @@ func TestDashboardPageRendersRealLegacyResultMetrics(t *testing.T) {
 			t.Fatalf("dashboard missing %q", expected)
 		}
 	}
+
+	// One of the two fixture rows has a website, one has an email, and both have a
+	// phone. Every availability meter must reflect its own field: a website
+	// coverage of 0 here means the legacy CSV statistics were never accumulated.
+	for _, meter := range []struct {
+		label   string
+		percent string
+	}{
+		{label: "Website", percent: "50"},
+		{label: "Email", percent: "50"},
+		{label: "Phone", percent: "100"},
+	} {
+		want := "<span>" + meter.label + "</span><strong>" + meter.percent + "%</strong>"
+		if !strings.Contains(body, want) {
+			t.Fatalf("dashboard availability missing %q", want)
+		}
+	}
 }
 
 func TestNewScrapePageIsLocalAndExplainsSanFranciscoScope(t *testing.T) {

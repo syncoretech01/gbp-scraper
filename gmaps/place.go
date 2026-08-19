@@ -23,6 +23,7 @@ type PlaceJob struct {
 	ExitMonitor             exiter.Exiter
 	ExtractExtraReviews     bool
 	WriterManagedCompletion bool
+	Runtime                 RuntimeOptions
 }
 
 func NewPlaceJob(parentID, langCode, u string, extractEmail, extraExtraReviews bool, opts ...PlaceJobOptions) *PlaceJob {
@@ -138,6 +139,7 @@ func (j *PlaceJob) Process(_ context.Context, resp *scrapemate.Response) (any, [
 		if j.WriterManagedCompletion {
 			opts = append(opts, WithEmailJobWriterManagedCompletion())
 		}
+		opts = append(opts, withEmailJobRuntime(j.Runtime))
 
 		emailJob := NewEmailJob(j.ID, &entry, opts...)
 
@@ -153,6 +155,10 @@ func (j *PlaceJob) Process(_ context.Context, resp *scrapemate.Response) (any, [
 
 func (j *PlaceJob) BrowserActions(ctx context.Context, page scrapemate.BrowserPage) scrapemate.Response {
 	var resp scrapemate.Response
+	if err := waitRuntimeDelay(ctx, j.Runtime); err != nil {
+		resp.Error = err
+		return resp
+	}
 
 	pageResponse, err := page.Goto(j.GetURL(), scrapemate.WaitUntilDOMContentLoaded)
 	if err != nil {

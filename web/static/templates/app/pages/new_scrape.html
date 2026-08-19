@@ -38,14 +38,19 @@
                 </div>
                 <div class="card"><div class="card-header"><div><h3>Query preview</h3><p><span data-query-count>0</span> unique; <span data-duplicate-count>0</span> duplicates removed</p></div></div><div class="card-body"><ol class="query-preview" data-query-preview></ol></div></div>
             </div>
+            {{if .Page.LocalAI.Enabled}}<details class="card disclosure"><summary>Ask the enabled local model for keyword variations</summary><div class="card-body section-stack"><div class="field"><label for="local-ai-keyword-request">Research description</label><textarea class="textarea" id="local-ai-keyword-request" rows="3" maxlength="16384" placeholder="Independent dentists serving families in San Francisco; exclude orthodontists" data-local-ai-input></textarea></div><div class="form-actions"><button class="button" type="button" data-action="local-ai-keywords">Generate locally</button><span class="field-hint" data-local-ai-status aria-live="polite">Uses {{.Page.LocalAI.Model}} through {{.Page.LocalAI.Endpoint}}.</span></div></div></details>{{end}}
             <div class="form-actions"><button class="button button-primary" type="button" data-action="wizard-next">Set location &rarr;</button></div>
         </section>
 
         <section class="card-body wizard-panel" id="wizard-step-2" data-wizard-panel="2" aria-labelledby="wizard-step-2-title">
             <h2 id="wizard-step-2-title">Location and coverage</h2>
             <p>The default covers San Francisco with a grid. Grid mode searches many coordinates and is the recommended way to go beyond a single Maps result set.</p>
-            <input type="hidden" name="geography_mode" value="bbox">
+            <input type="hidden" name="geography_mode" value="{{.Page.Initial.GeographyMode}}">
             <input type="hidden" name="locations" value="{{.Page.Initial.LocationLabel}}">
+            <input type="hidden" name="saved_area_id" value="{{.Page.Initial.SavedAreaID}}">
+            <textarea name="area_geojson" hidden>{{.Page.Initial.AreaGeoJSON}}</textarea>
+            {{if .Page.Initial.SavedAreaID}}<div class="notice notice-success"><div><strong>Saved area: {{.Page.Initial.SavedAreaName}}</strong><p>The exact GeoJSON and excluded grid cells are snapshotted into this job. Later edits to the saved area will not change it.</p></div></div>{{end}}
+            {{if .Page.SavedAreas}}<div class="field"><label for="saved-area-picker">Start from a saved area</label><select class="select" id="saved-area-picker" data-saved-area-picker><option value="">Choose an area…</option>{{range .Page.SavedAreas}}<option value="{{.ID}}" {{if eq $.Page.Initial.SavedAreaID .ID}}selected{{end}}>{{.Name}}</option>{{end}}</select><p class="field-hint">Selecting another area reloads this wizard with its immutable geometry snapshot.</p></div>{{end}}
             <div class="grid grid-3">
                 <div class="field"><label for="location-label">Location label</label><input class="input" id="location-label" name="location_label" value="{{.Page.Initial.LocationLabel}}" required></div>
                 <div class="field"><label for="latitude">Centre latitude</label><input class="input" id="latitude" name="latitude" type="number" min="-90" max="90" step="0.000001" value="{{.Page.Initial.Latitude}}" required></div>
@@ -75,9 +80,16 @@
             <h2 id="wizard-step-4-title">Optional local enrichment</h2>
             <p>Email extraction visits business websites and can substantially increase runtime. For the broadest first pass, leave it off and run a targeted second job later.</p>
             <div class="check-grid">
-                <label class="check-row"><input id="email" name="email" type="checkbox" value="on" {{if .Page.Defaults.Email}}checked{{end}}><span>Visit websites and extract emails<small>Uses the scraper's built-in local website crawler; no paid API is required.</small></span></label>
+                <label class="check-row"><input id="email" name="email" type="checkbox" value="on" {{if .Page.Defaults.Email}}checked{{end}}><span>Audit websites and extract contacts<small>Queues a bounded local audit after Maps results are saved; no paid API is required.</small></span></label>
                 <label class="check-row"><input id="extra-reviews" name="extra_reviews" type="checkbox" value="on" {{if .Page.Defaults.ExtraReviews}}checked{{end}}><span>Collect extra reviews<small>Opens additional Maps detail views and increases browser work.</small></span></label>
             </div>
+            <div class="form-grid form-grid-4">
+                <div class="field"><label for="enrichment-scope">Crawl scope</label><select class="select" id="enrichment-scope" name="enrichment_scope"><option value="homepage">Homepage only</option><option value="homepage_contact">Homepage + contact</option><option value="homepage_contact_about" selected>Homepage + contact + about</option></select></div>
+                <div class="field"><label for="enrichment-pages">Maximum pages</label><input class="input" id="enrichment-pages" name="enrichment_max_pages" type="number" min="1" max="10" value="3"><small>Hard per-site page cap.</small></div>
+                <div class="field"><label for="enrichment-timeout">Page timeout (seconds)</label><input class="input" id="enrichment-timeout" name="enrichment_timeout_seconds" type="number" min="1" max="60" value="10"></div>
+                <div class="field"><label for="enrichment-links">Internal links to check</label><input class="input" id="enrichment-links" name="enrichment_internal_links" type="number" min="0" max="100" value="10"></div>
+            </div>
+            <label class="check-row"><input id="enrichment-mx" name="enrichment_check_mx" type="checkbox" value="on"><span>Check email domains for MX records<small>Uses local DNS only; this does not claim mailbox-level verification.</small></span></label>
             <div class="form-actions"><button class="button" type="button" data-action="wizard-back">Back</button><button class="button button-primary" type="button" data-action="wizard-next">Plan filtering &rarr;</button></div>
         </section>
 
@@ -103,8 +115,18 @@
                 <div class="field"><label for="browser-pool">Browser pool</label><input class="input" id="browser-pool" name="browser_pool_size" type="number" min="1" max="32" value="{{.Page.Defaults.BrowserPool}}" required></div>
                 <div class="field"><label for="pages-browser">Pages per browser</label><input class="input" id="pages-browser" name="pages_per_browser" type="number" min="1" max="16" value="{{.Page.Defaults.PagesBrowser}}" required></div>
                 <div class="field"><label for="maxtime">Maximum runtime</label><input class="input" id="maxtime" name="maxtime" value="{{.Page.Defaults.MaxTime}}" pattern="[0-9]+(s|m|h)" required><p class="field-hint">If reached, the job becomes Partial and keeps committed rows.</p></div>
+                <div class="field"><label for="max-records">Maximum records</label><input class="input" id="max-records" name="max_records" type="number" min="0" max="10000000" value="{{.Page.Defaults.MaxRecords}}" required><p class="field-hint">0 means unlimited; a reached limit saves a Partial job.</p></div>
+                <div class="field"><label for="retry-count">Retries per request</label><input class="input" id="retry-count" name="retry_count" type="number" min="0" max="20" value="{{.Page.Defaults.RetryCount}}" required></div>
+                <div class="field"><label for="retry-delay">Maximum retry delay</label><input class="input" id="retry-delay" name="retry_delay" value="{{.Page.Defaults.RetryDelay}}" pattern="[0-9]+(ms|s|m)" required></div>
+                <div class="field"><label for="page-timeout">Page timeout</label><input class="input" id="page-timeout" name="page_timeout" value="{{.Page.Defaults.PageTimeout}}" pattern="[0-9]+(ms|s|m)" required></div>
+                <div class="field"><label for="random-delay-min">Random delay minimum</label><input class="input" id="random-delay-min" name="random_delay_min" value="{{.Page.Defaults.RandomMin}}" pattern="[0-9]+(ms|s|m)" required></div>
+                <div class="field"><label for="random-delay-max">Random delay maximum</label><input class="input" id="random-delay-max" name="random_delay_max" value="{{.Page.Defaults.RandomMax}}" pattern="[0-9]+(ms|s|m)" required></div>
+                <div class="field"><label for="low-disk-mb">Pause below free disk (MB)</label><input class="input" id="low-disk-mb" name="low_disk_mb" type="number" min="128" max="1048576" value="{{.Page.Defaults.LowDiskMB}}" required></div>
                 <div class="field"><label for="proxy-pool">Proxy pool</label><select class="select" id="proxy-pool" name="proxy_pool_id"><option value="">Direct connection</option>{{range .Page.ProxyPools}}<option value="{{.ID}}">{{.Name}} ({{.HealthyCount}} healthy/testable)</option>{{end}}</select><p class="field-hint">Credentials are decrypted only in worker memory.</p></div>
                 <label class="check-row"><input id="fastmode" name="fastmode" type="checkbox" value="on"><span>Fast HTTP mode<small>Uses the radius strictly, skips grid coverage, and returns fewer fields.</small></span></label>
+                <label class="check-row"><input id="adaptive-performance" name="adaptive_performance" type="checkbox" value="on" {{if .Page.Defaults.Adaptive}}checked{{end}}><span>Adaptive resource safeguards<small>Reduces work under memory, disk, or failure pressure and records the reason.</small></span></label>
+                <label class="check-row"><input id="load-images" name="load_images" type="checkbox" value="on" {{if .Page.Defaults.LoadImages}}checked{{end}}><span>Load images<small>Leave off to save bandwidth and browser memory.</small></span></label>
+                <label class="check-row"><input id="headfull" name="headfull" type="checkbox" value="on" {{if .Page.Defaults.Headfull}}checked{{end}}><span>Visible browser<small>Useful for debugging when the local environment supports it.</small></span></label>
             </div>
             <div class="form-actions"><button class="button" type="button" data-action="wizard-back">Back</button><button class="button button-primary" type="button" data-action="wizard-next">Review job &rarr;</button></div>
         </section>

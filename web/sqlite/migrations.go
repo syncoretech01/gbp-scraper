@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	currentSchemaVersion           = 5
+	currentSchemaVersion           = 7
 	migrationChecksumSchemaVersion = 4
 )
 
@@ -859,6 +859,165 @@ var schemaMigrations = []schemaMigration{
 			)`,
 			`INSERT OR IGNORE INTO job_progress(job_id, stage, updated_at)
 			SELECT job_id, stage, updated_at FROM job_runtime`,
+		},
+	},
+	{
+		version: 6,
+		name:    "explainable-quality-scoring",
+		statements: []string{
+			`CREATE TABLE IF NOT EXISTS quality_rule_sets (
+				version TEXT PRIMARY KEY,
+				name TEXT NOT NULL,
+				rules TEXT NOT NULL,
+				active INTEGER NOT NULL DEFAULT 0 CHECK(active IN (0, 1)),
+				created_at INTEGER NOT NULL
+			)`,
+			`CREATE UNIQUE INDEX idx_quality_rule_sets_active
+			ON quality_rule_sets(active) WHERE active = 1`,
+			`CREATE TABLE IF NOT EXISTS business_score_components (
+				business_id TEXT NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+				rule_version TEXT NOT NULL REFERENCES quality_rule_sets(version) ON DELETE RESTRICT,
+				component TEXT NOT NULL,
+				contribution REAL NOT NULL,
+				maximum REAL NOT NULL CHECK(maximum >= 0),
+				passed INTEGER NOT NULL DEFAULT 0 CHECK(passed IN (0, 1)),
+				reason TEXT NOT NULL,
+				evaluated_at INTEGER NOT NULL,
+				PRIMARY KEY(business_id, rule_version, component)
+			)`,
+			`CREATE INDEX idx_business_score_components_business
+			ON business_score_components(business_id, evaluated_at DESC, component)`,
+		},
+	},
+	{
+		version: 7,
+		name:    "durable-website-enrichment",
+		statements: []string{
+			`ALTER TABLE websites ADD COLUMN tls_valid INTEGER`,
+			`ALTER TABLE websites ADD COLUMN certificate_error TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE websites ADD COLUMN pages_checked INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE websites ADD COLUMN internal_links_checked INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE websites ADD COLUMN broken_internal_links INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE websites ADD COLUMN mixed_content INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE websites ADD COLUMN parked INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE websites ADD COLUMN coming_soon INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE websites ADD COLUMN placeholder INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE websites ADD COLUMN trackers TEXT NOT NULL DEFAULT '[]'`,
+			`ALTER TABLE emails ADD COLUMN valid_syntax INTEGER NOT NULL DEFAULT 1`,
+			`ALTER TABLE emails ADD COLUMN role TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE emails ADD COLUMN personal_likely INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE emails ADD COLUMN mx_status TEXT NOT NULL DEFAULT 'not_checked'`,
+			`ALTER TABLE emails ADD COLUMN mx_records TEXT NOT NULL DEFAULT '[]'`,
+			`ALTER TABLE emails ADD COLUMN relevance INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE emails ADD COLUMN rank INTEGER NOT NULL DEFAULT 0`,
+			`CREATE TABLE website_audits (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				business_id TEXT NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+				website_id INTEGER REFERENCES websites(id) ON DELETE SET NULL,
+				task_id TEXT NOT NULL DEFAULT '',
+				requested_url TEXT NOT NULL,
+				final_url TEXT NOT NULL DEFAULT '',
+				reachable INTEGER NOT NULL DEFAULT 0,
+				status_code INTEGER NOT NULL DEFAULT 0,
+				https INTEGER NOT NULL DEFAULT 0,
+				tls_valid INTEGER NOT NULL DEFAULT 0,
+				certificate_error TEXT NOT NULL DEFAULT '',
+				response_time_ms INTEGER NOT NULL DEFAULT 0,
+				redirect_chain TEXT NOT NULL DEFAULT '[]',
+				internal_links_checked INTEGER NOT NULL DEFAULT 0,
+				broken_internal_link_count INTEGER NOT NULL DEFAULT 0,
+				broken_internal_links TEXT NOT NULL DEFAULT '[]',
+				mixed_content INTEGER NOT NULL DEFAULT 0,
+				parked INTEGER NOT NULL DEFAULT 0,
+				coming_soon INTEGER NOT NULL DEFAULT 0,
+				placeholder INTEGER NOT NULL DEFAULT 0,
+				template_indicators TEXT NOT NULL DEFAULT '[]',
+				technologies TEXT NOT NULL DEFAULT '[]',
+				trackers TEXT NOT NULL DEFAULT '[]',
+				emails TEXT NOT NULL DEFAULT '[]',
+				phones TEXT NOT NULL DEFAULT '[]',
+				social_profiles TEXT NOT NULL DEFAULT '[]',
+				options TEXT NOT NULL DEFAULT '{}',
+				raw_result TEXT NOT NULL DEFAULT '{}',
+				error TEXT NOT NULL DEFAULT '',
+				started_at INTEGER NOT NULL,
+				completed_at INTEGER NOT NULL
+			)`,
+			`CREATE INDEX idx_website_audits_business_time
+			ON website_audits(business_id, completed_at DESC, id DESC)`,
+			`CREATE UNIQUE INDEX idx_website_audits_task ON website_audits(task_id) WHERE task_id <> ''`,
+			`CREATE TABLE website_audit_pages (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				audit_id INTEGER NOT NULL REFERENCES website_audits(id) ON DELETE CASCADE,
+				requested_url TEXT NOT NULL,
+				final_url TEXT NOT NULL DEFAULT '',
+				page_kind TEXT NOT NULL,
+				status_code INTEGER NOT NULL DEFAULT 0,
+				response_time_ms INTEGER NOT NULL DEFAULT 0,
+				size_bytes INTEGER NOT NULL DEFAULT 0,
+				body_truncated INTEGER NOT NULL DEFAULT 0,
+				content_type TEXT NOT NULL DEFAULT '',
+				page_title TEXT NOT NULL DEFAULT '',
+				meta_description TEXT NOT NULL DEFAULT '',
+				language TEXT NOT NULL DEFAULT '',
+				mobile_viewport INTEGER NOT NULL DEFAULT 0,
+				mixed_content INTEGER NOT NULL DEFAULT 0,
+				copyright_year INTEGER NOT NULL DEFAULT 0,
+				old_copyright INTEGER NOT NULL DEFAULT 0,
+				redirects TEXT NOT NULL DEFAULT '[]',
+				error TEXT NOT NULL DEFAULT '',
+				UNIQUE(audit_id, requested_url, page_kind)
+			)`,
+			`CREATE INDEX idx_website_audit_pages_audit ON website_audit_pages(audit_id, id)`,
+			`CREATE TABLE contact_evidence (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				audit_id INTEGER NOT NULL REFERENCES website_audits(id) ON DELETE CASCADE,
+				business_id TEXT NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+				contact_type TEXT NOT NULL,
+				value TEXT NOT NULL,
+				normalized_value TEXT NOT NULL DEFAULT '',
+				source_url TEXT NOT NULL DEFAULT '',
+				page_kind TEXT NOT NULL DEFAULT '',
+				extraction_method TEXT NOT NULL DEFAULT '',
+				confidence REAL NOT NULL DEFAULT 0,
+				metadata TEXT NOT NULL DEFAULT '{}',
+				created_at INTEGER NOT NULL,
+				UNIQUE(audit_id, contact_type, normalized_value, source_url, extraction_method)
+			)`,
+			`CREATE INDEX idx_contact_evidence_business
+			ON contact_evidence(business_id, contact_type, created_at DESC)`,
+			`CREATE TABLE website_detections (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				audit_id INTEGER NOT NULL REFERENCES website_audits(id) ON DELETE CASCADE,
+				business_id TEXT NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+				detection_type TEXT NOT NULL CHECK(detection_type IN ('technology', 'tracker')),
+				name TEXT NOT NULL,
+				confidence REAL NOT NULL DEFAULT 0,
+				evidence TEXT NOT NULL DEFAULT '[]',
+				UNIQUE(audit_id, detection_type, name)
+			)`,
+			`CREATE INDEX idx_website_detections_business
+			ON website_detections(business_id, detection_type, name)`,
+			`CREATE TABLE enrichment_tasks (
+				id TEXT PRIMARY KEY,
+				business_id TEXT NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+				job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+				website_url TEXT NOT NULL,
+				state TEXT NOT NULL CHECK(state IN ('queued', 'running', 'completed', 'failed')),
+				requested_by TEXT NOT NULL,
+				options TEXT NOT NULL,
+				attempts INTEGER NOT NULL DEFAULT 0,
+				audit_id INTEGER,
+				error TEXT NOT NULL DEFAULT '',
+				created_at INTEGER NOT NULL,
+				started_at INTEGER,
+				finished_at INTEGER,
+				updated_at INTEGER NOT NULL
+			)`,
+			`CREATE INDEX idx_enrichment_tasks_queue
+			ON enrichment_tasks(state, created_at, id)`,
+			`CREATE UNIQUE INDEX idx_enrichment_tasks_active_business
+			ON enrichment_tasks(business_id) WHERE state IN ('queued', 'running')`,
 		},
 	},
 }

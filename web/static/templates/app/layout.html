@@ -4,7 +4,7 @@ exactly one app/pages file. Page files define app/content and app/page/<name>.
 */}}
 {{define "app/layout"}}
 <!doctype html>
-<html lang="en" data-theme="{{if .Theme}}{{.Theme}}{{else}}system{{end}}">
+<html lang="{{.Preferences.Locale}}" data-theme="{{if .Theme}}{{.Theme}}{{else}}system{{end}}" data-compact-tables="{{.Preferences.CompactTables}}" data-sidebar-default="{{.Preferences.SidebarDefault}}" data-date-time-format="{{.Preferences.DateTimeFormat}}" data-number-format="{{.Preferences.NumberFormat}}" data-reduced-motion="{{.Preferences.ReducedMotion}}" data-font-size="{{.Preferences.FontSize}}" data-high-contrast="{{.Preferences.HighContrast}}">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">

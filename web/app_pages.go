@@ -1,12 +1,13 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,15 +15,16 @@ import (
 )
 
 type appPageData struct {
-	Title     string
-	Subtitle  string
-	ActiveNav string
-	Theme     string
-	CSRFToken string
-	Activity  appActivity
-	Features  appFeatureFlags
-	Flash     []appNotice
-	Page      any
+	Title       string
+	Subtitle    string
+	ActiveNav   string
+	Theme       string
+	Preferences appPreferences
+	CSRFToken   string
+	Activity    appActivity
+	Features    appFeatureFlags
+	Flash       []appNotice
+	Page        any
 }
 
 // appFeatureFlags keeps navigation and shortcuts honest while workspace
@@ -55,30 +57,53 @@ type dashboardPageData struct {
 	CollectionByDate []dashboardChartPoint
 	CollectionMax    int
 	Availability     []dashboardAvailability
+	Cities           []dashboardChartPoint
+	Categories       []dashboardChartPoint
+	Statuses         []dashboardChartPoint
+	RatingBands      []dashboardChartPoint
+	JobTrends        []DashboardJobTrend
+	SpeedTrends      []DashboardSpeedTrend
+	ProxyLatency     []dashboardChartPoint
+	ProxyReliability []dashboardChartPoint
 	RecentJobs       []dashboardJob
 }
 
 type dashboardMetrics struct {
-	UniqueBusinesses int
-	RawRecords       int
-	Duplicates       int
-	CollectedToday   int
-	CollectedWeek    int
-	CollectedMonth   int
-	ActiveJobs       int
-	QueuedJobs       int
-	PausedJobs       int
-	CompletedJobs    int
-	PartialJobs      int
-	FailedJobs       int
-	CancelledJobs    int
-	EmailCoverage    int
-	Emails           int
-	Phones           int
-	PlacesPerMinute  string
-	AverageDuration  string
-	DatabaseSize     string
-	DiskFree         string
+	UniqueBusinesses  int
+	RawRecords        int
+	Duplicates        int
+	CollectedToday    int
+	CollectedWeek     int
+	CollectedMonth    int
+	ActiveJobs        int
+	QueuedJobs        int
+	PausedJobs        int
+	CompletedJobs     int
+	PartialJobs       int
+	FailedJobs        int
+	CancelledJobs     int
+	EmailCoverage     int
+	WebsiteCoverage   int
+	PhoneCoverage     int
+	SocialCoverage    int
+	Websites          int
+	Emails            int
+	Phones            int
+	SocialProfiles    int
+	ActiveWebsites    int
+	InactiveWebsites  int
+	PlacesPerMinute   string
+	AverageDuration   string
+	ProxySuccessRate  string
+	ProxyBlockRate    string
+	HealthyProxies    int
+	TotalProxies      int
+	ProxyLatency      string
+	DatabaseSize      string
+	DiskFree          string
+	ExportStorage     string
+	ScreenshotStorage string
+	LogStorage        string
 }
 
 type dashboardChartPoint struct {
@@ -98,11 +123,14 @@ type dashboardJob struct {
 	Stage         string
 	Percent       int
 	ETA           string
+	RawRecords    int64
 	UniqueRecords int
 	Emails        int
 	Runtime       string
 	CanPause      bool
 	CanResume     bool
+	CanCancel     bool
+	CanRetry      bool
 	HasResults    bool
 }
 
@@ -112,6 +140,7 @@ type newScrapePageData struct {
 	ProxyPools     []proxyPoolOption
 	FieldGroups    scrapeFieldGroups
 	Defaults       scrapeDefaults
+	LocalAI        localAISettings
 	Initial        wizardInitialValues
 	TemplateID     string
 }
@@ -122,6 +151,10 @@ type wizardInitialValues struct {
 	LocationLabel string
 	Latitude      string
 	Longitude     string
+	GeographyMode string
+	SavedAreaID   string
+	SavedAreaName string
+	AreaGeoJSON   string
 }
 
 type namedAppOption struct {
@@ -180,12 +213,74 @@ func (s *Server) newScrapePage(w http.ResponseWriter, r *http.Request) {
 
 	activity, _ := s.appActivity(r)
 	defaults := s.loadScrapeDefaults(r)
+	localAI := defaultLocalAISettings()
+	if values, settingsErr := s.svc.LoadSettings(r.Context()); settingsErr == nil {
+		localAI = localAISettingsFromMap(values)
+	}
 	initial := wizardInitialValues{
 		Name:          "San Francisco dentists",
 		Keywords:      "dentists in San Francisco\ndental clinics in San Francisco",
 		LocationLabel: "San Francisco, California, United States",
 		Latitude:      "37.7749",
 		Longitude:     "-122.4194",
+		GeographyMode: "bbox",
+	}
+	duplicateJobID := strings.TrimSpace(r.URL.Query().Get("duplicate_job"))
+	if duplicateJobID != "" {
+		source, sourceErr := s.svc.Get(r.Context(), duplicateJobID)
+		if sourceErr != nil {
+			http.Error(w, "source job not found", http.StatusNotFound)
+			return
+		}
+		initial.Name = "Copy of " + source.Name
+		initial.Keywords = strings.Join(source.Data.Keywords, "\n")
+		initial.LocationLabel = source.Data.LocationLabel
+		initial.Latitude = source.Data.Lat
+		initial.Longitude = source.Data.Lon
+		initial.SavedAreaID = source.Data.SavedAreaID
+		initial.AreaGeoJSON = source.Data.AreaGeoJSON
+		if source.Data.FastMode {
+			initial.GeographyMode = "circle"
+		} else if source.Data.AreaGeoJSON != "" {
+			if geometry, geometryErr := ParseMapGeometry([]byte(source.Data.AreaGeoJSON)); geometryErr == nil {
+				initial.GeographyMode = geometry.Kind()
+			}
+		}
+		defaults = scrapeDefaultsFromJobData(defaults, source.Data)
+	}
+	savedAreas := make([]namedAppOption, 0)
+	if areas, err := s.svc.ListSavedAreas(r.Context(), maximumSavedAreaList); err == nil {
+		for _, area := range areas {
+			savedAreas = append(savedAreas, namedAppOption{ID: area.ID, Name: area.Name})
+		}
+	}
+	areaID := strings.TrimSpace(r.URL.Query().Get("area_id"))
+	if areaID != "" {
+		area, err := s.svc.GetSavedArea(r.Context(), areaID)
+		if err != nil {
+			if errors.Is(err, ErrSavedAreaNotFound) || errors.Is(err, ErrInvalidMapGeometry) {
+				http.Error(w, "saved area not found", http.StatusNotFound)
+			} else {
+				http.Error(w, "could not load saved area", http.StatusInternalServerError)
+			}
+			return
+		}
+		geometry, err := ParseMapGeometry(area.GeoJSON)
+		if err != nil {
+			http.Error(w, "saved area is invalid", http.StatusUnprocessableEntity)
+			return
+		}
+		centre := geometry.Centre()
+		initial.LocationLabel = area.Name
+		initial.Latitude = strconv.FormatFloat(centre.Latitude, 'f', 7, 64)
+		initial.Longitude = strconv.FormatFloat(centre.Longitude, 'f', 7, 64)
+		initial.GeographyMode = geometry.Kind()
+		initial.SavedAreaID = area.ID
+		initial.SavedAreaName = area.Name
+		initial.AreaGeoJSON = string(geometry.GeoJSON())
+		if radius, ok := geometry.CircleRadiusMetres(); ok {
+			defaults.Radius = max(100, int(math.Ceil(radius)))
+		}
 	}
 	templateID := strings.TrimSpace(r.URL.Query().Get("template"))
 	if templateID != "" {
@@ -225,7 +320,7 @@ func (s *Server) newScrapePage(w http.ResponseWriter, r *http.Request) {
 		Theme:     "system",
 		CSRFToken: s.csrfToken,
 		Activity:  activity,
-		Page: newScrapePageData{Defaults: defaults, Initial: initial, TemplateID: templateID, ProxyPools: proxyOptions, FieldGroups: scrapeFieldGroups{Business: []scrapeFieldOption{
+		Page: newScrapePageData{Defaults: defaults, LocalAI: localAI, Initial: initial, TemplateID: templateID, ProxyPools: proxyOptions, SavedAreas: savedAreas, FieldGroups: scrapeFieldGroups{Business: []scrapeFieldOption{
 			{Key: "title", Label: "Name", Description: "Business title as shown on Maps.", Selected: true},
 			{Key: "category", Label: "Categories", Description: "Primary and additional categories.", Selected: true},
 			{Key: "status", Label: "Business status", Description: "Open or closed signal where available.", Selected: true},
@@ -333,6 +428,7 @@ func (s *Server) buildDashboard(r *http.Request) (dashboardPageData, appActivity
 		page.Metrics.Duplicates += stats.Duplicates
 		page.Metrics.Emails += stats.WithEmail
 		page.Metrics.Phones += stats.WithPhone
+		page.Metrics.Websites += stats.WithWebsite
 
 		if !job.Date.Before(startMonth) {
 			page.Metrics.CollectedMonth += stats.UniqueBusinesses
@@ -350,12 +446,30 @@ func (s *Server) buildDashboard(r *http.Request) (dashboardPageData, appActivity
 		if index < 10 {
 			percent := int(runtime.Progress + 0.5)
 			stage := humanStage(runtime.Stage)
+			eta := "unknown"
 			if state == "completed" {
 				percent = 100
+			}
+			if execution, executionErr := s.svc.GetJobExecution(r.Context(), job.ID); executionErr == nil {
+				if execution.Progress.Stage != jobruntime.StageNone {
+					stage = humanStage(execution.Progress.Stage)
+				}
+				if execution.Progress.ETASeconds != nil {
+					eta = humanDuration(time.Duration(*execution.Progress.ETASeconds) * time.Second)
+				}
+			}
+			if eta == "unknown" && runtime.StartedAt != nil && percent > 0 && percent < 100 {
+				elapsed := now.Sub(*runtime.StartedAt)
+				if elapsed > 0 {
+					eta = humanDuration(time.Duration(float64(elapsed) * float64(100-percent) / float64(percent)))
+				}
 			}
 
 			canPause := state == "queued" || state == "starting" || state == "running"
 			canResume := state == "paused"
+			canCancel := lifecycleControlAllowed(runtime, jobruntime.ControlCancel)
+			canRetry := lifecycleControlAllowed(runtime, jobruntime.ControlRestart) &&
+				(state == "partial" || state == "failed" || state == "cancelled")
 
 			page.RecentJobs = append(page.RecentJobs, dashboardJob{
 				ID:            job.ID,
@@ -363,12 +477,15 @@ func (s *Server) buildDashboard(r *http.Request) (dashboardPageData, appActivity
 				State:         state,
 				Stage:         stage,
 				Percent:       percent,
-				ETA:           "unknown",
+				ETA:           eta,
+				RawRecords:    runtime.RawRecords,
 				UniqueRecords: stats.UniqueBusinesses,
 				Emails:        stats.WithEmail,
 				Runtime:       runtimeLabel(runtime),
 				CanPause:      canPause,
 				CanResume:     canResume,
+				CanCancel:     canCancel,
+				CanRetry:      canRetry,
 				HasResults:    stats.Rows > 0,
 			})
 		}
@@ -384,22 +501,57 @@ func (s *Server) buildDashboard(r *http.Request) (dashboardPageData, appActivity
 	if runtimeJobs > 0 {
 		page.Metrics.AverageDuration = humanDuration(totalRuntime / time.Duration(runtimeJobs))
 	}
-	page.Metrics.DiskFree = "see System"
+	page.Metrics.DiskFree = "not available"
 	if overview, overviewErr := s.svc.ResultOverview(r.Context()); overviewErr == nil {
 		page.Metrics.RawRecords = int(overview.RawRecords)
 		page.Metrics.UniqueBusinesses = int(overview.UniqueBusinesses)
 		page.Metrics.Duplicates = max(0, int(overview.RawRecords-overview.UniqueBusinesses))
 		page.Metrics.Emails = int(overview.Emails)
 		page.Metrics.Phones = int(overview.Phones)
+		page.Metrics.Websites = int(overview.Websites)
+	}
+	if analytics, analyticsErr := s.svc.DashboardAnalytics(r.Context(), startMonth); analyticsErr == nil {
+		page.Metrics.CollectedToday = int(analytics.CollectedToday)
+		page.Metrics.CollectedWeek = int(analytics.CollectedWeek)
+		page.Metrics.CollectedMonth = int(analytics.CollectedMonth)
+		page.Metrics.Websites = int(analytics.Availability.Websites)
+		page.Metrics.Emails = int(analytics.Availability.Emails)
+		page.Metrics.Phones = int(analytics.Availability.Phones)
+		page.Metrics.SocialProfiles = int(analytics.Availability.SocialProfiles)
+		page.Metrics.ActiveWebsites = int(analytics.Availability.WebsiteActive)
+		page.Metrics.InactiveWebsites = int(analytics.Availability.WebsiteInactive)
+		page.CollectionByDate = dashboardPoints(analytics.CollectionByDate)
+		page.Cities = dashboardPoints(analytics.Cities)
+		page.Categories = dashboardPoints(analytics.Categories)
+		page.Statuses = dashboardPoints(analytics.Statuses)
+		page.RatingBands = dashboardPoints(analytics.RatingBands)
+		page.JobTrends = analytics.JobTrends
+		page.SpeedTrends = analytics.SpeedTrends
+		page.ProxyLatency = dashboardPoints(analytics.Proxy.LatencyDistribution)
+		page.ProxyReliability = dashboardPoints(analytics.Proxy.ReliabilityDistribution)
+		page.Metrics.TotalProxies = int(analytics.Proxy.Total)
+		page.Metrics.HealthyProxies = int(analytics.Proxy.Healthy)
+		page.Metrics.ProxySuccessRate = ratioLabel(analytics.Proxy.Successes, analytics.Proxy.Successes+analytics.Proxy.Failures)
+		page.Metrics.ProxyBlockRate = ratioLabel(analytics.Proxy.Blocks, analytics.Proxy.Successes+analytics.Proxy.Failures)
+		if analytics.Proxy.Total > 0 {
+			page.Metrics.ProxyLatency = fmt.Sprintf("%.0f ms", analytics.Proxy.AverageLatencyMS)
+		} else {
+			page.Metrics.ProxyLatency = "not configured"
+		}
 	}
 
 	if page.Metrics.UniqueBusinesses > 0 {
 		page.Metrics.EmailCoverage = percentage(page.Metrics.Emails, page.Metrics.UniqueBusinesses)
+		page.Metrics.WebsiteCoverage = percentage(page.Metrics.Websites, page.Metrics.UniqueBusinesses)
+		page.Metrics.PhoneCoverage = percentage(page.Metrics.Phones, page.Metrics.UniqueBusinesses)
+		page.Metrics.SocialCoverage = percentage(page.Metrics.SocialProfiles, page.Metrics.UniqueBusinesses)
 	}
 
 	page.Availability = []dashboardAvailability{
+		{Label: "Website", Percent: page.Metrics.WebsiteCoverage},
 		{Label: "Email", Percent: percentage(page.Metrics.Emails, page.Metrics.UniqueBusinesses)},
 		{Label: "Phone", Percent: percentage(page.Metrics.Phones, page.Metrics.UniqueBusinesses)},
+		{Label: "Social profile", Percent: page.Metrics.SocialCoverage},
 	}
 
 	labels := make([]string, 0, len(byDate))
@@ -408,22 +560,60 @@ func (s *Server) buildDashboard(r *http.Request) (dashboardPageData, appActivity
 	}
 	sort.Strings(labels)
 
-	for _, label := range labels {
-		value := byDate[label]
-		page.CollectionByDate = append(page.CollectionByDate, dashboardChartPoint{Label: label, Value: value})
+	if len(page.CollectionByDate) == 0 {
+		for _, label := range labels {
+			value := byDate[label]
+			page.CollectionByDate = append(page.CollectionByDate, dashboardChartPoint{Label: label, Value: value})
+		}
+	}
+	for _, point := range page.CollectionByDate {
+		value := point.Value
 		if value > page.CollectionMax {
 			page.CollectionMax = value
 		}
 	}
 
-	databasePath := filepath.Join(s.svc.dataFolder, "jobs.db")
-	if info, statErr := os.Stat(databasePath); statErr == nil {
-		page.Metrics.DatabaseSize = humanBytes(info.Size())
-	} else {
+	if snapshot, snapshotErr := s.svc.SystemDatabaseSnapshot(r.Context()); snapshotErr == nil {
+		page.Metrics.DatabaseSize = humanBytes(snapshot.DatabaseBytes)
+	}
+	if page.Metrics.DatabaseSize == "" {
 		page.Metrics.DatabaseSize = "not created"
+	}
+	if storage, storageErr := s.workspaceStorageUsage(r.Context()); storageErr == nil {
+		page.Metrics.ExportStorage = humanBytes(storage.ExportsBytes)
+		page.Metrics.ScreenshotStorage = humanBytes(storage.ScreenshotsBytes)
+		page.Metrics.LogStorage = humanBytes(storage.LogsBytes)
+	}
+	metricsContext, cancel := context.WithTimeout(r.Context(), systemMetricsTimeout)
+	defer cancel()
+	if resources, resourceErr := s.systemProbe.Resources(metricsContext, s.svc.dataFolder); resourceErr == nil {
+		page.Metrics.DiskFree = humanBytes(int64(resources.DiskFreeBytes))
 	}
 
 	return page, activity, nil
+}
+
+func dashboardPoints(points []DashboardCountPoint) []dashboardChartPoint {
+	converted := make([]dashboardChartPoint, 0, len(points))
+	for _, point := range points {
+		converted = append(converted, dashboardChartPoint{Label: point.Label, Value: int(point.Value)})
+	}
+
+	return converted
+}
+
+func ratioLabel(numerator, denominator int64) string {
+	if denominator <= 0 {
+		return "not recorded"
+	}
+
+	return fmt.Sprintf("%.1f%%", 100*float64(numerator)/float64(denominator))
+}
+
+func lifecycleControlAllowed(runtime JobRuntime, control jobruntime.Control) bool {
+	decision, err := jobruntime.DecideControl(runtime.State, runtime.RequestedStop, control)
+
+	return err == nil && decision.Disposition != jobruntime.ControlRejected && decision.Disposition != jobruntime.ControlNoop
 }
 
 func (s *Server) appActivity(r *http.Request) (appActivity, error) {

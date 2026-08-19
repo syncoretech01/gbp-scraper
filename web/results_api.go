@@ -1,14 +1,22 @@
 package web
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"unicode"
 )
 
-const maximumResultQueryLength = 500
+const (
+	maximumResultQueryLength = 500
+	maximumFilterJSONLength  = 16 << 10
+	maximumFilterDepth       = 4
+	maximumFilterNodes       = 50
+)
 
 func (s *Server) registerResultRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/results", s.apiResults)
@@ -29,6 +37,28 @@ func (s *Server) apiMutateBusinesses(w http.ResponseWriter, r *http.Request) {
 		IDs:    r.Form["result_ids"],
 		Action: r.FormValue("action"),
 		Value:  r.FormValue("value"),
+	}
+	if mutation.Action == "enrich" || mutation.Action == "website-check" || mutation.Action == "email-check" {
+		options := EnrichmentOptions{Force: true, CheckMX: mutation.Action != "website-check"}
+		batch, err := s.svc.QueueBusinessEnrichment(r.Context(), mutation.IDs, options, "results_bulk_action")
+		if err != nil {
+			renderEnrichmentError(w, err)
+			return
+		}
+		if strings.Contains(r.Header.Get("Accept"), "application/json") {
+			renderJSON(w, http.StatusAccepted, localAPIEnvelope{
+				Data: batch.Tasks,
+				Meta: map[string]any{"queued": batch.Queued, "skipped": batch.Skipped},
+			})
+			return
+		}
+		returnTo := safeResultsReturnPath(r.FormValue("return_to"))
+		separator := "?"
+		if strings.Contains(returnTo, "?") {
+			separator = "&"
+		}
+		http.Redirect(w, r, fmt.Sprintf("%s%snotice=%d+website+audits+queued", returnTo, separator, batch.Queued), http.StatusSeeOther)
+		return
 	}
 	if mutation.Value == "" {
 		mutation.Value = r.FormValue("tag")
@@ -200,7 +230,102 @@ func parseResultSearch(r *http.Request) (ResultSearch, error) {
 		})
 	}
 
+	group, err := decodeResultFilterGroup(r.URL.Query().Get("filter_json"))
+	if err != nil {
+		return ResultSearch{}, err
+	}
+	search.FilterGroup = group
+
+	logic := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("filter_logic")))
+	if logic != "" && logic != "and" && logic != "or" {
+		return ResultSearch{}, errors.New("filter logic must be 'and' or 'or'")
+	}
+	if logic == "or" && len(search.Filters) > 0 {
+		group := ResultFilterGroup{Logic: "or", Filters: search.Filters}
+		search.FilterGroup = combineResultFilterGroups(search.FilterGroup, &group)
+		search.Filters = nil
+	}
+
 	return search, nil
+}
+
+func decodeResultFilterGroup(value string) (*ResultFilterGroup, error) {
+	filterJSON := strings.TrimSpace(value)
+	if len(filterJSON) > maximumFilterJSONLength {
+		return nil, errors.New("nested result filter is too large")
+	}
+	if filterJSON == "" {
+		return nil, nil
+	}
+
+	var group ResultFilterGroup
+	decoder := json.NewDecoder(strings.NewReader(filterJSON))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&group); err != nil {
+		return nil, fmt.Errorf("nested result filter is invalid: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, errors.New("nested result filter must contain one JSON object")
+	}
+	if err := validateResultFilterGroup(group); err != nil {
+		return nil, err
+	}
+
+	return &group, nil
+}
+
+func combineResultFilterGroups(left, right *ResultFilterGroup) *ResultFilterGroup {
+	if left == nil {
+		return right
+	}
+	if right == nil {
+		return left
+	}
+	return &ResultFilterGroup{Logic: "and", Groups: []ResultFilterGroup{*left, *right}}
+}
+
+func validateResultFilterGroup(group ResultFilterGroup) error {
+	nodes := 0
+	var validate func(ResultFilterGroup, int) error
+	validate = func(current ResultFilterGroup, depth int) error {
+		if depth > maximumFilterDepth {
+			return errors.New("nested result filter is too deep")
+		}
+		logic := strings.ToLower(strings.TrimSpace(current.Logic))
+		if logic == "" {
+			logic = "and"
+		}
+		if logic != "and" && logic != "or" {
+			return errors.New("nested filter logic must be 'and' or 'or'")
+		}
+		if len(current.Filters) == 0 && len(current.Groups) == 0 {
+			return errors.New("nested result filter group is empty")
+		}
+		for _, filter := range current.Filters {
+			nodes++
+			if nodes > maximumFilterNodes {
+				return errors.New("nested result filter has too many conditions")
+			}
+			if strings.TrimSpace(filter.Field) == "" || strings.TrimSpace(filter.Operator) == "" {
+				return errors.New("nested result filter condition is incomplete")
+			}
+			if len(filter.Field) > 64 || len(filter.Operator) > 64 || len(filter.Value) > 4000 {
+				return errors.New("nested result filter value is too long")
+			}
+		}
+		for _, child := range current.Groups {
+			nodes++
+			if nodes > maximumFilterNodes {
+				return errors.New("nested result filter has too many conditions")
+			}
+			if err := validate(child, depth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	return validate(group, 1)
 }
 
 func validBusinessID(value string) bool {

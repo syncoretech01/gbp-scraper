@@ -19,6 +19,8 @@ type resultsPageData struct {
 	JobID             string
 	Sort              string
 	PageSize          string
+	FilterLogic       string
+	FilterJSON        string
 	JobOptions        []resultJobOption
 	SavedViews        []namedAppOption
 	Filters           []appResultFilter
@@ -28,6 +30,7 @@ type resultsPageData struct {
 	RangeLabel        string
 	CurrentURL        string
 	ExportURL         string
+	MapURL            string
 	PreviousURL       string
 	NextURL           string
 	Capabilities      appResultCapabilities
@@ -86,24 +89,89 @@ type appResultRow struct {
 }
 
 type appBusinessDetail struct {
-	CSRFToken  string
-	CanMutate  bool
-	Business   appResultRow
-	RawJSON    string
-	Sources    []appBusinessSource
-	Versions   []appBusinessVersion
-	Duplicates []string
+	CSRFToken        string
+	CanMutate        bool
+	CanEnrich        bool
+	Business         appResultRow
+	MapURL           string
+	RawJSON          string
+	Sources          []appBusinessSource
+	Provenance       []appFieldProvenance
+	Websites         []appWebsiteView
+	Emails           []appEmailView
+	Phones           []PhoneView
+	SocialProfiles   []SocialProfileView
+	Versions         []appBusinessVersion
+	Changes          []appBusinessChange
+	Duplicates       []string
+	DuplicateMatches []appDuplicateMatch
+	Quality          appQualityReport
 }
 
 type appBusinessSource struct {
 	BusinessSourceView
-	ExtractedLabel string
+	ExtractedLabel      string
+	ConfidenceLabel     string
+	RawJSONLabel        string
+	NormalizedJSONLabel string
 }
 
 type appBusinessVersion struct {
 	BusinessVersionView
 	ObservedLabel string
 	FieldsLabel   string
+	SnapshotLabel string
+}
+
+type appFieldProvenance struct {
+	FieldProvenanceView
+	ExtractedLabel  string
+	SupersededLabel string
+	ConfidenceLabel string
+}
+
+type appWebsiteView struct {
+	WebsiteView
+	HTTPStatusLabel string
+	HTTPSLabel      string
+	TLSLabel        string
+	ResponseLabel   string
+	CheckedLabel    string
+}
+
+type appEmailView struct {
+	EmailView
+	MXLabel         string
+	CheckedLabel    string
+	ConfidenceLabel string
+	RelevanceLabel  string
+}
+
+type appBusinessChange struct {
+	BusinessChangeView
+	DetectedLabel string
+	BeforeLabel   string
+	AfterLabel    string
+}
+
+type appDuplicateMatch struct {
+	DuplicateMatchView
+	ScoreLabel   string
+	SignalsLabel string
+}
+
+type appQualityReport struct {
+	BusinessQualityReport
+	ScoreLabel      string
+	ConfidenceLabel string
+	EvaluatedLabel  string
+	Contributions   []appQualityContribution
+}
+
+type appQualityContribution struct {
+	QualityContribution
+	ContributionLabel string
+	MaximumLabel      string
 }
 
 func (s *Server) resultsPage(w http.ResponseWriter, r *http.Request) {
@@ -180,22 +248,37 @@ func (s *Server) buildResultsPage(r *http.Request, search ResultSearch) (results
 		JobID:             search.JobID,
 		Sort:              search.Sort,
 		PageSize:          strconv.Itoa(resultPage.Limit),
+		FilterLogic:       "and",
 		IncludeDuplicates: search.IncludeDuplicates,
 		Total:             resultPage.Total,
 		CurrentURL:        r.URL.RequestURI(),
 		ExportURL:         resultExportURL(r.URL),
+		MapURL:            resultMapURL(r.URL),
 		Capabilities: appResultCapabilities{
-			CanMap:          true,
-			CanSavedViews:   s.reusableAvailable(),
-			CanExport:       s.exportAvailable(),
-			CanTag:          s.resultMutationAvailable(),
-			CanMarkReviewed: s.resultMutationAvailable(),
+			CanMap:           true,
+			CanSavedViews:    s.reusableAvailable(),
+			CanExport:        s.exportAvailable(),
+			CanTag:           s.resultMutationAvailable(),
+			CanMarkReviewed:  s.resultMutationAvailable(),
+			CanEnrich:        s.enrichmentAvailable(),
+			CanCheckWebsites: s.enrichmentAvailable(),
+			CanCheckEmails:   s.enrichmentAvailable(),
 		},
+	}
+	flatFilters := search.Filters
+	requestedFilterLogic := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("filter_logic")))
+	requestedFilterJSON := strings.TrimSpace(r.URL.Query().Get("filter_json"))
+	if requestedFilterLogic == "or" && requestedFilterJSON == "" && search.FilterGroup != nil &&
+		strings.EqualFold(search.FilterGroup.Logic, "or") && !search.FilterGroup.Not && len(search.FilterGroup.Groups) == 0 {
+		page.FilterLogic = "or"
+		flatFilters = search.FilterGroup.Filters
+	} else if search.FilterGroup != nil {
+		page.FilterJSON = resultFilterGroupJSON(search.FilterGroup)
 	}
 	page.Capabilities.CanSelect = page.Capabilities.CanTag || page.Capabilities.CanMarkReviewed ||
 		page.Capabilities.CanEnrich || page.Capabilities.CanCheckWebsites ||
 		page.Capabilities.CanCheckEmails || page.Capabilities.CanMerge || page.Capabilities.CanDelete
-	for _, filter := range search.Filters {
+	for _, filter := range flatFilters {
 		page.Filters = append(page.Filters, appResultFilter{
 			Field:         filter.Field,
 			FieldLabel:    resultFieldLabel(filter.Field),
@@ -252,6 +335,15 @@ func resultExportURL(source *url.URL) string {
 	values.Del("sort")
 	values.Set("source", "results")
 	return "/app/exports?" + values.Encode()
+}
+
+func resultMapURL(source *url.URL) string {
+	values := source.Query()
+	values.Del("page")
+	values.Del("page_size")
+	values.Set("source", "results")
+
+	return "/app/map?" + values.Encode()
 }
 
 func (s *Server) businessDetailPage(w http.ResponseWriter, r *http.Request) {
@@ -318,16 +410,70 @@ func (s *Server) loadAppBusinessDetail(r *http.Request) (appBusinessDetail, int,
 	}
 
 	page := appBusinessDetail{
-		CSRFToken:  s.csrfToken,
-		CanMutate:  s.resultMutationAvailable(),
-		Business:   newAppResultRow(detail.Business),
-		RawJSON:    prettyJSON(detail.RawJSON),
-		Duplicates: detail.Duplicates,
+		CSRFToken:      s.csrfToken,
+		CanMutate:      s.resultMutationAvailable(),
+		CanEnrich:      s.enrichmentAvailable(),
+		Business:       newAppResultRow(detail.Business),
+		RawJSON:        prettyJSON(detail.RawJSON),
+		Duplicates:     detail.Duplicates,
+		Phones:         detail.Phones,
+		SocialProfiles: detail.SocialProfiles,
+		Quality: appQualityReport{
+			BusinessQualityReport: detail.Quality,
+			ScoreLabel:            strconv.FormatFloat(detail.Quality.Score, 'f', 0, 64),
+			ConfidenceLabel:       fmt.Sprintf("%.0f%%", detail.Quality.Confidence*100),
+			EvaluatedLabel:        appResultTime(detail.Quality.EvaluatedAt),
+		},
+	}
+	for _, item := range detail.Quality.Contributions {
+		page.Quality.Contributions = append(page.Quality.Contributions, appQualityContribution{
+			QualityContribution: item,
+			ContributionLabel:   fmt.Sprintf("%+.2f", item.Contribution),
+			MaximumLabel:        fmt.Sprintf("%.2f", item.Maximum),
+		})
+	}
+	if detail.Business.Latitude != nil && detail.Business.Longitude != nil {
+		page.MapURL = fmt.Sprintf("https://www.openstreetmap.org/?mlat=%0.6f&mlon=%0.6f#map=17/%0.6f/%0.6f",
+			*detail.Business.Latitude, *detail.Business.Longitude, *detail.Business.Latitude, *detail.Business.Longitude)
 	}
 	for _, source := range detail.Sources {
 		page.Sources = append(page.Sources, appBusinessSource{
-			BusinessSourceView: source,
-			ExtractedLabel:     appResultTime(source.ExtractedAt),
+			BusinessSourceView:  source,
+			ExtractedLabel:      appResultTime(source.ExtractedAt),
+			ConfidenceLabel:     fmt.Sprintf("%.0f%%", source.Confidence*100),
+			RawJSONLabel:        prettyJSON(source.RawJSON),
+			NormalizedJSONLabel: prettyJSON(source.NormalizedJSON),
+		})
+	}
+	for _, item := range detail.Provenance {
+		superseded := "current"
+		if item.SupersededAt != nil {
+			superseded = appResultTime(*item.SupersededAt)
+		}
+		page.Provenance = append(page.Provenance, appFieldProvenance{
+			FieldProvenanceView: item,
+			ExtractedLabel:      appResultTime(item.ExtractedAt),
+			SupersededLabel:     superseded,
+			ConfidenceLabel:     fmt.Sprintf("%.0f%%", item.Confidence*100),
+		})
+	}
+	for _, item := range detail.Websites {
+		page.Websites = append(page.Websites, appWebsiteView{
+			WebsiteView:     item,
+			HTTPStatusLabel: optionalIntLabel(item.HTTPStatus, "not recorded"),
+			HTTPSLabel:      optionalBoolLabel(item.HTTPS, "not checked"),
+			TLSLabel:        optionalBoolLabel(item.TLSValid, "not checked"),
+			ResponseLabel:   optionalDurationLabel(item.ResponseTimeMS),
+			CheckedLabel:    resultOptionalTimeLabel(item.LastCheckedAt),
+		})
+	}
+	for _, item := range detail.Emails {
+		page.Emails = append(page.Emails, appEmailView{
+			EmailView:       item,
+			MXLabel:         optionalBoolLabel(item.DomainHasMX, "not checked"),
+			CheckedLabel:    resultOptionalTimeLabel(item.LastCheckedAt),
+			ConfidenceLabel: fmt.Sprintf("%.0f%%", item.Confidence*100),
+			RelevanceLabel:  fmt.Sprintf("%d/100", item.Relevance),
 		})
 	}
 	for _, version := range detail.Versions {
@@ -335,10 +481,57 @@ func (s *Server) loadAppBusinessDetail(r *http.Request) (appBusinessDetail, int,
 			BusinessVersionView: version,
 			ObservedLabel:       appResultTime(version.ObservedAt),
 			FieldsLabel:         strings.Join(version.ChangedFields, ", "),
+			SnapshotLabel:       prettyJSON(version.Snapshot),
+		})
+	}
+	for _, item := range detail.Changes {
+		page.Changes = append(page.Changes, appBusinessChange{
+			BusinessChangeView: item,
+			DetectedLabel:      appResultTime(item.DetectedAt),
+			BeforeLabel:        prettyJSON(item.BeforeValue),
+			AfterLabel:         prettyJSON(item.AfterValue),
+		})
+	}
+	for _, item := range detail.DuplicateMatches {
+		page.DuplicateMatches = append(page.DuplicateMatches, appDuplicateMatch{
+			DuplicateMatchView: item,
+			ScoreLabel:         fmt.Sprintf("%.0f%%", item.Score*100),
+			SignalsLabel:       prettyJSON(item.Signals),
 		})
 	}
 
 	return page, http.StatusOK, nil
+}
+
+func optionalIntLabel(value *int64, fallback string) string {
+	if value == nil {
+		return fallback
+	}
+	return strconv.FormatInt(*value, 10)
+}
+
+func optionalBoolLabel(value *bool, fallback string) string {
+	if value == nil {
+		return fallback
+	}
+	if *value {
+		return "yes"
+	}
+	return "no"
+}
+
+func optionalDurationLabel(value *int64) string {
+	if value == nil {
+		return "not checked"
+	}
+	return fmt.Sprintf("%d ms", *value)
+}
+
+func resultOptionalTimeLabel(value *time.Time) string {
+	if value == nil {
+		return "not recorded"
+	}
+	return appResultTime(*value)
 }
 
 func newAppResultRow(result BusinessResult) appResultRow {
@@ -381,11 +574,19 @@ func resultPaginationURL(source *url.URL, page int) string {
 
 func resultFieldLabel(value string) string {
 	labels := map[string]string{
-		"id": "ID", "name": "Name", "city": "City", "state": "State",
-		"country": "Country", "category": "Category", "status": "Business status",
+		"id": "ID", "name": "Name", "address": "Address", "city": "City", "state": "State",
+		"postal_code": "Postal code", "country": "Country", "category": "Primary category",
+		"category_member": "Any category", "status": "Business status", "business_status": "Business status",
 		"website_status": "Website status", "domain": "Domain", "rating": "Rating",
 		"reviews": "Review count", "review_count": "Review count", "quality_score": "Quality score",
-		"website": "Website", "email": "Email", "phone": "Phone", "reviewed": "Reviewed", "tags": "Tags",
+		"confidence": "Quality confidence", "website_response_ms": "Website response time",
+		"website": "Website", "email": "Email", "email_status": "Email status", "email_kind": "Email kind",
+		"phone": "Phone", "social": "Social platform", "technology": "Technology",
+		"reviewed": "Reviewed", "claimed": "Claimed", "tags": "Tags", "change_status": "Change status",
+		"place_id": "Place ID", "cid": "CID", "data_id": "Data ID", "maps_url": "Maps URL",
+		"updated_at": "Updated date", "first_seen_at": "First seen date", "last_seen_at": "Last seen date",
+		"scraped_at": "Scraped date", "last_checked_at": "Website checked date",
+		"distance": "Distance from point", "bbox": "Bounding box", "polygon": "GeoJSON polygon",
 	}
 	if label := labels[strings.ToLower(strings.TrimSpace(value))]; label != "" {
 		return label
@@ -396,14 +597,28 @@ func resultFieldLabel(value string) string {
 
 func resultOperatorLabel(value string) string {
 	labels := map[string]string{
-		"eq": "equals", "contains": "contains", "starts_with": "starts with",
-		"gte": "at least", "lte": "at most", "empty": "is empty", "not_empty": "is not empty",
+		"eq": "equals", "neq": "does not equal", "contains": "contains", "not_contains": "does not contain",
+		"starts_with": "starts with", "ends_with": "ends with", "gte": "at least", "lte": "at most",
+		"gt": "greater than", "lt": "less than", "between": "between", "within": "is within",
+		"empty": "is empty", "not_empty": "is not empty",
 	}
 	if label := labels[strings.ToLower(strings.TrimSpace(value))]; label != "" {
 		return label
 	}
 
 	return value
+}
+
+func resultFilterGroupJSON(group *ResultFilterGroup) string {
+	if group == nil {
+		return ""
+	}
+	encoded, err := json.Marshal(group)
+	if err != nil {
+		return ""
+	}
+
+	return string(encoded)
 }
 
 func intPercentage(value, total int64) int {

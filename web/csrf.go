@@ -18,6 +18,9 @@ func newCSRFToken() (string, error) {
 }
 
 func (s *Server) requireCSRF(w http.ResponseWriter, r *http.Request) bool {
+	if key, ok := r.Context().Value(apiAccessContextKey{}).(APIKeyRecord); ok && key.Permission == "full" {
+		return true
+	}
 	provided := r.Header.Get("X-CSRF-Token")
 	if provided == "" {
 		provided = r.FormValue("csrf_token")

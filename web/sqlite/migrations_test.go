@@ -837,11 +837,20 @@ func assertCurrentSchema(t *testing.T, db *sql.DB) {
 	}
 
 	for _, table := range []string{
-		"jobs", "job_runtime", "job_config_versions", "job_tasks", "job_checkpoints", "job_logs",
-		"businesses", "business_sources", "job_businesses", "business_versions", "business_changes",
-		"field_provenance", "business_identity_keys", "duplicate_candidates", "dedup_rules", "business_merges",
-		"websites", "emails", "phones", "social_profiles", "businesses_fts", "exports", "export_presets",
-		"export_parts", "settings", "backups", "legacy_imports",
+		"api_keys", "api_request_logs", "audit_logs", "backups",
+		"business_changes", "business_identity_keys", "business_merges", "business_score_components",
+		"business_sources", "business_tags", "business_versions", "businesses",
+		"businesses_fts", "contact_evidence", "dedup_rules", "duplicate_candidates",
+		"emails", "enrichment_tasks", "export_parts", "export_presets",
+		"exports", "field_provenance", "integrations", "job_businesses",
+		"job_checkpoints", "job_config_versions", "job_events", "job_logs",
+		"job_progress", "job_runtime", "job_tags", "job_tasks",
+		"jobs", "legacy_imports", "notes", "phones",
+		"proxies", "proxy_health", "proxy_pool_members", "proxy_pools",
+		"quality_rule_sets", "saved_areas", "saved_views", "schedule_runs",
+		"schedules", "schema_migration_checksums", "schema_migrations", "settings",
+		"social_profiles", "tags", "templates", "website_audit_pages",
+		"website_audits", "website_detections", "websites",
 	} {
 		exists, err := tableExists(db, table)
 		if err != nil {

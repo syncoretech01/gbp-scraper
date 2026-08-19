@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/gosom/google-maps-scraper/web/jobruntime"
 )
@@ -20,14 +22,17 @@ type lifecycleJobCreator interface {
 }
 
 type Service struct {
-	repo       JobRepository
-	dataFolder string
+	repo               JobRepository
+	dataFolder         string
+	startedAt          time.Time
+	schedulerHeartbeat atomic.Int64
 }
 
 func NewService(repo JobRepository, dataFolder string) *Service {
 	return &Service{
 		repo:       repo,
 		dataFolder: dataFolder,
+		startedAt:  time.Now().UTC(),
 	}
 }
 

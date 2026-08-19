@@ -1,5 +1,7 @@
 {{define "app/page/system"}}{{template "app/layout" .}}{{end}}
 
+{{define "app/head"}}<script defer src="/static/js/app-system.js"></script>{{end}}
+
 {{define "app/page-actions"}}
 <div class="page-actions">
     <form action="/api/v1/system/integrity" method="post"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button" type="submit">Run integrity check</button></form>
@@ -8,7 +10,7 @@
 {{end}}
 
 {{define "app/content"}}
-<div class="section-stack">
+<div class="section-stack" data-system-diagnostics data-self-test-endpoint="/api/v1/system/self-test" data-csrf-token="{{.CSRFToken}}">
     {{if .Page.Notice}}<div class="notice notice-success" role="status"><div><strong>{{.Page.Notice}}</strong></div></div>{{end}}
     <div class="notice {{if eq .Page.Snapshot.Integrity "ok"}}notice-success{{else}}notice-error{{end}}" role="status"><div><strong>SQLite integrity: {{.Page.Snapshot.Integrity}}</strong><p>The check reads the live local database without changing stored data.</p></div></div>
     <section class="grid metrics-grid" aria-label="Local system summary">
@@ -18,11 +20,42 @@
         <article class="card metric"><div class="metric-label">Data directory</div><p class="metric-value">{{.Page.DataBytes}}</p><span class="metric-detail">{{.Page.DataFolder}}</span></article>
         <article class="card metric"><div class="metric-label">Backups</div><p class="metric-value">{{.Page.Snapshot.BackupCount}}</p><span class="metric-detail">migration and manual copies</span></article>
         <article class="card metric"><div class="metric-label">Exports</div><p class="metric-value">{{.Page.Snapshot.ExportCount}}</p><span class="metric-detail">registered local deliveries</span></article>
+        <article class="card metric"><div class="metric-label">Browser workers</div><p class="metric-value">{{.Page.ActiveBrowsers}}</p><span class="metric-detail">{{.Page.ActivePages}} active pages · {{.Page.WebsiteQueue}} website queue</span></article>
+        <article class="card metric"><div class="metric-label">Proxy pool</div><p class="metric-value metric-value-small">{{.Page.ProxyStatus}}</p><span class="metric-detail">credential-free health counters</span></article>
+    </section>
+
+    <section class="grid metrics-grid" aria-label="Live local resources">
+        {{if .Page.Resources.Available}}
+        <article class="card metric"><div class="metric-label">CPU</div><p class="metric-value">{{.Page.Resources.CPU}}</p><span class="metric-detail">{{.Page.Resources.LogicalCPUs}} logical processors</span></article>
+        <article class="card metric"><div class="metric-label">Memory</div><p class="metric-value">{{.Page.Resources.MemoryPercent}}</p><span class="metric-detail">{{.Page.Resources.MemoryUsed}} of {{.Page.Resources.MemoryTotal}}</span></article>
+        <article class="card metric"><div class="metric-label">Disk free</div><p class="metric-value">{{.Page.Resources.DiskFree}}</p><span class="metric-detail">{{.Page.Resources.DiskPercent}} used of {{.Page.Resources.DiskTotal}}</span></article>
+        {{else}}<article class="card metric"><div class="metric-label">Resources</div><p class="metric-value">Unavailable</p><span class="metric-detail">Use the self-test for details.</span></article>{{end}}
+        <article class="card metric"><div class="metric-label">Worker heartbeat</div><p class="metric-value">{{.Page.Scheduler.Status}}</p><span class="metric-detail">embedded scheduler</span></article>
+        <article class="card metric"><div class="metric-label">Service uptime</div><p class="metric-value">{{.Page.Uptime}}</p><span class="metric-detail">current process</span></article>
+        <article class="card metric"><div class="metric-label">Last database write</div><p class="metric-value metric-value-small">{{.Page.LastWrite}}</p><span class="metric-detail">{{.Page.ScanDetail}}</span></article>
+        <article class="card metric"><div class="metric-label">Last browser activity</div><p class="metric-value metric-value-small">{{.Page.LastBrowser}}</p><span class="metric-detail">last recorded non-zero browser/page sample</span></article>
+    </section>
+
+    <section class="card" aria-labelledby="storage-title">
+        <div class="card-header"><div><h2 id="storage-title">Workspace storage</h2><p>Contained configured directories; business results and database backups are never cleanup targets</p></div></div>
+        <div class="card-body"><div class="estimate"><div><span>Exports</span><strong>{{.Page.Storage.Exports}}</strong></div><div><span>Screenshots</span><strong>{{.Page.Storage.Screenshots}}</strong></div><div><span>Logs</span><strong>{{.Page.Storage.Logs}}</strong></div><div><span>Backups</span><strong>{{.Page.Storage.Backups}}</strong></div><div><span>Map cache</span><strong>{{.Page.Storage.Cache}}</strong></div><div><span>Temporary</span><strong>{{.Page.Storage.Temporary}}</strong></div></div></div>
     </section>
 
     <section class="grid grid-2">
         <article class="card"><div class="card-header"><div><h2>Versions and binding</h2><p>Useful for local troubleshooting</p></div></div><div class="card-body"><dl class="key-value"><dt>Go</dt><dd>{{.Page.GoVersion}}</dd><dt>Operating system</dt><dd>{{.Page.OS}}</dd><dt>SQLite</dt><dd>{{.Page.Snapshot.SQLiteVersion}}</dd><dt>Database schema</dt><dd>{{.Page.Snapshot.SchemaVersion}}</dd><dt>HTTP binding</dt><dd>{{.Page.Bind}}</dd></dl></div></article>
-        <article class="card"><div class="card-header"><div><h2>Safe maintenance</h2><p>VACUUM compacts SQLite; backups use SQLite's consistent VACUUM INTO mechanism and are verified before registration.</p></div></div><div class="card-body section-stack"><form action="/api/v1/system/vacuum" method="post" data-confirm="Compact the local database now? Active database work may wait briefly."><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button" type="submit">VACUUM database</button></form><p class="field-hint">Restore is intentionally offline: stop the container, preserve the current database, and replace it with a verified downloaded backup. This avoids swapping a database underneath active workers.</p><p class="field-hint">If proxy credentials are configured, preserve the adjacent <code>.proxy-master-key</code> too. Database backups contain encrypted proxy URLs, but never copy the encryption key into the database or download.</p></div></article>
+        <article class="card"><div class="card-header"><div><h2>Safe maintenance</h2><p>Every mutation is CSRF-protected and confined to the mounted local data directory.</p></div></div><div class="card-body section-stack">
+            <form action="/api/v1/system/vacuum" method="post" data-confirm="Compact the local database now? Active database work may wait briefly."><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button" type="submit">VACUUM database</button></form>
+            <form action="/api/v1/system/cache/clear" method="post" data-confirm="Clear only cached OpenStreetMap tile files?"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button" type="submit">Clear map cache</button></form>
+            <form action="/api/v1/system/jobs/stop-all" method="post" data-confirm="Request a safe stop for every queued or active job?"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button" type="submit">Stop all jobs safely</button></form>
+            <form action="/api/v1/system/artifacts/cleanup" method="post" class="inline-form" data-confirm="Delete only old unregistered files from the selected contained artifact directory?"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><label>Clean <select class="select" name="kind"><option value="screenshots">screenshots</option><option value="exports">unregistered exports</option><option value="logs">logs</option><option value="temporary">temporary files</option></select></label><label>older than <input class="input" type="number" min="1" max="3650" name="retention_days" value="30"> days</label><button class="button" type="submit">Clean old artifacts</button></form>
+            <div class="table-actions"><a class="button" href="/api/v1/system/diagnostics/download" download>Export redacted diagnostics</a><button class="button" type="button" data-system-update-info>Offline update info</button></div><p class="field-hint" data-system-update-output></p>
+            <p class="field-hint">Restore and process restart remain explicit Docker/offline operations. Stop the container, preserve the current database, and replace it with a verified downloaded backup; preserve <code>.proxy-master-key</code> alongside encrypted proxy records.</p>
+        </div></article>
+    </section>
+
+    <section class="card" aria-labelledby="self-test-title">
+        <div class="card-header"><div><h2 id="self-test-title">Local self-test</h2><p>Checks database reads/writes, output storage, memory, disk, worker heartbeat, and optionally public network reachability.</p></div><div class="table-actions"><button class="button" type="button" data-system-self-test="offline">Run offline checks</button><button class="button" type="button" data-system-self-test="network">Include internet and Maps</button></div></div>
+        <div class="card-body section-stack" data-system-test-results><p class="field-hint">Network checks run only when explicitly selected.</p></div>
     </section>
 
     <section class="card" aria-labelledby="backups-title">

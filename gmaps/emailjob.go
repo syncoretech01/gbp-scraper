@@ -21,6 +21,7 @@ type EmailExtractJob struct {
 	Entry                   *Entry
 	ExitMonitor             exiter.Exiter
 	WriterManagedCompletion bool
+	Runtime                 RuntimeOptions
 }
 
 func NewEmailJob(parentID string, entry *Entry, opts ...EmailExtractJobOptions) *EmailExtractJob {

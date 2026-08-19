@@ -51,9 +51,11 @@ func (s *Server) renderAppPage(w http.ResponseWriter, key string, data appPageDa
 
 	entry := "app/page/" + strings.ReplaceAll(key, "_", "-")
 	data.Features = s.appFeatures()
+	data.Preferences = defaultAppPreferences()
 	if s.svc != nil {
 		values, err := s.svc.LoadSettings(context.Background())
 		if err == nil {
+			data.Preferences = appPreferencesFromMap(values)
 			if theme := values["appearance.theme"]; theme == "system" || theme == "light" || theme == "dark" {
 				data.Theme = theme
 			}

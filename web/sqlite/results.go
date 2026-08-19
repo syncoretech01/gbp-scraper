@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/gosom/google-maps-scraper/web"
 	"github.com/gosom/google-maps-scraper/web/jobruntime"
@@ -436,6 +437,13 @@ func importNormalizedRecord(
 		return false, err
 	}
 	if err := storeFuzzyDuplicateCandidates(ctx, tx, targetID, observedUnix); err != nil {
+		return false, err
+	}
+	rules, err := ensureActiveQualityRules(ctx, tx)
+	if err != nil {
+		return false, err
+	}
+	if _, err := scoreBusiness(ctx, tx, targetID, rules, observedAt); err != nil {
 		return false, err
 	}
 
@@ -1423,6 +1431,14 @@ func (repo *repo) SearchBusinesses(ctx context.Context, search web.ResultSearch)
 		where = append(where, clause)
 		args = append(args, values...)
 	}
+	if search.FilterGroup != nil {
+		clause, values, err := resultFilterGroupSQL(*search.FilterGroup, 1, new(int))
+		if err != nil {
+			return web.ResultPage{}, fmt.Errorf("%w: %v", web.ErrInvalidResultQuery, err)
+		}
+		where = append(where, clause)
+		args = append(args, values...)
+	}
 
 	whereSQL := strings.Join(where, " AND ")
 	var total int64
@@ -1522,8 +1538,9 @@ func (repo *repo) GetBusiness(ctx context.Context, id string) (web.BusinessDetai
 
 	sourceRows, err := repo.db.QueryContext(
 		ctx,
-		`SELECT id, COALESCE(job_id, ''), source_type, source_url, source_query,
-			source_cell, input_id, extraction_method, confidence, extracted_at
+		`SELECT id, COALESCE(job_id, ''), COALESCE(task_id, ''), source_type, source_url, source_query,
+			source_cell, input_id, extraction_method, confidence, extracted_at,
+			raw_json, normalized_json, record_hash
 		FROM business_sources WHERE business_id = ? ORDER BY extracted_at DESC, id DESC`,
 		id,
 	)
@@ -1536,6 +1553,7 @@ func (repo *repo) GetBusiness(ctx context.Context, id string) (web.BusinessDetai
 		if err := sourceRows.Scan(
 			&source.ID,
 			&source.JobID,
+			&source.TaskID,
 			&source.SourceType,
 			&source.SourceURL,
 			&source.SourceQuery,
@@ -1544,6 +1562,9 @@ func (repo *repo) GetBusiness(ctx context.Context, id string) (web.BusinessDetai
 			&source.ExtractionMethod,
 			&source.Confidence,
 			&extractedAt,
+			&source.RawJSON,
+			&source.NormalizedJSON,
+			&source.RecordHash,
 		); err != nil {
 			_ = sourceRows.Close()
 
@@ -1563,7 +1584,8 @@ func (repo *repo) GetBusiness(ctx context.Context, id string) (web.BusinessDetai
 
 	versionRows, err := repo.db.QueryContext(
 		ctx,
-		`SELECT id, version_no, change_type, changed_fields, observed_at
+		`SELECT id, version_no, previous_version_id, COALESCE(job_id, ''), source_id,
+			change_type, changed_fields, snapshot, observed_at
 		FROM business_versions WHERE business_id = ? ORDER BY observed_at DESC, id DESC`,
 		id,
 	)
@@ -1573,12 +1595,17 @@ func (repo *repo) GetBusiness(ctx context.Context, id string) (web.BusinessDetai
 	for versionRows.Next() {
 		var version web.BusinessVersionView
 		var changedFields string
+		var previousVersionID, sourceID sql.NullInt64
 		var observedAt int64
 		if err := versionRows.Scan(
 			&version.ID,
 			&version.Version,
+			&previousVersionID,
+			&version.JobID,
+			&sourceID,
 			&version.ChangeType,
 			&changedFields,
+			&version.Snapshot,
 			&observedAt,
 		); err != nil {
 			_ = versionRows.Close()
@@ -1586,6 +1613,8 @@ func (repo *repo) GetBusiness(ctx context.Context, id string) (web.BusinessDetai
 			return web.BusinessDetail{}, fmt.Errorf("scan business version: %w", err)
 		}
 		_ = json.Unmarshal([]byte(changedFields), &version.ChangedFields)
+		version.PreviousVersionID = nullIntPointer(previousVersionID)
+		version.SourceID = nullIntPointer(sourceID)
 		version.ObservedAt = time.Unix(observedAt, 0).UTC()
 		detail.Versions = append(detail.Versions, version)
 	}
@@ -1596,6 +1625,10 @@ func (repo *repo) GetBusiness(ctx context.Context, id string) (web.BusinessDetai
 	}
 	if err := versionRows.Close(); err != nil {
 		return web.BusinessDetail{}, fmt.Errorf("close business versions: %w", err)
+	}
+
+	if err := repo.loadBusinessDetailRelations(ctx, id, &detail); err != nil {
+		return web.BusinessDetail{}, err
 	}
 
 	duplicateRows, err := repo.db.QueryContext(
@@ -1628,8 +1661,378 @@ func (repo *repo) GetBusiness(ctx context.Context, id string) (web.BusinessDetai
 	if err := duplicateRows.Close(); err != nil {
 		return web.BusinessDetail{}, fmt.Errorf("close business duplicates: %w", err)
 	}
+	detail.Quality, err = repo.BusinessQuality(ctx, id)
+	if err != nil {
+		return web.BusinessDetail{}, fmt.Errorf("read explainable business quality: %w", err)
+	}
 
 	return detail, nil
+}
+
+func (repo *repo) loadBusinessDetailRelations(ctx context.Context, id string, detail *web.BusinessDetail) error {
+	if err := repo.loadBusinessProvenance(ctx, id, detail); err != nil {
+		return err
+	}
+	if err := repo.loadBusinessWebsites(ctx, id, detail); err != nil {
+		return err
+	}
+	if err := repo.loadBusinessContacts(ctx, id, detail); err != nil {
+		return err
+	}
+	if err := repo.loadBusinessChanges(ctx, id, detail); err != nil {
+		return err
+	}
+	if err := repo.loadDuplicateMatches(ctx, id, detail); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (repo *repo) loadBusinessProvenance(ctx context.Context, id string, detail *web.BusinessDetail) error {
+	rows, err := repo.db.QueryContext(
+		ctx,
+		`SELECT id, field_name, original_value, normalized_value, original_json, normalized_json,
+			preferred, source_id, source_type, source_url, source_query, source_cell,
+			extraction_method, confidence, extracted_at, superseded_at, operator, edit_reason
+		FROM field_provenance
+		WHERE business_id = ?
+		ORDER BY field_name, preferred DESC, extracted_at DESC, id DESC`,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("read business provenance: %w", err)
+	}
+	for rows.Next() {
+		var item web.FieldProvenanceView
+		var preferred int
+		var sourceID, supersededAt sql.NullInt64
+		var extractedAt int64
+		if err := rows.Scan(
+			&item.ID,
+			&item.FieldName,
+			&item.OriginalValue,
+			&item.NormalizedValue,
+			&item.OriginalJSON,
+			&item.NormalizedJSON,
+			&preferred,
+			&sourceID,
+			&item.SourceType,
+			&item.SourceURL,
+			&item.SourceQuery,
+			&item.SourceCell,
+			&item.ExtractionMethod,
+			&item.Confidence,
+			&extractedAt,
+			&supersededAt,
+			&item.Operator,
+			&item.EditReason,
+		); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan business provenance: %w", err)
+		}
+		item.Preferred = preferred != 0
+		item.SourceID = nullIntPointer(sourceID)
+		item.ExtractedAt = time.Unix(extractedAt, 0).UTC()
+		item.SupersededAt = nullTimePointer(supersededAt)
+		detail.Provenance = append(detail.Provenance, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("read business provenance: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close business provenance: %w", err)
+	}
+
+	return nil
+}
+
+func (repo *repo) loadBusinessWebsites(ctx context.Context, id string, detail *web.BusinessDetail) error {
+	rows, err := repo.db.QueryContext(
+		ctx,
+		`SELECT id, url, final_url, domain, status, http_status, https, response_time_ms,
+			redirect_chain, page_title, meta_description, language, technologies, social_links,
+			screenshot_path, last_checked_at, tls_valid, certificate_error, pages_checked,
+			internal_links_checked, broken_internal_links, mixed_content, parked,
+			coming_soon, placeholder, trackers
+		FROM websites WHERE business_id = ? ORDER BY last_checked_at DESC, id DESC`,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("read business websites: %w", err)
+	}
+	for rows.Next() {
+		var item web.WebsiteView
+		var httpStatus, https, responseTime, lastCheckedAt, tlsValid sql.NullInt64
+		var mixedContent, parked, comingSoon, placeholder int
+		if err := rows.Scan(
+			&item.ID,
+			&item.URL,
+			&item.FinalURL,
+			&item.Domain,
+			&item.Status,
+			&httpStatus,
+			&https,
+			&responseTime,
+			&item.RedirectChain,
+			&item.PageTitle,
+			&item.MetaDescription,
+			&item.Language,
+			&item.Technologies,
+			&item.SocialLinks,
+			&item.ScreenshotPath,
+			&lastCheckedAt,
+			&tlsValid,
+			&item.CertificateError,
+			&item.PagesChecked,
+			&item.InternalLinksChecked,
+			&item.BrokenInternalLinks,
+			&mixedContent,
+			&parked,
+			&comingSoon,
+			&placeholder,
+			&item.Trackers,
+		); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan business website: %w", err)
+		}
+		item.HTTPStatus = nullIntPointer(httpStatus)
+		item.HTTPS = nullIntegerBoolPointer(https)
+		item.ResponseTimeMS = nullIntPointer(responseTime)
+		item.LastCheckedAt = nullTimePointer(lastCheckedAt)
+		item.TLSValid = nullIntegerBoolPointer(tlsValid)
+		item.MixedContent = mixedContent != 0
+		item.Parked = parked != 0
+		item.ComingSoon = comingSoon != 0
+		item.Placeholder = placeholder != 0
+		detail.Websites = append(detail.Websites, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("read business websites: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close business websites: %w", err)
+	}
+
+	return nil
+}
+
+func (repo *repo) loadBusinessContacts(ctx context.Context, id string, detail *web.BusinessDetail) error {
+	emailRows, err := repo.db.QueryContext(
+		ctx,
+		`SELECT id, value, normalized_value, kind, status, domain_has_mx, disposable,
+			source_url, extraction_method, confidence, last_checked_at, valid_syntax,
+			role, personal_likely, mx_status, mx_records, relevance, rank
+		FROM emails WHERE business_id = ? ORDER BY confidence DESC, id`,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("read business emails: %w", err)
+	}
+	for emailRows.Next() {
+		var item web.EmailView
+		var domainHasMX, lastCheckedAt sql.NullInt64
+		var disposable, validSyntax, personalLikely int
+		if err := emailRows.Scan(
+			&item.ID,
+			&item.Value,
+			&item.NormalizedValue,
+			&item.Kind,
+			&item.Status,
+			&domainHasMX,
+			&disposable,
+			&item.SourceURL,
+			&item.ExtractionMethod,
+			&item.Confidence,
+			&lastCheckedAt,
+			&validSyntax,
+			&item.Role,
+			&personalLikely,
+			&item.MXStatus,
+			&item.MXRecords,
+			&item.Relevance,
+			&item.Rank,
+		); err != nil {
+			_ = emailRows.Close()
+			return fmt.Errorf("scan business email: %w", err)
+		}
+		item.DomainHasMX = nullIntegerBoolPointer(domainHasMX)
+		item.Disposable = disposable != 0
+		item.LastCheckedAt = nullTimePointer(lastCheckedAt)
+		item.ValidSyntax = validSyntax != 0
+		item.PersonalLikely = personalLikely != 0
+		detail.Emails = append(detail.Emails, item)
+	}
+	if err := emailRows.Err(); err != nil {
+		_ = emailRows.Close()
+		return fmt.Errorf("read business emails: %w", err)
+	}
+	if err := emailRows.Close(); err != nil {
+		return fmt.Errorf("close business emails: %w", err)
+	}
+
+	phoneRows, err := repo.db.QueryContext(
+		ctx,
+		`SELECT id, value, normalized_value, kind, source_url, confidence
+		FROM phones WHERE business_id = ? ORDER BY confidence DESC, id`,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("read business phones: %w", err)
+	}
+	for phoneRows.Next() {
+		var item web.PhoneView
+		if err := phoneRows.Scan(
+			&item.ID,
+			&item.Value,
+			&item.NormalizedValue,
+			&item.Kind,
+			&item.SourceURL,
+			&item.Confidence,
+		); err != nil {
+			_ = phoneRows.Close()
+			return fmt.Errorf("scan business phone: %w", err)
+		}
+		detail.Phones = append(detail.Phones, item)
+	}
+	if err := phoneRows.Err(); err != nil {
+		_ = phoneRows.Close()
+		return fmt.Errorf("read business phones: %w", err)
+	}
+	if err := phoneRows.Close(); err != nil {
+		return fmt.Errorf("close business phones: %w", err)
+	}
+
+	socialRows, err := repo.db.QueryContext(
+		ctx,
+		`SELECT id, platform, url, source_url, confidence
+		FROM social_profiles WHERE business_id = ? ORDER BY platform, confidence DESC, id`,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("read business social profiles: %w", err)
+	}
+	for socialRows.Next() {
+		var item web.SocialProfileView
+		if err := socialRows.Scan(
+			&item.ID,
+			&item.Platform,
+			&item.URL,
+			&item.SourceURL,
+			&item.Confidence,
+		); err != nil {
+			_ = socialRows.Close()
+			return fmt.Errorf("scan business social profile: %w", err)
+		}
+		detail.SocialProfiles = append(detail.SocialProfiles, item)
+	}
+	if err := socialRows.Err(); err != nil {
+		_ = socialRows.Close()
+		return fmt.Errorf("read business social profiles: %w", err)
+	}
+	if err := socialRows.Close(); err != nil {
+		return fmt.Errorf("close business social profiles: %w", err)
+	}
+
+	return nil
+}
+
+func (repo *repo) loadBusinessChanges(ctx context.Context, id string, detail *web.BusinessDetail) error {
+	rows, err := repo.db.QueryContext(
+		ctx,
+		`SELECT id, from_version_id, to_version_id, field_name, before_value,
+			after_value, change_kind, detected_at
+		FROM business_changes WHERE business_id = ? ORDER BY detected_at DESC, id DESC`,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("read business changes: %w", err)
+	}
+	for rows.Next() {
+		var item web.BusinessChangeView
+		var fromVersionID, toVersionID sql.NullInt64
+		var detectedAt int64
+		if err := rows.Scan(
+			&item.ID,
+			&fromVersionID,
+			&toVersionID,
+			&item.FieldName,
+			&item.BeforeValue,
+			&item.AfterValue,
+			&item.ChangeKind,
+			&detectedAt,
+		); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan business change: %w", err)
+		}
+		item.FromVersionID = nullIntPointer(fromVersionID)
+		item.ToVersionID = nullIntPointer(toVersionID)
+		item.DetectedAt = time.Unix(detectedAt, 0).UTC()
+		detail.Changes = append(detail.Changes, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("read business changes: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close business changes: %w", err)
+	}
+
+	return nil
+}
+
+func (repo *repo) loadDuplicateMatches(ctx context.Context, id string, detail *web.BusinessDetail) error {
+	rows, err := repo.db.QueryContext(
+		ctx,
+		`SELECT candidates.id, other.id, other.name, other.primary_category, other.address,
+			other.domain, candidates.score, candidates.signals, candidates.state,
+			candidates.resolution_note, candidates.created_at
+		FROM duplicate_candidates AS candidates
+		JOIN businesses AS other ON other.id = CASE
+			WHEN candidates.left_business_id = ? THEN candidates.right_business_id
+			ELSE candidates.left_business_id END
+		WHERE candidates.left_business_id = ? OR candidates.right_business_id = ?
+		ORDER BY candidates.state = 'pending' DESC, candidates.score DESC, candidates.id`,
+		id,
+		id,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("read business duplicate matches: %w", err)
+	}
+	for rows.Next() {
+		var item web.DuplicateMatchView
+		var createdAt int64
+		if err := rows.Scan(
+			&item.CandidateID,
+			&item.BusinessID,
+			&item.Name,
+			&item.PrimaryCategory,
+			&item.Address,
+			&item.Domain,
+			&item.Score,
+			&item.Signals,
+			&item.State,
+			&item.ResolutionNote,
+			&createdAt,
+		); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan business duplicate match: %w", err)
+		}
+		item.CreatedAt = time.Unix(createdAt, 0).UTC()
+		detail.DuplicateMatches = append(detail.DuplicateMatches, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("read business duplicate matches: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close business duplicate matches: %w", err)
+	}
+
+	return nil
 }
 
 // ResultOverview returns database-wide quality counts.
@@ -1738,79 +2141,83 @@ func resultFilterSQL(filter web.ResultFilter) (string, []any, error) {
 	field := strings.ToLower(strings.TrimSpace(filter.Field))
 	operator := strings.ToLower(strings.TrimSpace(filter.Operator))
 	value := strings.TrimSpace(filter.Value)
+	if field == "id" && operator == "in" {
+		values := splitFilterValues(value)
+		if len(values) == 0 || len(values) > 5000 {
+			return "", nil, fmt.Errorf("ID filter must contain between 1 and 5000 identifiers")
+		}
+		placeholders := make([]string, len(values))
+		arguments := make([]any, len(values))
+		for index, identifier := range values {
+			if !validResultIdentifier(identifier) {
+				return "", nil, fmt.Errorf("ID filter contains an invalid identifier")
+			}
+			placeholders[index] = "?"
+			arguments[index] = identifier
+		}
+		return "businesses.id IN (" + strings.Join(placeholders, ",") + ")", arguments, nil
+	}
 
 	columns := map[string]string{
-		"id":             "businesses.id",
-		"name":           "businesses.name",
-		"city":           "businesses.city",
-		"state":          "businesses.state",
-		"country":        "businesses.country",
-		"category":       "businesses.primary_category",
-		"status":         "businesses.business_status",
-		"website_status": "businesses.website_status",
-		"domain":         "businesses.domain",
+		"id":              "businesses.id",
+		"name":            "businesses.name",
+		"address":         "businesses.address",
+		"city":            "businesses.city",
+		"state":           "businesses.state",
+		"postal_code":     "businesses.postal_code",
+		"country":         "businesses.country",
+		"category":        "businesses.primary_category",
+		"status":          "businesses.business_status",
+		"business_status": "businesses.business_status",
+		"website_status":  "businesses.website_status",
+		"domain":          "businesses.domain",
+		"change_status":   "businesses.change_status",
+		"place_id":        "businesses.place_id",
+		"cid":             "businesses.cid",
+		"data_id":         "businesses.data_id",
+		"maps_url":        "businesses.maps_url",
 	}
 	if column, ok := columns[field]; ok {
-		switch operator {
-		case "eq":
-			return column + " = ? COLLATE NOCASE", []any{value}, nil
-		case "contains":
-			return column + " LIKE ? ESCAPE '\\'", []any{"%" + escapeLike(value) + "%"}, nil
-		case "starts_with":
-			return column + " LIKE ? ESCAPE '\\'", []any{escapeLike(value) + "%"}, nil
-		case "empty":
-			return column + " = ''", nil, nil
-		case "not_empty":
-			return column + " <> ''", nil, nil
-		}
+		return textFilterSQL(column, operator, value)
 	}
 
 	numericColumns := map[string]string{
-		"rating":        "businesses.rating",
-		"reviews":       "businesses.review_count",
-		"review_count":  "businesses.review_count",
-		"quality_score": "businesses.quality_score",
+		"rating":              "businesses.rating",
+		"reviews":             "businesses.review_count",
+		"review_count":        "businesses.review_count",
+		"quality_score":       "businesses.quality_score",
+		"confidence":          "businesses.quality_confidence",
+		"website_response_ms": "businesses.website_response_ms",
 	}
 	if column, ok := numericColumns[field]; ok {
-		number, err := strconv.ParseFloat(value, 64)
+		return numericFilterSQL(column, field, operator, value)
+	}
+
+	contactExpressions := map[string]string{
+		"website": "businesses.website",
+		"email": `(SELECT normalized_value FROM emails
+			WHERE emails.business_id = businesses.id ORDER BY confidence DESC, id LIMIT 1)`,
+		"phone": "businesses.normalized_phone",
+	}
+	if expression, ok := contactExpressions[field]; ok {
+		return textFilterSQL("COALESCE("+expression+", '')", operator, value)
+	}
+
+	if field == "reviewed" || field == "claimed" {
+		parsed, err := strconv.ParseBool(value)
 		if err != nil {
-			return "", nil, fmt.Errorf("invalid numeric result filter %q", field)
+			return "", nil, fmt.Errorf("invalid boolean result filter %q", field)
+		}
+		column := "businesses.reviewed"
+		if field == "claimed" {
+			column = "COALESCE(businesses.claimed, 0)"
 		}
 		switch operator {
 		case "eq":
-			return column + " = ?", []any{number}, nil
-		case "gte":
-			return column + " >= ?", []any{number}, nil
-		case "lte":
-			return column + " <= ?", []any{number}, nil
+			return column + " = ?", []any{boolInt(parsed)}, nil
+		case "neq":
+			return column + " <> ?", []any{boolInt(parsed)}, nil
 		}
-	}
-
-	if field == "website" || field == "email" || field == "phone" {
-		var expression string
-		switch field {
-		case "website":
-			expression = "businesses.website"
-		case "email":
-			expression = "(SELECT normalized_value FROM emails WHERE emails.business_id = businesses.id LIMIT 1)"
-		case "phone":
-			expression = "businesses.normalized_phone"
-		}
-		switch operator {
-		case "empty":
-			return "COALESCE(" + expression + ", '') = ''", nil, nil
-		case "not_empty":
-			return "COALESCE(" + expression + ", '') <> ''", nil, nil
-		}
-	}
-
-	if field == "reviewed" && operator == "eq" {
-		parsed, err := strconv.ParseBool(value)
-		if err != nil {
-			return "", nil, fmt.Errorf("invalid reviewed result filter")
-		}
-
-		return "businesses.reviewed = ?", []any{boolInt(parsed)}, nil
 	}
 	if field == "tags" && (operator == "contains" || operator == "eq") {
 		return `EXISTS (
@@ -1818,8 +2225,325 @@ func resultFilterSQL(filter web.ResultFilter) (string, []any, error) {
 			WHERE business_tags.business_id = businesses.id AND tags.name = ? COLLATE NOCASE
 		)`, []any{value}, nil
 	}
+	if field == "tags" && operator == "not_contains" {
+		return `NOT EXISTS (
+			SELECT 1 FROM business_tags JOIN tags ON tags.id = business_tags.tag_id
+			WHERE business_tags.business_id = businesses.id AND tags.name = ? COLLATE NOCASE
+		)`, []any{value}, nil
+	}
+	if field == "category_member" {
+		exists := `EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(businesses.categories)
+			THEN businesses.categories ELSE '[]' END) WHERE value = ? COLLATE NOCASE)`
+		switch operator {
+		case "eq", "contains":
+			return exists, []any{value}, nil
+		case "neq", "not_contains":
+			return "NOT " + exists, []any{value}, nil
+		}
+	}
+	if field == "email_status" || field == "email_kind" {
+		column := "emails.status"
+		if field == "email_kind" {
+			column = "emails.kind"
+		}
+		exists := `EXISTS (SELECT 1 FROM emails WHERE emails.business_id = businesses.id AND ` + column + ` = ? COLLATE NOCASE)`
+		switch operator {
+		case "eq", "contains":
+			return exists, []any{value}, nil
+		case "neq", "not_contains":
+			return "NOT " + exists, []any{value}, nil
+		case "empty":
+			return `NOT EXISTS (SELECT 1 FROM emails WHERE emails.business_id = businesses.id)`, nil, nil
+		case "not_empty":
+			return `EXISTS (SELECT 1 FROM emails WHERE emails.business_id = businesses.id)`, nil, nil
+		}
+	}
+	if field == "social" {
+		switch operator {
+		case "eq", "contains":
+			return `EXISTS (SELECT 1 FROM social_profiles WHERE social_profiles.business_id = businesses.id
+				AND social_profiles.platform = ? COLLATE NOCASE)`, []any{value}, nil
+		case "neq", "not_contains":
+			return `NOT EXISTS (SELECT 1 FROM social_profiles WHERE social_profiles.business_id = businesses.id
+				AND social_profiles.platform = ? COLLATE NOCASE)`, []any{value}, nil
+		case "empty":
+			return `NOT EXISTS (SELECT 1 FROM social_profiles WHERE social_profiles.business_id = businesses.id)`, nil, nil
+		case "not_empty":
+			return `EXISTS (SELECT 1 FROM social_profiles WHERE social_profiles.business_id = businesses.id)`, nil, nil
+		}
+	}
+	if field == "technology" {
+		technology := `EXISTS (SELECT 1 FROM websites, json_each(CASE WHEN json_valid(websites.technologies)
+			THEN websites.technologies ELSE '[]' END) AS technology
+			WHERE websites.business_id = businesses.id AND technology.value = ? COLLATE NOCASE)`
+		switch operator {
+		case "eq", "contains":
+			return technology, []any{value}, nil
+		case "neq", "not_contains":
+			return "NOT " + technology, []any{value}, nil
+		case "empty":
+			return `NOT EXISTS (SELECT 1 FROM websites, json_each(CASE WHEN json_valid(websites.technologies)
+				THEN websites.technologies ELSE '[]' END) AS technology WHERE websites.business_id = businesses.id)`, nil, nil
+		case "not_empty":
+			return `EXISTS (SELECT 1 FROM websites, json_each(CASE WHEN json_valid(websites.technologies)
+				THEN websites.technologies ELSE '[]' END) AS technology WHERE websites.business_id = businesses.id)`, nil, nil
+		}
+	}
+
+	dateColumns := map[string]string{
+		"updated_at":    "businesses.updated_at",
+		"first_seen_at": "businesses.first_seen_at",
+		"last_seen_at":  "businesses.last_seen_at",
+		"scraped_at": `(SELECT extracted_at FROM business_sources WHERE business_sources.business_id = businesses.id
+			ORDER BY extracted_at DESC, id DESC LIMIT 1)`,
+		"last_checked_at": `(SELECT last_checked_at FROM websites WHERE websites.business_id = businesses.id
+			ORDER BY last_checked_at DESC, id DESC LIMIT 1)`,
+	}
+	if column, ok := dateColumns[field]; ok {
+		return dateFilterSQL(column, field, operator, value)
+	}
+	if field == "bbox" && operator == "within" {
+		values, err := parseFilterNumbers(value, 4)
+		if err != nil || values[0] < -90 || values[2] > 90 || values[0] > values[2] || values[1] > values[3] {
+			return "", nil, fmt.Errorf("invalid bounding-box result filter")
+		}
+		return `businesses.latitude BETWEEN ? AND ? AND businesses.longitude BETWEEN ? AND ?`,
+			[]any{values[0], values[2], values[1], values[3]}, nil
+	}
+	if field == "distance" && operator == "within" {
+		values, err := parseFilterNumbers(value, 3)
+		if err != nil || values[0] < -90 || values[0] > 90 || values[1] < -180 || values[1] > 180 ||
+			values[2] <= 0 || values[2] > 1000 {
+			return "", nil, fmt.Errorf("invalid radius result filter")
+		}
+		latitude, longitude, radiusKM := values[0], values[1], values[2]
+		longitudeScale := 111.320 * math.Cos(latitude*math.Pi/180)
+		return `businesses.latitude IS NOT NULL AND businesses.longitude IS NOT NULL AND
+			(((businesses.latitude - ?) * 111.320) * ((businesses.latitude - ?) * 111.320) +
+			 ((businesses.longitude - ?) * ?) * ((businesses.longitude - ?) * ?)) <= ?`,
+			[]any{latitude, latitude, longitude, longitudeScale, longitude, longitudeScale, radiusKM * radiusKM}, nil
+	}
+	if field == "polygon" && operator == "within" {
+		return polygonFilterSQL(value)
+	}
 
 	return "", nil, fmt.Errorf("unsupported result filter %q/%q", field, operator)
+}
+
+func validResultIdentifier(value string) bool {
+	if len(value) < 5 || len(value) > 128 {
+		return false
+	}
+	for _, character := range value {
+		if unicode.IsLetter(character) || unicode.IsDigit(character) || character == '-' || character == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func resultFilterGroupSQL(group web.ResultFilterGroup, depth int, nodes *int) (string, []any, error) {
+	if depth > 4 {
+		return "", nil, fmt.Errorf("nested result filter is too deep")
+	}
+	logic := strings.ToUpper(strings.TrimSpace(group.Logic))
+	if logic == "" {
+		logic = "AND"
+	}
+	if logic != "AND" && logic != "OR" {
+		return "", nil, fmt.Errorf("nested filter logic must be AND or OR")
+	}
+	parts := make([]string, 0, len(group.Filters)+len(group.Groups))
+	args := make([]any, 0)
+	for _, filter := range group.Filters {
+		(*nodes)++
+		if *nodes > 50 {
+			return "", nil, fmt.Errorf("nested result filter has too many conditions")
+		}
+		clause, values, err := resultFilterSQL(filter)
+		if err != nil {
+			return "", nil, err
+		}
+		parts = append(parts, "("+clause+")")
+		args = append(args, values...)
+	}
+	for _, child := range group.Groups {
+		(*nodes)++
+		if *nodes > 50 {
+			return "", nil, fmt.Errorf("nested result filter has too many conditions")
+		}
+		clause, values, err := resultFilterGroupSQL(child, depth+1, nodes)
+		if err != nil {
+			return "", nil, err
+		}
+		parts = append(parts, "("+clause+")")
+		args = append(args, values...)
+	}
+	if len(parts) == 0 {
+		return "", nil, fmt.Errorf("nested result filter group is empty")
+	}
+	clause := strings.Join(parts, " "+logic+" ")
+	if group.Not {
+		clause = "NOT (" + clause + ")"
+	}
+	return clause, args, nil
+}
+
+func textFilterSQL(column, operator, value string) (string, []any, error) {
+	switch operator {
+	case "eq":
+		return column + " = ? COLLATE NOCASE", []any{value}, nil
+	case "neq":
+		return column + " <> ? COLLATE NOCASE", []any{value}, nil
+	case "contains":
+		return column + " LIKE ? ESCAPE '\\'", []any{"%" + escapeLike(value) + "%"}, nil
+	case "not_contains":
+		return column + " NOT LIKE ? ESCAPE '\\'", []any{"%" + escapeLike(value) + "%"}, nil
+	case "starts_with":
+		return column + " LIKE ? ESCAPE '\\'", []any{escapeLike(value) + "%"}, nil
+	case "ends_with":
+		return column + " LIKE ? ESCAPE '\\'", []any{"%" + escapeLike(value)}, nil
+	case "empty":
+		return "COALESCE(" + column + ", '') = ''", nil, nil
+	case "not_empty":
+		return "COALESCE(" + column + ", '') <> ''", nil, nil
+	default:
+		return "", nil, fmt.Errorf("unsupported text result operator %q", operator)
+	}
+}
+
+func numericFilterSQL(column, field, operator, value string) (string, []any, error) {
+	if operator == "empty" {
+		return column + " IS NULL", nil, nil
+	}
+	if operator == "not_empty" {
+		return column + " IS NOT NULL", nil, nil
+	}
+	if operator == "between" {
+		values, err := parseFilterNumbers(value, 2)
+		if err != nil || values[0] > values[1] {
+			return "", nil, fmt.Errorf("invalid numeric range result filter %q", field)
+		}
+		return column + " BETWEEN ? AND ?", []any{values[0], values[1]}, nil
+	}
+	number, err := strconv.ParseFloat(value, 64)
+	if err != nil || math.IsNaN(number) || math.IsInf(number, 0) {
+		return "", nil, fmt.Errorf("invalid numeric result filter %q", field)
+	}
+	symbols := map[string]string{"eq": "=", "neq": "<>", "gte": ">=", "lte": "<=", "gt": ">", "lt": "<"}
+	symbol, ok := symbols[operator]
+	if !ok {
+		return "", nil, fmt.Errorf("unsupported numeric result operator %q", operator)
+	}
+	return column + " " + symbol + " ?", []any{number}, nil
+}
+
+func dateFilterSQL(column, field, operator, value string) (string, []any, error) {
+	if operator == "empty" {
+		return column + " IS NULL", nil, nil
+	}
+	if operator == "not_empty" {
+		return column + " IS NOT NULL", nil, nil
+	}
+	if operator == "between" {
+		parts := splitFilterValues(value)
+		if len(parts) != 2 {
+			return "", nil, fmt.Errorf("invalid date range result filter %q", field)
+		}
+		start, err := parseFilterTime(parts[0], false)
+		if err != nil {
+			return "", nil, fmt.Errorf("invalid date range result filter %q", field)
+		}
+		end, err := parseFilterTime(parts[1], true)
+		if err != nil || start > end {
+			return "", nil, fmt.Errorf("invalid date range result filter %q", field)
+		}
+		return column + " BETWEEN ? AND ?", []any{start, end}, nil
+	}
+	timestamp, err := parseFilterTime(value, operator == "lte" || operator == "before")
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid date result filter %q", field)
+	}
+	symbols := map[string]string{"eq": "=", "neq": "<>", "gte": ">=", "after": ">=", "lte": "<=", "before": "<="}
+	symbol, ok := symbols[operator]
+	if !ok {
+		return "", nil, fmt.Errorf("unsupported date result operator %q", operator)
+	}
+	return column + " " + symbol + " ?", []any{timestamp}, nil
+}
+
+func parseFilterTime(value string, endOfDay bool) (int64, error) {
+	value = strings.TrimSpace(value)
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return parsed.UTC().Unix(), nil
+	}
+	parsed, err := time.Parse("2006-01-02", value)
+	if err != nil {
+		return 0, err
+	}
+	if endOfDay {
+		parsed = parsed.Add(24*time.Hour - time.Second)
+	}
+	return parsed.UTC().Unix(), nil
+}
+
+func parseFilterNumbers(value string, count int) ([]float64, error) {
+	parts := splitFilterValues(value)
+	if len(parts) != count {
+		return nil, fmt.Errorf("expected %d numeric values", count)
+	}
+	values := make([]float64, count)
+	for index, part := range parts {
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(part), 64)
+		if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) {
+			return nil, fmt.Errorf("invalid numeric value")
+		}
+		values[index] = parsed
+	}
+	return values, nil
+}
+
+func splitFilterValues(value string) []string {
+	separator := ","
+	if strings.Contains(value, "..") {
+		separator = ".."
+	}
+	parts := strings.Split(value, separator)
+	for index := range parts {
+		parts[index] = strings.TrimSpace(parts[index])
+	}
+	return parts
+}
+
+func polygonFilterSQL(value string) (string, []any, error) {
+	var geometry struct {
+		Type        string          `json:"type"`
+		Coordinates json.RawMessage `json:"coordinates"`
+	}
+	if err := json.Unmarshal([]byte(value), &geometry); err != nil || !strings.EqualFold(geometry.Type, "Polygon") {
+		return "", nil, fmt.Errorf("polygon filter must be a GeoJSON Polygon")
+	}
+	var rings [][][]float64
+	if err := json.Unmarshal(geometry.Coordinates, &rings); err != nil || len(rings) == 0 || len(rings[0]) < 4 || len(rings[0]) > 100 {
+		return "", nil, fmt.Errorf("polygon filter has invalid coordinates")
+	}
+	ring := rings[0]
+	parts := make([]string, 0, len(ring)-1)
+	args := make([]any, 0, (len(ring)-1)*6)
+	for index := 0; index < len(ring)-1; index++ {
+		left, right := ring[index], ring[index+1]
+		if len(left) < 2 || len(right) < 2 || left[0] < -180 || left[0] > 180 || right[0] < -180 || right[0] > 180 ||
+			left[1] < -90 || left[1] > 90 || right[1] < -90 || right[1] > 90 {
+			return "", nil, fmt.Errorf("polygon filter has invalid coordinates")
+		}
+		parts = append(parts, `CASE WHEN ((? > businesses.latitude) <> (? > businesses.latitude))
+			AND businesses.longitude < ((? - ?) * (businesses.latitude - ?) / NULLIF((? - ?), 0) + ?)
+			THEN 1 ELSE 0 END`)
+		args = append(args, left[1], right[1], right[0], left[0], left[1], right[1], left[1], left[0])
+	}
+	return `businesses.latitude IS NOT NULL AND businesses.longitude IS NOT NULL AND ((` +
+		strings.Join(parts, "+") + `) % 2) = 1`, args, nil
 }
 
 func resultSortSQL(value string) (string, error) {
@@ -1961,6 +2685,16 @@ func nullIntPointer(value sql.NullInt64) *int64 {
 	}
 
 	result := value.Int64
+
+	return &result
+}
+
+func nullIntegerBoolPointer(value sql.NullInt64) *bool {
+	if !value.Valid {
+		return nil
+	}
+
+	result := value.Int64 != 0
 
 	return &result
 }

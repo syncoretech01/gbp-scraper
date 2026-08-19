@@ -150,6 +150,9 @@ func savedViewURL(search ResultSearch) string {
 		values.Add("filter_operator", filter.Operator)
 		values.Add("filter_value", filter.Value)
 	}
+	if filterJSON := resultFilterGroupJSON(search.FilterGroup); filterJSON != "" {
+		values.Set("filter_json", filterJSON)
+	}
 	return "/app/results?" + values.Encode()
 }
 
@@ -198,6 +201,20 @@ func resultSearchFromForm(r *http.Request) (ResultSearch, error) {
 			Field: strings.TrimSpace(fields[index]), Operator: strings.TrimSpace(operators[index]),
 			Value: strings.TrimSpace(values[index]),
 		})
+	}
+	group, err := decodeResultFilterGroup(r.FormValue("filter_json"))
+	if err != nil {
+		return ResultSearch{}, err
+	}
+	search.FilterGroup = group
+	logic := strings.ToLower(strings.TrimSpace(r.FormValue("filter_logic")))
+	if logic != "" && logic != "and" && logic != "or" {
+		return ResultSearch{}, fmt.Errorf("saved view filter logic must be 'and' or 'or'")
+	}
+	if logic == "or" && len(search.Filters) > 0 {
+		flatGroup := ResultFilterGroup{Logic: "or", Filters: search.Filters}
+		search.FilterGroup = combineResultFilterGroups(search.FilterGroup, &flatGroup)
+		search.Filters = nil
 	}
 	if len(search.Query) > maximumResultQueryLength || len(search.JobID) > 128 || len(search.Sort) > 64 {
 		return ResultSearch{}, fmt.Errorf("saved view value is too long")

@@ -72,9 +72,10 @@
         const concurrency = Math.max(1, Number(value("concurrency", 4)));
         const browserCapacity = Math.max(1, Number(value("browser_pool_size", 2)) * Number(value("pages_per_browser", 2)));
         const effectiveConcurrency = Math.max(1, Math.min(concurrency, browserCapacity));
-        const websiteFactor = field("enrich_website") && field("enrich_website").checked ? 1.25 : 1;
-        const emailFactor = field("email") && field("email").checked ? 1.35 : 1;
-        const minutes = Math.max(3, Math.ceil((tasks * Math.max(1, depth / 5) * .7 * websiteFactor * emailFactor) / effectiveConcurrency));
+        // One control ("email") enables both the website audit and contact
+        // extraction, so a single factor covers the added network work.
+        const enrichmentFactor = field("email") && field("email").checked ? 1.7 : 1;
+        const minutes = Math.max(3, Math.ceil((tasks * Math.max(1, depth / 5) * .7 * enrichmentFactor) / effectiveConcurrency));
         return { queryCount, locationCount, cells, tasks, minutes };
     }
 
@@ -176,6 +177,40 @@
         updatePreview();
     }
 
+    async function generateLocalAIKeywords(trigger) {
+        const input = wizard.querySelector("[data-local-ai-input]");
+        const status = wizard.querySelector("[data-local-ai-status]");
+        if (!input || !input.value.trim()) {
+            if (window.GMapsApp) window.GMapsApp.toast("Describe the businesses and location first.", "error");
+            return;
+        }
+        trigger.disabled = true;
+        if (status) status.textContent = "Waiting for the local modelâ€¦";
+        try {
+            const response = await fetch("/api/v1/ai/assist", {
+                method: "POST",
+                credentials: "same-origin",
+                headers: { "Accept": "application/json", "Content-Type": "application/json", "X-CSRF-Token": value("csrf_token", "") },
+                body: JSON.stringify({ task: "keyword_variations", input: input.value.trim(), context: { existing_queries: uniqueQueries().unique } })
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error((payload.error && payload.error.message) || "Local AI request failed");
+            const result = payload.data && payload.data.result;
+            const suggestions = result && Array.isArray(result.keywords) ? result.keywords.filter((item) => typeof item === "string" && item.trim()).slice(0, 30) : [];
+            if (!suggestions.length) throw new Error("The local model returned no usable keywords");
+            const target = field("keywords");
+            target.value = [target.value.trim(), suggestions.join("\n")].filter(Boolean).join("\n");
+            updatePreview();
+            if (status) status.textContent = suggestions.length + " suggestions added; review them before launch.";
+            if (window.GMapsApp) window.GMapsApp.toast("Local keyword suggestions added.", "success");
+        } catch (error) {
+            if (status) status.textContent = error.message || "Local AI request failed.";
+            if (window.GMapsApp) window.GMapsApp.toast(error.message || "Local AI request failed.", "error");
+        } finally {
+            trigger.disabled = false;
+        }
+    }
+
     wizard.addEventListener("click", (event) => {
         const trigger = event.target.closest("[data-action]");
         if (!trigger) return;
@@ -184,9 +219,15 @@
         else if (trigger.dataset.action === "wizard-back") { event.preventDefault(); setStep(current - 1, true); }
         else if (trigger.dataset.action === "use-san-francisco-preset") { event.preventDefault(); applySanFranciscoPreset(); }
         else if (trigger.dataset.action === "preview-queries") { event.preventDefault(); updatePreview(); }
+        else if (trigger.dataset.action === "local-ai-keywords") { event.preventDefault(); generateLocalAIKeywords(trigger); }
     });
 
     wizard.addEventListener("change", (event) => {
+        if (event.target.matches("[data-saved-area-picker]")) {
+            const areaID = event.target.value;
+            if (areaID) window.location.assign("/app/scrapes/new?area_id=" + encodeURIComponent(areaID));
+            return;
+        }
         if (event.target.matches("[data-keywords-file]")) loadTextFile(event.target, "keywords");
         else if (event.target.matches("[data-locations-file]")) loadTextFile(event.target, "locations");
         else if (event.target.name === "performance_preset") applyPerformancePreset(event.target.value);

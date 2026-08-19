@@ -115,6 +115,68 @@ func TestAPIDashboardAggregatesLocalResults(t *testing.T) {
 
 }
 
+func TestJobAPIResponsesNeverExposeInlineProxyCredentials(t *testing.T) {
+	t.Parallel()
+
+	const (
+		jobID     = "55555555-5555-5555-5555-555555555555"
+		proxyURL  = "https://operator:super-secret@proxy.example:8443"
+		proxyHost = "proxy.example"
+	)
+
+	repo := &fixedJobRepository{job: Job{
+		ID: jobID, Name: "dentists", Date: time.Now().UTC(), Status: StatusPending,
+		Data: JobData{
+			Keywords: []string{"dentists"}, Lang: "en", Zoom: 12, Depth: 10,
+			MaxTime: time.Hour, Proxies: []string{proxyURL},
+		},
+	}}
+	srv, err := New(NewService(repo, t.TempDir()), ":0")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		request *http.Request
+		handler http.HandlerFunc
+	}{
+		{
+			name:    "list",
+			request: httptest.NewRequest(http.MethodGet, "/api/v1/jobs", http.NoBody),
+			handler: srv.apiGetJobs,
+		},
+		{
+			name: "detail",
+			request: func() *http.Request {
+				req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/"+jobID, http.NoBody)
+				req.SetPathValue("id", jobID)
+				return requestWithID(req)
+			}(),
+			handler: srv.apiGetJob,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			test.handler(recorder, test.request)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+			}
+			body := recorder.Body.String()
+			for _, secret := range []string{"super-secret", proxyURL, proxyHost} {
+				if strings.Contains(body, secret) {
+					t.Fatalf("job response leaked %q: %s", secret, body)
+				}
+			}
+			if !strings.Contains(body, `"proxies":[]`) {
+				t.Fatalf("job response did not expose an explicit sanitized proxy list: %s", body)
+			}
+		})
+	}
+}
+
 type fixedJobRepository struct {
 	job Job
 }

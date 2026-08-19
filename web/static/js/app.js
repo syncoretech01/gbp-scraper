@@ -6,6 +6,10 @@
     const palette = document.getElementById("command-palette");
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
+    function motionIsReduced() {
+        return reducedMotion.matches || root.dataset.reducedMotion === "true";
+    }
+
     function safeStorageGet(key) {
         try { return window.localStorage.getItem(key); } catch (_) { return null; }
     }
@@ -52,7 +56,7 @@
         item.className = "toast" + (level ? " notice-" + level : "");
         item.textContent = message;
         region.appendChild(item);
-        window.setTimeout(() => item.remove(), reducedMotion.matches ? 1000 : 5000);
+        window.setTimeout(() => item.remove(), motionIsReduced() ? 1000 : 5000);
     }
 
     function openPalette() {
@@ -184,6 +188,29 @@
         });
     }
 
+    function applyDisplayFormatting() {
+        const locale = root.lang || "en";
+        const dateMode = root.dataset.dateTimeFormat || "local";
+        document.querySelectorAll("time[datetime]").forEach((element) => {
+            const date = new Date(element.dateTime);
+            if (Number.isNaN(date.getTime())) return;
+            if (dateMode === "iso") element.textContent = date.toISOString();
+            else {
+                const formatLocale = dateMode === "us" ? "en-US" : dateMode === "eu" ? "en-GB" : locale;
+                try { element.textContent = new Intl.DateTimeFormat(formatLocale, { dateStyle: "medium", timeStyle: "short" }).format(date); }
+                catch (_) { element.textContent = date.toLocaleString(); }
+            }
+        });
+        if (root.dataset.numberFormat !== "plain") {
+            document.querySelectorAll("[data-number]").forEach((element) => {
+                const value = Number(element.dataset.number);
+                if (!Number.isFinite(value)) return;
+                try { element.textContent = new Intl.NumberFormat(locale).format(value); }
+                catch (_) { element.textContent = String(value); }
+            });
+        }
+    }
+
     document.addEventListener("click", (event) => {
         const trigger = event.target.closest("[data-action]");
         if (!trigger) return;
@@ -212,6 +239,11 @@
             if (shell) shell.dataset.mobileNav = "closed";
             return;
         }
+		if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "e") {
+			event.preventDefault();
+			window.location.assign("/app/exports");
+			return;
+		}
         if (typing || event.ctrlKey || event.metaKey || event.altKey) return;
         if (event.key === "/") { event.preventDefault(); const search = document.getElementById("global-search"); if (search) search.focus(); }
         else if (event.key.toLowerCase() === "n") window.location.assign("/app/scrapes/new");
@@ -224,9 +256,12 @@
     });
 
     applyTheme(safeStorageGet("gmaps-theme") || root.dataset.theme || "system");
-    if (shell && safeStorageGet("gmaps-sidebar") === "collapsed" && !window.matchMedia("(max-width: 56rem)").matches) shell.dataset.sidebar = "collapsed";
+    const savedSidebar = safeStorageGet("gmaps-sidebar");
+    const defaultSidebar = root.dataset.sidebarDefault === "collapsed" ? "collapsed" : "expanded";
+    if (shell && (savedSidebar || defaultSidebar) === "collapsed" && !window.matchMedia("(max-width: 56rem)").matches) shell.dataset.sidebar = "collapsed";
     setupGlobalSearch();
     setupCommandFilter();
+    applyDisplayFormatting();
     document.querySelectorAll("[data-flash]").forEach((item) => toast(item.dataset.flash, item.classList.contains("notice-error") ? "error" : "success"));
 
     window.GMapsApp = { toast, openDialog, closeDialog };

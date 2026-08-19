@@ -26,10 +26,13 @@ import (
 var static embed.FS
 
 type Server struct {
-	tmpl      map[string]*template.Template
-	srv       *http.Server
-	svc       *Service
-	csrfToken string
+	tmpl         map[string]*template.Template
+	srv          *http.Server
+	svc          *Service
+	csrfToken    string
+	systemProbe  localSystemProbe
+	apiRates     apiRateState
+	apiRateLimit apiAtomicInt64
 }
 
 func New(svc *Service, addr string) (*Server, error) {
@@ -43,9 +46,10 @@ func New(svc *Service, addr string) (*Server, error) {
 	}
 
 	ans := Server{
-		svc:       svc,
-		tmpl:      make(map[string]*template.Template),
-		csrfToken: csrfToken,
+		svc:         svc,
+		tmpl:        make(map[string]*template.Template),
+		csrfToken:   csrfToken,
+		systemProbe: newDefaultLocalSystemProbe(),
 		srv: &http.Server{
 			Addr:              addr,
 			ReadHeaderTimeout: 10 * time.Second,
@@ -57,6 +61,7 @@ func New(svc *Service, addr string) (*Server, error) {
 			MaxHeaderBytes: 1 << 20,
 		},
 	}
+	ans.initializeAPIAccessSettings()
 
 	staticFS, err := fs.Sub(static, "static")
 	if err != nil {
@@ -178,16 +183,29 @@ func New(svc *Service, addr string) (*Server, error) {
 		ans.jobLogsDownload(w, r)
 	})
 	ans.registerLifecycleRoutes(mux)
+	ans.registerCheckpointRoutes(mux)
 	ans.registerResultRoutes(mux)
+	ans.registerEnrichmentRoutes(mux)
+	ans.registerMapRoutes(mux)
+	ans.registerQualityRoutes(mux)
+	ans.registerExportRoutes(mux)
+	ans.registerIntegrationRoutes(mux)
+	ans.registerAPIAccessRoutes(mux)
+	ans.registerGlobalSearchRoutes(mux)
+	ans.registerLocalAIRoutes(mux)
 	mux.HandleFunc("GET /api/v1/system/health", ans.apiSystemHealth)
+	mux.HandleFunc("GET /api/v1/system/metrics", ans.apiSystemMetrics)
+	mux.HandleFunc("POST /api/v1/system/self-test", ans.apiSystemSelfTest)
 	mux.HandleFunc("POST /api/v1/system/integrity", ans.apiSystemIntegrity)
 	mux.HandleFunc("POST /api/v1/system/vacuum", ans.apiSystemVacuum)
 	mux.HandleFunc("POST /api/v1/system/backups", ans.apiSystemBackup)
 	mux.HandleFunc("GET /api/v1/system/backups/{id}/download", ans.downloadSystemBackup)
+	mux.HandleFunc("POST /api/v1/system/cache/clear", ans.apiSystemClearCache)
+	mux.HandleFunc("POST /api/v1/system/artifacts/cleanup", ans.apiSystemCleanArtifacts)
+	mux.HandleFunc("POST /api/v1/system/jobs/stop-all", ans.apiSystemStopAll)
+	mux.HandleFunc("GET /api/v1/system/diagnostics/download", ans.downloadSystemDiagnostics)
+	mux.HandleFunc("GET /api/v1/system/update-info", ans.apiSystemUpdateInfo)
 	mux.HandleFunc("POST /api/v1/settings", ans.saveSettings)
-	mux.HandleFunc("POST /api/v1/exports", ans.createResultsExport)
-	mux.HandleFunc("GET /api/v1/exports/{id}/download", ans.downloadExport)
-	mux.HandleFunc("POST /api/v1/exports/{id}/delete", ans.deleteExport)
 	mux.HandleFunc("POST /api/v1/saved-views", ans.saveResultView)
 	mux.HandleFunc("POST /api/v1/saved-views/{id}/delete", ans.deleteSavedResultView)
 	mux.HandleFunc("POST /api/v1/templates/import", ans.importScrapeTemplate)
@@ -201,12 +219,13 @@ func New(svc *Service, addr string) (*Server, error) {
 	mux.HandleFunc("POST /api/v1/schedules/{id}/delete", ans.deleteSchedule)
 	mux.HandleFunc("POST /api/v1/proxy-pools/import", ans.importProxyPool)
 	mux.HandleFunc("POST /api/v1/proxy-pools/{id}/delete", ans.deleteProxyPool)
+	ans.registerProxyTestRoutes(mux)
 	mux.HandleFunc("POST /api/v1/proxies/{id}/test", ans.testProxy)
 	mux.HandleFunc("POST /api/v1/proxies/{id}/{action}", ans.mutateProxy)
 	mux.HandleFunc("POST /api/v1/onboarding/complete", ans.completeOnboarding)
 	mux.HandleFunc("POST /api/v1/onboarding/self-test", ans.runOnboardingSelfTest)
 
-	handler := securityHeaders(mux)
+	handler := securityHeaders(ans.apiAccessMiddleware(ans.browserCSRFProtection(mux)))
 	ans.srv.Handler = handler
 
 	tmplsKeys := []string{
@@ -658,7 +677,7 @@ func (s *Server) apiGetJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	renderJSON(w, http.StatusOK, jobs)
+	renderJSON(w, http.StatusOK, sanitizedJobsForAPI(jobs))
 }
 
 func (s *Server) apiGetJob(w http.ResponseWriter, r *http.Request) {
@@ -686,7 +705,7 @@ func (s *Server) apiGetJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	renderJSON(w, http.StatusOK, job)
+	renderJSON(w, http.StatusOK, sanitizedJobForAPI(job))
 }
 
 // viewJob renders the map modal fragment for a job, embedding the job's places
@@ -782,7 +801,7 @@ func securityHeaders(next http.Handler) http.Handler {
 			r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
 		}
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-Frame-Options", frameOptionsForPath(r.URL.Path))
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
 		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
@@ -793,6 +812,25 @@ func securityHeaders(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// browserCSRFProtection applies one policy to every versioned API mutation:
+// requests carrying a browser Origin must prove that they came from a page
+// rendered by this process. Local command-line clients historically omit
+// Origin, so their loopback API behavior remains compatible.
+func (s *Server) browserCSRFProtection(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/v1/") && isMutationMethod(r.Method) &&
+			r.Header.Get("Origin") != "" && !s.requireCSRF(w, r) {
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isMutationMethod(method string) bool {
+	return method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions
 }
 
 func localContentSecurityPolicy(path string) string {
@@ -810,5 +848,31 @@ func localContentSecurityPolicy(path string) string {
 
 	return "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
 		"img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; " +
-		"base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+		"base-uri 'self'; frame-ancestors " + frameAncestorsForPath(path) + "; form-action 'self'"
+}
+
+// framableLocalPaths are the only local application pages another page of this
+// same application embeds. The Results split view frames Map Explorer so the
+// table and the map share one filter set.
+func framableLocalPath(path string) bool {
+	return path == "/app/map"
+}
+
+// frameOptionsForPath keeps clickjacking protection at DENY everywhere except
+// the pages this application frames itself, which allow same-origin embedding
+// only. Cross-origin framing stays blocked in both cases.
+func frameOptionsForPath(path string) string {
+	if framableLocalPath(path) {
+		return "SAMEORIGIN"
+	}
+
+	return "DENY"
+}
+
+func frameAncestorsForPath(path string) string {
+	if framableLocalPath(path) {
+		return "'self'"
+	}
+
+	return "'none'"
 }

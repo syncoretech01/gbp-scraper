@@ -27,6 +27,17 @@ func New(path string) (web.JobRepository, error) {
 	return &repo{db: db, path: path}, nil
 }
 
+// Close releases the underlying database handle. The long-running application
+// keeps one repository for the process lifetime, but tests and tools that open a
+// temporary database need a way to release the file.
+func (repo *repo) Close() error {
+	if repo == nil || repo.db == nil {
+		return nil
+	}
+
+	return repo.db.Close()
+}
+
 func (repo *repo) Get(ctx context.Context, id string) (web.Job, error) {
 	const q = `SELECT id, name, status, data, created_at, updated_at FROM jobs WHERE id = ?`
 

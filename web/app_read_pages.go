@@ -124,8 +124,10 @@ type jobMonitorJob struct {
 	Concurrency          int
 	CPUPercent           string
 	Memory               string
+	DiskFree             string
 	Browsers             string
 	Pages                string
+	WorkerConcurrency    string
 	DatabaseWrites       string
 	ProxySuccessRate     string
 	BlockRate            string
@@ -184,6 +186,8 @@ type jobLogView struct {
 type mapPageData struct {
 	Mode            string
 	AreaID          string
+	AreaName        string
+	AreaGeoJSON     string
 	GeometryType    string
 	Place           string
 	Latitude        string
@@ -193,6 +197,7 @@ type mapPageData struct {
 	Query           string
 	SelectedJobID   string
 	Jobs            []mapJobOption
+	Areas           []mapAreaOption
 	KeywordGroups   []namedAppOption
 	Estimate        mapEstimateView
 	Cells           []mapCellView
@@ -203,6 +208,12 @@ type mapPageData struct {
 	CanSaveArea     bool
 	CanUseArea      bool
 	CanMutateCells  bool
+}
+
+type mapAreaOption struct {
+	ID       string
+	Name     string
+	Selected bool
 }
 
 type mapJobOption struct {
@@ -524,6 +535,51 @@ func (s *Server) buildJobMonitorPage(r *http.Request, id string) (jobMonitorPage
 		page.Logs = logs
 	}
 
+	if execution, executionErr := s.svc.GetJobExecution(r.Context(), job.ID); executionErr == nil {
+		page.Job.TasksTotal = execution.Tasks.Total
+		page.Job.TasksComplete = execution.Tasks.Completed
+		page.Job.TasksFailed = execution.Tasks.Failed
+		page.Job.TasksRemaining = execution.Tasks.Remaining()
+		if execution.Progress.CurrentQuery != "" {
+			page.Job.CurrentKeyword = execution.Progress.CurrentQuery
+			page.Job.CurrentTask = execution.Progress.CurrentQuery
+		}
+		if execution.Progress.CurrentCell != "" {
+			page.Job.CurrentCell = execution.Progress.CurrentCell
+		}
+		page.Job.WebsiteQueue = strconv.FormatInt(execution.Progress.WebsiteQueue, 10)
+		page.Job.PlacesPerMinute = strconv.FormatFloat(execution.Progress.PlacesPerMinute, 'f', 1, 64)
+		if execution.Progress.ETASeconds != nil {
+			page.Job.ETA = humanDuration(time.Duration(*execution.Progress.ETASeconds) * time.Second)
+		}
+		page.HasResources = execution.Progress.CurrentQuery != "" || execution.Progress.DiskFreeBytes > 0 ||
+			execution.Progress.MemoryBytes > 0 || execution.Progress.CPUPercent > 0
+		if page.HasResources {
+			page.Job.CPUPercent = strconv.FormatFloat(execution.Progress.CPUPercent, 'f', 1, 64)
+			page.Job.Memory = humanBytes(int64(min(execution.Progress.MemoryBytes, uint64(math.MaxInt64))))
+			page.Job.DiskFree = humanBytes(int64(min(execution.Progress.DiskFreeBytes, uint64(math.MaxInt64))))
+			page.Job.Browsers = strconv.FormatInt(execution.Progress.BrowserCount, 10)
+			page.Job.Pages = strconv.FormatInt(execution.Progress.ActivePages, 10)
+			page.Job.DatabaseWrites = strconv.FormatInt(execution.Progress.DatabaseWrites, 10)
+			page.Job.WorkerConcurrency = fmt.Sprintf(
+				"%d effective / %d requested",
+				execution.Progress.EffectiveWorkers,
+				execution.Progress.DesiredWorkers,
+			)
+		}
+		if execution.Checkpoint != nil {
+			page.Checkpoint = jobCheckpointView{
+				Available: true, CreatedAt: formatDate(execution.Checkpoint.CreatedAt),
+				CompletedTasks: execution.Tasks.Completed, RemainingTasks: execution.Tasks.Remaining(),
+				Version: fmt.Sprintf("checkpoint %d / %s", execution.Checkpoint.ID, execution.Checkpoint.TaskKey),
+			}
+			page.Job.LastCheckpoint = formatDate(execution.Checkpoint.CreatedAt)
+			page.Job.CanRestartCheckpoint = lifecycleAvailable && canApplyControl(runtime, jobruntime.ControlRestart)
+		}
+	} else if !errors.Is(executionErr, ErrCheckpointUnsupported) && !errors.Is(executionErr, ErrLifecycleNotFound) {
+		return jobMonitorPageData{}, executionErr
+	}
+
 	return page, nil
 }
 
@@ -595,6 +651,7 @@ func (s *Server) mapPage(w http.ResponseWriter, r *http.Request) {
 func (s *Server) buildMapPage(r *http.Request) (mapPageData, appActivity, error) {
 	page := mapPageData{
 		Mode:          mapMode(firstNonEmpty(r.URL.Query().Get("mode"), r.URL.Query().Get("source"))),
+		AreaID:        strings.TrimSpace(r.URL.Query().Get("area_id")),
 		GeometryType:  mapGeometry(r.URL.Query().Get("geometry_type")),
 		Place:         queryDefault(r, "place", "San Francisco, CA"),
 		Latitude:      queryDefault(r, "latitude", "37.7749"),
@@ -613,6 +670,44 @@ func (s *Server) buildMapPage(r *http.Request) (mapPageData, appActivity, error)
 
 	if s.svc == nil || s.svc.repo == nil {
 		return page, appActivity{}, nil
+	}
+
+	var geometry MapGeometry
+	if _, ok := s.svc.repo.(MapRepository); ok {
+		page.CanSaveArea = true
+		areas, listErr := s.svc.ListSavedAreas(r.Context(), maximumSavedAreaList)
+		if listErr != nil {
+			return mapPageData{}, appActivity{}, listErr
+		}
+		sort.SliceStable(areas, func(left, right int) bool {
+			return strings.ToLower(areas[left].Name) < strings.ToLower(areas[right].Name)
+		})
+		for _, area := range areas {
+			page.Areas = append(page.Areas, mapAreaOption{
+				ID: area.ID, Name: area.Name, Selected: area.ID == page.AreaID,
+			})
+		}
+		if page.AreaID != "" {
+			area, getErr := s.svc.GetSavedArea(r.Context(), page.AreaID)
+			if getErr != nil {
+				return mapPageData{}, appActivity{}, getErr
+			}
+			geometry, getErr = ParseMapGeometry(area.GeoJSON)
+			if getErr != nil {
+				return mapPageData{}, appActivity{}, getErr
+			}
+			page.AreaName = area.Name
+			page.CanExportArea = true
+			page.CanUseArea = true
+		}
+	}
+	if templates, templateErr := s.svc.ListScrapeTemplates(r.Context(), ""); templateErr == nil {
+		for _, template := range templates {
+			if len(template.Configuration.Keywords) == 0 {
+				continue
+			}
+			page.KeywordGroups = append(page.KeywordGroups, namedAppOption{ID: template.ID, Name: template.Name})
+		}
 	}
 
 	jobs, err := s.svc.All(r.Context())
@@ -653,30 +748,107 @@ func (s *Server) buildMapPage(r *http.Request) (mapPageData, appActivity, error)
 		return mapPageData{}, appActivity{}, ErrNotFound
 	}
 
-	if selected != nil {
+	if selected != nil && page.AreaID == "" {
 		applyJobMapDefaults(r, &page, *selected)
 	}
 
-	bbox, cells, err := mapGrid(page, selected)
+	if !geometry.Valid() {
+		var geometryErr error
+		geometry, geometryErr = mapGeometryForPage(page, selected)
+		if geometryErr != nil {
+			return mapPageData{}, appActivity{}, geometryErr
+		}
+	} else {
+		applyMapGeometryDefaults(r, &page, geometry)
+	}
+	page.GeometryType = geometry.Kind()
+	page.AreaGeoJSON = string(geometry.GeoJSON())
+	page.CanMutateCells = true
+
+	cellSizeKM, validCellSize := parseMapFloat(page.GridCellKM, minimumMapCellKM, maximumMapCellKM)
+	if !validCellSize {
+		return mapPageData{}, appActivity{}, fmt.Errorf("invalid map grid size")
+	}
+	preview, err := PreviewMapGrid(geometry, cellSizeKM, appMaximumMapCells)
 	if err != nil {
 		return mapPageData{}, appActivity{}, err
 	}
-	page.Cells = renderMapCells(bbox, cells)
-	page.Estimate.Cells = strconv.Itoa(len(cells))
+	page.Estimate.Cells = strconv.Itoa(len(preview.Cells))
 
 	if selected != nil {
 		queryCount := len(selected.Data.Keywords)
 		page.Estimate.Queries = strconv.Itoa(queryCount)
-		page.Estimate.Tasks = strconv.Itoa(queryCount * len(cells))
+		page.Estimate.Tasks = strconv.Itoa(queryCount * len(preview.Cells))
 	}
-
-	places, err := s.mapPlaces(r.Context(), jobs, page.SelectedJobID, page.Query)
-	if err != nil {
-		return mapPageData{}, appActivity{}, err
-	}
-	page.Markers = renderMapMarkers(places, bbox)
 
 	return page, activity, nil
+}
+
+func mapGeometryForPage(page mapPageData, selected *Job) (MapGeometry, error) {
+	if selected != nil && strings.TrimSpace(selected.Data.AreaGeoJSON) != "" {
+		return ParseMapGeometry([]byte(selected.Data.AreaGeoJSON))
+	}
+	if selected != nil && strings.TrimSpace(selected.Data.GridBBox) != "" {
+		bounds, err := grid.ParseBoundingBox(selected.Data.GridBBox)
+		if err != nil {
+			return MapGeometry{}, err
+		}
+		return mapBBoxGeometry(MapBounds{
+			MinLatitude: bounds.MinLat, MinLongitude: bounds.MinLon,
+			MaxLatitude: bounds.MaxLat, MaxLongitude: bounds.MaxLon,
+		})
+	}
+
+	latitude, validLatitude := parseMapFloat(page.Latitude, -90, 90)
+	longitude, validLongitude := parseMapFloat(page.Longitude, -180, 180)
+	radiusKM, validRadius := parseMapFloat(page.RadiusKM, minimumCircleRadiusM/1000, maximumCircleRadiusM/1000)
+	if !validLatitude || !validLongitude || !validRadius {
+		return MapGeometry{}, fmt.Errorf("invalid map coordinates or radius")
+	}
+	payload, err := json.Marshal(map[string]any{
+		"type":       "Feature",
+		"properties": map[string]any{"shape": "circle", "radius_m": radiusKM * 1000},
+		"geometry":   map[string]any{"type": "Point", "coordinates": []float64{longitude, latitude}},
+	})
+	if err != nil {
+		return MapGeometry{}, err
+	}
+
+	return ParseMapGeometry(payload)
+}
+
+func mapBBoxGeometry(bounds MapBounds) (MapGeometry, error) {
+	payload, err := json.Marshal(map[string]any{
+		"type": "Feature",
+		"properties": map[string]any{
+			"shape": "bbox",
+			"bbox":  []float64{bounds.MinLongitude, bounds.MinLatitude, bounds.MaxLongitude, bounds.MaxLatitude},
+		},
+		"geometry": nil,
+	})
+	if err != nil {
+		return MapGeometry{}, err
+	}
+
+	return ParseMapGeometry(payload)
+}
+
+func applyMapGeometryDefaults(r *http.Request, page *mapPageData, geometry MapGeometry) {
+	centre := mapGeometryRepresentativePoint(geometry)
+	if _, present := r.URL.Query()["latitude"]; !present {
+		page.Latitude = strconv.FormatFloat(centre.Latitude, 'f', -1, 64)
+	}
+	if _, present := r.URL.Query()["longitude"]; !present {
+		page.Longitude = strconv.FormatFloat(centre.Longitude, 'f', -1, 64)
+	}
+	if geometry.circle != nil {
+		if _, present := r.URL.Query()["radius_km"]; !present {
+			page.RadiusKM = strconv.FormatFloat(geometry.circle.RadiusM/1000, 'f', -1, 64)
+		}
+	}
+	if page.AreaName != "" && r.URL.Query().Get("place") == "" {
+		page.Place = page.AreaName
+	}
 }
 
 func (s *Server) runtimeForJob(ctx context.Context, job Job) (JobRuntime, error) {

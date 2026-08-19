@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gosom/google-maps-scraper/grid"
@@ -64,25 +65,39 @@ func (j *Job) Validate() error {
 }
 
 type JobData struct {
-	Keywords      []string      `json:"keywords"`
-	Lang          string        `json:"lang"`
-	Zoom          int           `json:"zoom"`
-	Lat           string        `json:"lat"`
-	Lon           string        `json:"lon"`
-	LocationLabel string        `json:"location_label,omitempty"`
-	FastMode      bool          `json:"fast_mode"`
-	Radius        int           `json:"radius"`
-	Depth         int           `json:"depth"`
-	Email         bool          `json:"email"`
-	ExtraReviews  bool          `json:"extra_reviews"`
-	MaxTime       time.Duration `json:"max_time"`
-	Concurrency   int           `json:"concurrency,omitempty"`
-	BrowserPool   int           `json:"browser_pool_size,omitempty"`
-	PagesBrowser  int           `json:"pages_per_browser,omitempty"`
-	ProxyPoolID   string        `json:"proxy_pool_id,omitempty"`
-	Proxies       []string      `json:"proxies"`
-	GridBBox      string        `json:"grid_bbox,omitempty"`
-	GridCellKM    float64       `json:"grid_cell_km,omitempty"`
+	Keywords        []string              `json:"keywords"`
+	Lang            string                `json:"lang"`
+	Zoom            int                   `json:"zoom"`
+	Lat             string                `json:"lat"`
+	Lon             string                `json:"lon"`
+	LocationLabel   string                `json:"location_label,omitempty"`
+	FastMode        bool                  `json:"fast_mode"`
+	Radius          int                   `json:"radius"`
+	Depth           int                   `json:"depth"`
+	Email           bool                  `json:"email"`
+	Enrichment      *JobEnrichmentOptions `json:"enrichment,omitempty"`
+	ExtraReviews    bool                  `json:"extra_reviews"`
+	MaxTime         time.Duration         `json:"max_time"`
+	Concurrency     int                   `json:"concurrency,omitempty"`
+	BrowserPool     int                   `json:"browser_pool_size,omitempty"`
+	PagesBrowser    int                   `json:"pages_per_browser,omitempty"`
+	MaxRecords      int                   `json:"max_records,omitempty"`
+	RetryCount      int                   `json:"retry_count,omitempty"`
+	RetryDelay      time.Duration         `json:"retry_delay,omitempty"`
+	RetryConfigured bool                  `json:"retry_configured,omitempty"`
+	PageTimeout     time.Duration         `json:"page_timeout,omitempty"`
+	RandomDelayMin  time.Duration         `json:"random_delay_min,omitempty"`
+	RandomDelayMax  time.Duration         `json:"random_delay_max,omitempty"`
+	Headfull        bool                  `json:"headfull,omitempty"`
+	LoadImages      bool                  `json:"load_images,omitempty"`
+	Adaptive        bool                  `json:"adaptive_performance,omitempty"`
+	LowDiskBytes    uint64                `json:"low_disk_bytes,omitempty"`
+	ProxyPoolID     string                `json:"proxy_pool_id,omitempty"`
+	Proxies         []string              `json:"proxies"`
+	SavedAreaID     string                `json:"saved_area_id,omitempty"`
+	AreaGeoJSON     string                `json:"area_geojson,omitempty"`
+	GridBBox        string                `json:"grid_bbox,omitempty"`
+	GridCellKM      float64               `json:"grid_cell_km,omitempty"`
 }
 
 func (d *JobData) Validate() error {
@@ -116,6 +131,51 @@ func (d *JobData) Validate() error {
 
 	if d.PagesBrowser < 0 || d.PagesBrowser > 16 {
 		return errors.New("pages per browser must be between 1 and 16 when set")
+	}
+	if d.MaxRecords < 0 || d.MaxRecords > 10_000_000 {
+		return errors.New("maximum records must be between 1 and 10000000 when set")
+	}
+	if d.RetryCount < 0 || d.RetryCount > 20 {
+		return errors.New("retry count must be between 0 and 20")
+	}
+	if d.RetryDelay < 0 || d.RetryDelay > 5*time.Minute {
+		return errors.New("retry delay must be between 0 and 5m")
+	}
+	if d.PageTimeout < 0 || d.PageTimeout > 5*time.Minute || (d.PageTimeout > 0 && d.PageTimeout < time.Second) {
+		return errors.New("page timeout must be between 1s and 5m when set")
+	}
+	if d.RandomDelayMin < 0 || d.RandomDelayMax < 0 || d.RandomDelayMin > time.Minute || d.RandomDelayMax > time.Minute ||
+		d.RandomDelayMax < d.RandomDelayMin {
+		return errors.New("random delay must be an ordered range between 0 and 1m")
+	}
+	if d.LowDiskBytes > 1<<40 {
+		return errors.New("low disk threshold must be at most 1 TiB")
+	}
+	if d.Enrichment != nil {
+		if err := d.Enrichment.Validate(); err != nil {
+			return err
+		}
+	}
+	if d.SavedAreaID != "" && !validMapEntityID(d.SavedAreaID) {
+		return errors.New("saved area ID is invalid")
+	}
+	if d.SavedAreaID != "" && strings.TrimSpace(d.AreaGeoJSON) == "" {
+		return errors.New("saved area snapshot is required")
+	}
+	if strings.TrimSpace(d.AreaGeoJSON) != "" {
+		geometry, err := ParseMapGeometry([]byte(d.AreaGeoJSON))
+		if err != nil {
+			return fmt.Errorf("invalid saved area snapshot: %w", err)
+		}
+		if d.FastMode && geometry.Kind() != "circle" {
+			return errors.New("fast mode supports saved circles only; use grid mode for polygons")
+		}
+		// A saved area is expanded into grid cells by the checkpoint runner, so it
+		// needs the same cell size that an explicit bounding box requires. Without
+		// this the job validates and then fails at seed-generation time.
+		if !d.FastMode && d.GridCellKM <= 0 {
+			return errors.New("grid cell size must be greater than 0 for a saved area")
+		}
 	}
 
 	if d.Zoom < 1 || d.Zoom > 21 {

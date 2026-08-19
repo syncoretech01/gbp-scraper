@@ -1,5 +1,7 @@
 cache/
 vendor
+!web/static/vendor/
+!web/static/vendor/**
 bin
 webdata/
 examples/examples-api/map-outputs

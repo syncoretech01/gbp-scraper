@@ -141,6 +141,47 @@ func parseWizardJob(r *http.Request) (Job, jobruntime.State, error) {
 	if err != nil {
 		return Job{}, "", err
 	}
+	maxRecords, err := optionalFormInt(r, "max_records")
+	if err != nil {
+		return Job{}, "", err
+	}
+	retryCount, err := optionalFormInt(r, "retry_count")
+	if err != nil {
+		return Job{}, "", err
+	}
+	retryDelay, err := optionalFormDuration(r, "retry_delay")
+	if err != nil {
+		return Job{}, "", err
+	}
+	pageTimeout, err := optionalFormDuration(r, "page_timeout")
+	if err != nil {
+		return Job{}, "", err
+	}
+	randomDelayMin, err := optionalFormDuration(r, "random_delay_min")
+	if err != nil {
+		return Job{}, "", err
+	}
+	randomDelayMax, err := optionalFormDuration(r, "random_delay_max")
+	if err != nil {
+		return Job{}, "", err
+	}
+	lowDiskMB, err := optionalFormInt(r, "low_disk_mb")
+	if err != nil {
+		return Job{}, "", err
+	}
+	enrichmentMaxPages, err := optionalFormInt(r, "enrichment_max_pages")
+	if err != nil {
+		return Job{}, "", err
+	}
+	enrichmentTimeout, err := optionalFormInt(r, "enrichment_timeout_seconds")
+	if err != nil {
+		return Job{}, "", err
+	}
+	enrichmentInternalLinksValue := strings.TrimSpace(r.FormValue("enrichment_internal_links"))
+	enrichmentInternalLinks, err := optionalFormInt(r, "enrichment_internal_links")
+	if err != nil {
+		return Job{}, "", err
+	}
 
 	maxTime, err := time.ParseDuration(strings.TrimSpace(r.FormValue("maxtime")))
 	if err != nil || maxTime < 3*time.Minute {
@@ -151,6 +192,7 @@ func parseWizardJob(r *http.Request) (Job, jobruntime.State, error) {
 	longitude := strings.TrimSpace(r.FormValue("longitude"))
 	fastMode := r.FormValue("fastmode") == "on"
 
+	websiteEnrichment := r.FormValue("email") == "on"
 	data := JobData{
 		Keywords:      keywords,
 		Lang:          strings.ToLower(strings.TrimSpace(r.FormValue("lang"))),
@@ -161,19 +203,83 @@ func parseWizardJob(r *http.Request) (Job, jobruntime.State, error) {
 		FastMode:      fastMode,
 		Radius:        radius,
 		Depth:         depth,
-		Email:         r.FormValue("email") == "on",
+		Email:         websiteEnrichment,
 		ExtraReviews:  r.FormValue("extra_reviews") == "on",
 		MaxTime:       maxTime,
 		Concurrency:   concurrency,
 		BrowserPool:   browserPool,
 		PagesBrowser:  pagesBrowser,
-		ProxyPoolID:   strings.TrimSpace(r.FormValue("proxy_pool_id")),
+		MaxRecords:    maxRecords,
+		RetryCount:    retryCount,
+		RetryDelay:    retryDelay,
+		RetryConfigured: strings.TrimSpace(r.FormValue("retry_count")) != "" ||
+			strings.TrimSpace(r.FormValue("retry_delay")) != "",
+		PageTimeout:    pageTimeout,
+		RandomDelayMin: randomDelayMin,
+		RandomDelayMax: randomDelayMax,
+		Headfull:       r.FormValue("headfull") == "on",
+		LoadImages:     r.FormValue("load_images") == "on",
+		Adaptive:       r.FormValue("adaptive_performance") == "on",
+		LowDiskBytes:   uint64(max(0, lowDiskMB)) * 1024 * 1024,
+		ProxyPoolID:    strings.TrimSpace(r.FormValue("proxy_pool_id")),
+		SavedAreaID:    strings.TrimSpace(r.FormValue("saved_area_id")),
+	}
+	if websiteEnrichment {
+		if enrichmentMaxPages == 0 {
+			enrichmentMaxPages = 3
+		}
+		if enrichmentTimeout == 0 {
+			enrichmentTimeout = 10
+		}
+		if enrichmentInternalLinksValue == "" {
+			enrichmentInternalLinks = 10
+		}
+		data.Enrichment = &JobEnrichmentOptions{
+			Website:               true,
+			Emails:                true,
+			SocialProfiles:        true,
+			Scope:                 strings.TrimSpace(r.FormValue("enrichment_scope")),
+			MaxPages:              enrichmentMaxPages,
+			TimeoutSeconds:        enrichmentTimeout,
+			MaxInternalLinkChecks: enrichmentInternalLinks,
+			DisableInternalChecks: enrichmentInternalLinks == 0,
+			CheckMX:               r.FormValue("enrichment_check_mx") == "on",
+		}
 	}
 	if data.Lang == "" {
 		data.Lang = "en"
 	}
 
-	if !fastMode {
+	areaSnapshot := strings.TrimSpace(r.FormValue("area_geojson"))
+	if data.SavedAreaID != "" && areaSnapshot == "" {
+		return Job{}, "", fmt.Errorf("saved area snapshot is required")
+	}
+	if areaSnapshot != "" {
+		geometry, geometryErr := ParseMapGeometry([]byte(areaSnapshot))
+		if geometryErr != nil {
+			return Job{}, "", fmt.Errorf("invalid saved area: %w", geometryErr)
+		}
+		if fastMode && geometry.Kind() != "circle" {
+			return Job{}, "", fmt.Errorf("fast mode supports saved circles only; use grid mode for polygons")
+		}
+		centre := geometry.Centre()
+		data.Lat = strconv.FormatFloat(centre.Latitude, 'f', 8, 64)
+		data.Lon = strconv.FormatFloat(centre.Longitude, 'f', 8, 64)
+		data.AreaGeoJSON = string(geometry.GeoJSON())
+		if radiusMetres, ok := geometry.CircleRadiusMetres(); ok {
+			data.Radius = max(1, int(math.Ceil(radiusMetres)))
+		}
+		if !fastMode {
+			bounds := geometry.Bounds()
+			data.GridBBox = fmt.Sprintf("%.8f,%.8f,%.8f,%.8f",
+				bounds.MinLatitude, bounds.MinLongitude, bounds.MaxLatitude, bounds.MaxLongitude)
+			cellKM, parseErr := strconv.ParseFloat(strings.TrimSpace(r.FormValue("grid_cell_km")), 64)
+			if parseErr != nil || cellKM <= 0 {
+				return Job{}, "", fmt.Errorf("grid cell size must be greater than 0")
+			}
+			data.GridCellKM = cellKM
+		}
+	} else if !fastMode {
 		lat, latErr := strconv.ParseFloat(latitude, 64)
 		lon, lonErr := strconv.ParseFloat(longitude, 64)
 		if latErr != nil || lonErr != nil || lat < -90 || lat > 90 || lon < -180 || lon > 180 {
@@ -326,6 +432,18 @@ func optionalFormInt(r *http.Request, name string) (int, error) {
 	}
 
 	return parsed, nil
+}
+
+func optionalFormDuration(r *http.Request, name string) (time.Duration, error) {
+	value := strings.TrimSpace(r.FormValue(name))
+	if value == "" {
+		return 0, nil
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a duration", strings.ReplaceAll(name, "_", " "))
+	}
+	return duration, nil
 }
 
 func radiusBoundingBox(latitude, longitude, radiusMetres float64) string {
