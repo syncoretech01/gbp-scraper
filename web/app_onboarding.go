@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/shirou/gopsutil/v4/disk"
 )
 
 type onboardingPageData struct {
@@ -36,6 +38,7 @@ func (s *Server) onboardingPage(w http.ResponseWriter, r *http.Request) {
 	checks := []onboardingCheck{
 		{Label: "SQLite database", State: healthState(snapshot.Integrity == "ok"), Message: "integrity: " + snapshot.Integrity},
 		{Label: "Data directory", State: healthState(directoryExists(s.svc.dataFolder)), Message: s.svc.dataFolder},
+		onboardingDiskCheck(r.Context(), s.svc.dataFolder),
 		{Label: "HTTP binding", State: healthState(!wildcardBind(s.srv.Addr)), Message: s.srv.Addr},
 		{Label: "Docker browser", State: "info", Message: "Chromium and Playwright are installed and checked by the Docker image build; use Run live self-test to verify Maps access."},
 	}
@@ -63,6 +66,42 @@ func healthState(ok bool) string {
 		return "success"
 	}
 	return "error"
+}
+
+// onboardingMinimumFreeDiskBytes is the free-space level (2 GB) below which
+// the setup checklist warns that scrape results, exports, and backups may not
+// fit in the data folder.
+const onboardingMinimumFreeDiskBytes uint64 = 2 << 30
+
+// onboardingDiskCheck reports free disk capacity for the data folder's volume
+// using the same gopsutil probe as the System diagnostics page.
+func onboardingDiskCheck(ctx context.Context, dataFolder string) onboardingCheck {
+	usage, err := disk.UsageWithContext(ctx, dataFolder)
+	if err != nil {
+		return onboardingCheck{
+			Label:   "Disk capacity",
+			State:   "error",
+			Message: "free disk space could not be read for " + dataFolder,
+		}
+	}
+	return diskCapacityCheck(usage.Free, usage.Total)
+}
+
+// diskCapacityCheck classifies the data volume's free space: below 2 GB it
+// warns rather than fails, because scraping still works until the disk is
+// actually full.
+func diskCapacityCheck(freeBytes, totalBytes uint64) onboardingCheck {
+	message := fmt.Sprintf("%s free of %s (%d bytes free)",
+		humanBytes(int64(freeBytes)), humanBytes(int64(totalBytes)), freeBytes)
+	if freeBytes < onboardingMinimumFreeDiskBytes {
+		return onboardingCheck{
+			Label: "Disk capacity",
+			State: "warning",
+			Message: message + "; below the recommended 2 GB minimum for scrape results, " +
+				"exports, and backups",
+		}
+	}
+	return onboardingCheck{Label: "Disk capacity", State: "success", Message: message}
 }
 
 func directoryExists(path string) bool {
@@ -112,6 +151,16 @@ func (s *Server) runOnboardingSelfTest(w http.ResponseWriter, r *http.Request) {
 			messages = append(messages, "data directory writable")
 		}
 	}
+	diskCheck := onboardingDiskCheck(r.Context(), s.svc.dataFolder)
+	switch diskCheck.State {
+	case "error":
+		state = "error"
+	case "warning":
+		if state == "success" {
+			state = "warning"
+		}
+	}
+	messages = append(messages, "disk: "+diskCheck.Message)
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	request, _ := http.NewRequestWithContext(ctx, http.MethodHead, "https://www.google.com/maps?hl=en", http.NoBody)
