@@ -279,6 +279,39 @@ func (s *Server) duplicateScrapeTemplate(w http.ResponseWriter, r *http.Request)
 	http.Redirect(w, r, "/app/saved-searches?tab=templates&notice=Template+duplicated", http.StatusSeeOther)
 }
 
+// registerTemplateRenameRoutes exposes the dedicated template rename action.
+// The other template mutations are registered directly in web.go; this
+// register function keeps the new route in a file owned by the reusable
+// feature so web.go only ever needs the one-line
+// `ans.registerTemplateRenameRoutes(mux)` call.
+func (s *Server) registerTemplateRenameRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /api/v1/templates/{id}/rename", s.renameScrapeTemplate)
+}
+
+func (s *Server) renameScrapeTemplate(w http.ResponseWriter, r *http.Request) {
+	if !s.requireCSRF(w, r) {
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	name := strings.TrimSpace(r.FormValue("name"))
+	if err := s.svc.RenameScrapeTemplate(r.Context(), id, name); err != nil {
+		switch {
+		case errors.Is(err, ErrInvalidTemplateRename):
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		case errors.Is(err, ErrReusableNotFound):
+			http.Error(w, "template not found", http.StatusNotFound)
+		default:
+			http.Error(w, "could not rename template", http.StatusInternalServerError)
+		}
+		return
+	}
+	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+		renderJSON(w, http.StatusOK, localAPIEnvelope{Data: map[string]string{"id": id, "name": name}})
+		return
+	}
+	http.Redirect(w, r, "/app/saved-searches?tab=templates&notice=Template+renamed", http.StatusSeeOther)
+}
+
 func (s *Server) deleteScrapeTemplate(w http.ResponseWriter, r *http.Request) {
 	if !s.requireCSRF(w, r) {
 		return

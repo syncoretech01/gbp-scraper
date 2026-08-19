@@ -3,13 +3,21 @@ package web
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
+	"unicode"
 )
 
 var (
 	ErrReusableStoreUnsupported = errors.New("saved configuration storage is unavailable")
 	ErrReusableNotFound         = errors.New("saved configuration not found")
+	// ErrInvalidTemplateRename indicates a rejected template display name.
+	ErrInvalidTemplateRename = errors.New("invalid template name")
 )
+
+// MaximumTemplateNameLength bounds a renamed template so cards stay readable.
+const MaximumTemplateNameLength = 120
 
 type ScrapeTemplate struct {
 	ID            string
@@ -92,6 +100,31 @@ func (s *Service) DeleteScrapeTemplate(ctx context.Context, id string) error {
 		return err
 	}
 	return repository.DeleteScrapeTemplate(ctx, id)
+}
+
+// RenameScrapeTemplate changes only the display name of a saved template,
+// keeping its configuration, pin state, and usage statistics. The existing
+// SaveScrapeTemplate upsert leaves use_count and last_run_at untouched on
+// conflict, so no dedicated repository method is required.
+func (s *Service) RenameScrapeTemplate(ctx context.Context, id, name string) error {
+	repository, err := s.reusableRepository()
+	if err != nil {
+		return err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > MaximumTemplateNameLength {
+		return fmt.Errorf("%w: name must be 1 to %d characters", ErrInvalidTemplateRename, MaximumTemplateNameLength)
+	}
+	if strings.ContainsFunc(name, unicode.IsControl) {
+		return fmt.Errorf("%w: name contains control characters", ErrInvalidTemplateRename)
+	}
+	template, err := repository.GetScrapeTemplate(ctx, id)
+	if err != nil {
+		return err
+	}
+	template.Name = name
+	template.UpdatedAt = time.Now().UTC()
+	return repository.SaveScrapeTemplate(ctx, template)
 }
 
 func (s *Service) SetScrapeTemplatePinned(ctx context.Context, id string, pinned bool) error {

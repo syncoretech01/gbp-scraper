@@ -25,6 +25,7 @@
     const densityHeatButton = explorer.querySelector('[data-action="toggle-density-heat"]');
     const failedHeatButton = explorer.querySelector('[data-action="toggle-failed-heat"]');
     const emptyHeatButton = explorer.querySelector('[data-action="toggle-empty-heat"]');
+    const duplicateHeatButton = explorer.querySelector('[data-action="toggle-duplicate-heat"]');
     const csrfToken = explorer.dataset.csrfToken || "";
     const areasEndpoint = explorer.dataset.areasEndpoint || "/api/v1/maps/areas";
     const gridEndpoint = explorer.dataset.gridEndpoint || "/api/v1/maps/grid/preview";
@@ -46,12 +47,14 @@
     let densityHeatOn = false;
     let lastResultPoints = [];
     let lastDensityMaximum = 0;
-    const coverageEmphasis = { failed: false, empty: false };
+    const coverageEmphasis = { failed: false, empty: false, duplicates: false };
 
-    // Heat ramps are duplicated as .heat-density-*, .heat-failed-*, .heat-empty-cell,
-    // and .heat-muted-cell classes in app.css so the legend swatches always match.
+    // Heat ramps are duplicated as .heat-density-*, .heat-failed-*, .heat-duplicate-*,
+    // .heat-empty-cell, and .heat-muted-cell classes in app.css so the legend
+    // swatches always match.
     const densityHeatRamp = ["#bcd3f5", "#6ea0ea", "#3478e5", "#1d4ea8"];
     const failedHeatRamp = ["#f3c6cd", "#e78d9b", "#d44b5c", "#9c2130"];
+    const duplicateHeatRamp = ["#e2d2f3", "#c3a2e4", "#9f66d3", "#6d3aa8"];
     const emptyHeatFill = "#e8b45a";
     const emptyHeatStroke = "#8a6a1c";
     const mutedHeatFill = "#d9dee7";
@@ -344,8 +347,17 @@
         return lastPreview.cells.reduce((maximum, cell) => Math.max(maximum, cellFailureCount(cell)), 0);
     }
 
+    function cellDuplicateCount(cell) {
+        return Number(cell.duplicates || 0);
+    }
+
+    function maximumCellDuplicates() {
+        if (!lastPreview || !Array.isArray(lastPreview.cells)) return 0;
+        return lastPreview.cells.reduce((maximum, cell) => Math.max(maximum, cellDuplicateCount(cell)), 0);
+    }
+
     function applyCoverageEmphasis(cell, style, selected) {
-        if (!coverageEmphasis.failed && !coverageEmphasis.empty) return style;
+        if (!coverageEmphasis.failed && !coverageEmphasis.empty && !coverageEmphasis.duplicates) return style;
         const failures = cellFailureCount(cell);
         if (coverageEmphasis.failed && failures > 0) {
             const step = heatStep(failures, maximumCellFailures());
@@ -358,6 +370,13 @@
             style.fillColor = emptyHeatFill;
             style.fillOpacity = selected ? 0.68 : 0.55;
             if (!selected) style.color = emptyHeatStroke;
+            return style;
+        }
+        if (coverageEmphasis.duplicates && cellDuplicateCount(cell) > 0) {
+            const step = heatStep(cellDuplicateCount(cell), maximumCellDuplicates());
+            style.fillColor = duplicateHeatRamp[step - 1];
+            style.fillOpacity = selected ? 0.68 : 0.32 + step * 0.09;
+            if (!selected) style.color = duplicateHeatRamp[3];
             return style;
         }
         style.fillColor = mutedHeatFill;
@@ -389,10 +408,22 @@
         restyleGridCells();
         updateHeatLegend();
         if (!next) {
-            showStatus(kind === "failed" ? "Failed-cell heat shading off; coverage colours restored." : "Empty-cell emphasis off; coverage colours restored.", "success");
+            const offMessages = {
+                failed: "Failed-cell heat shading off; coverage colours restored.",
+                empty: "Empty-cell emphasis off; coverage colours restored.",
+                duplicates: "Duplicate-heavy shading off; coverage colours restored."
+            };
+            showStatus(offMessages[kind], "success");
             return;
         }
         const cells = lastPreview && Array.isArray(lastPreview.cells) ? lastPreview.cells : [];
+        if (kind === "duplicates") {
+            const affected = cells.filter((cell) => cellDuplicateCount(cell) > 0).length;
+            showStatus(affected > 0
+                ? "Duplicate-heavy shading on: " + affected + " cells recorded skipped or replaced duplicate rows (darker purple means more duplicates)."
+                : "Duplicate-heavy shading on: no cell has recorded duplicate rows yet, so everything is shown muted grey.", affected > 0 ? "success" : "warning");
+            return;
+        }
         if (kind === "failed") {
             const affected = cells.filter((cell) => cellFailureCount(cell) > 0).length;
             showStatus(affected > 0
@@ -453,6 +484,11 @@
                 heatLegendRow("heat-empty-cell", "completed with zero results (amber)"),
                 heatLegendRow("heat-muted-cell", "other cells (muted)")
             ]);
+        }
+        if (mode !== "results" && coverageEmphasis.duplicates) {
+            const rows = heatRampRows("heat-duplicate-", "duplicate row (purple)", "duplicate rows (purple)", maximumCellDuplicates());
+            rows.push(heatLegendRow("heat-muted-cell", "no recorded duplicates (muted)"));
+            addSection("Duplicate-heavy shading:", rows);
         }
         heatLegend.hidden = !heatLegend.childNodes.length;
     }
@@ -534,6 +570,7 @@
         if (Number(cell.task_count || 0)) parts.push((cell.completed_tasks || 0) + "/" + cell.task_count + " tasks");
         if (Number(cell.result_count || 0)) parts.push(cell.result_count + " results");
         if (Number(cell.duplicate_count || 0)) parts.push(cell.duplicate_count + " duplicates");
+        if (Number(cell.duplicates || 0)) parts.push(cell.duplicates + " duplicate rows skipped or replaced");
         if (cell.empty) parts.push("empty");
         if (Number(cell.failed_tasks || 0) || Number(cell.blocked_tasks || 0)) {
             parts.push((Number(cell.failed_tasks || 0) + Number(cell.blocked_tasks || 0)) + " failed/blocked");
@@ -1064,6 +1101,7 @@
             "toggle-density-heat": function () { setDensityHeat(!densityHeatOn); },
             "toggle-failed-heat": function () { setCoverageEmphasis("failed", failedHeatButton); },
             "toggle-empty-heat": function () { setCoverageEmphasis("empty", emptyHeatButton); },
+            "toggle-duplicate-heat": function () { setCoverageEmphasis("duplicates", duplicateHeatButton); },
             "export-results-csv": function () { return exportResults("csv"); },
             "export-results-geojson": function () { return exportResults("geojson"); },
             "draw-polygon": function () { startDrawing("polygon"); },

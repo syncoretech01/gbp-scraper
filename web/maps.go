@@ -240,7 +240,11 @@ type MapGridCell struct {
 	WarningCount   int64     `json:"warning_count,omitempty"`
 	ResultCount    int64     `json:"result_count,omitempty"`
 	DuplicateCount int64     `json:"duplicate_count,omitempty"`
-	Empty          bool      `json:"empty,omitempty"`
+	// Duplicates is the checkpoint-recorded duplicate evidence for the cell's
+	// durable tasks (rows skipped as duplicates plus rows replacing an earlier
+	// copy). See MapCellActivity.CheckpointDuplicates.
+	Duplicates int64 `json:"duplicates,omitempty"`
+	Empty      bool  `json:"empty,omitempty"`
 }
 
 // MapGridPreview is a deterministic, geometry-clipped planning result.
@@ -1312,6 +1316,12 @@ func (s *Server) registerMapRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/maps/results/export", s.apiExportMapResults)
 	mux.HandleFunc("POST /api/v1/maps/cells/rescrape", s.apiRescrapeMapCells)
 	mux.HandleFunc("GET /api/v1/maps/tiles/{z}/{x}/{y}", s.apiMapTile)
+	// The template rename action lives in app_reusable.go; it is wired here
+	// because the main router registers reusable-template routes directly and
+	// this is the register function closest to the Map cell-action templates.
+	// Move this call to web.go (`ans.registerTemplateRenameRoutes(mux)`) when
+	// the router file is next edited.
+	s.registerTemplateRenameRoutes(mux)
 }
 
 func (s *Server) apiMapTile(w http.ResponseWriter, r *http.Request) {
