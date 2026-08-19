@@ -23,7 +23,10 @@ var (
 	ErrInvalidResultMutation = errors.New("invalid result mutation")
 )
 
-// ResultFileImport reports one idempotent legacy CSV import.
+// ResultFileImport reports one idempotent legacy CSV import. New, Changed,
+// and Unchanged classify the businesses seen during this import pass;
+// Disappeared counts businesses linked to the job by an earlier import that
+// this rescan pass no longer observed.
 type ResultFileImport struct {
 	JobID            string `json:"job_id"`
 	Rows             int64  `json:"rows"`
@@ -31,6 +34,10 @@ type ResultFileImport struct {
 	UniqueBusinesses int64  `json:"unique_businesses"`
 	Duplicates       int64  `json:"duplicates"`
 	Warnings         int64  `json:"warnings"`
+	New              int64  `json:"new"`
+	Changed          int64  `json:"changed"`
+	Unchanged        int64  `json:"unchanged"`
+	Disappeared      int64  `json:"disappeared"`
 	SkippedUnchanged bool   `json:"skipped_unchanged"`
 	Checksum         string `json:"checksum"`
 }

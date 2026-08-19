@@ -220,15 +220,16 @@ func parseWizardJob(r *http.Request) (Job, jobruntime.State, error) {
 		RetryDelay:    retryDelay,
 		RetryConfigured: strings.TrimSpace(r.FormValue("retry_count")) != "" ||
 			strings.TrimSpace(r.FormValue("retry_delay")) != "",
-		PageTimeout:    pageTimeout,
-		RandomDelayMin: randomDelayMin,
-		RandomDelayMax: randomDelayMax,
-		Headfull:       r.FormValue("headfull") == "on",
-		LoadImages:     r.FormValue("load_images") == "on",
-		Adaptive:       r.FormValue("adaptive_performance") == "on",
-		LowDiskBytes:   uint64(max(0, lowDiskMB)) * 1024 * 1024,
-		ProxyPoolID:    strings.TrimSpace(r.FormValue("proxy_pool_id")),
-		SavedAreaID:    strings.TrimSpace(r.FormValue("saved_area_id")),
+		PageTimeout:     pageTimeout,
+		RandomDelayMin:  randomDelayMin,
+		RandomDelayMax:  randomDelayMax,
+		Headfull:        r.FormValue("headfull") == "on",
+		LoadImages:      r.FormValue("load_images") == "on",
+		Adaptive:        r.FormValue("adaptive_performance") == "on",
+		LowDiskBytes:    uint64(max(0, lowDiskMB)) * 1024 * 1024,
+		ProxyPoolID:     strings.TrimSpace(r.FormValue("proxy_pool_id")),
+		SavedAreaID:     strings.TrimSpace(r.FormValue("saved_area_id")),
+		IncrementalMode: strings.TrimSpace(r.FormValue("incremental_mode")),
 	}
 	if websiteEnrichment {
 		if enrichmentMaxPages == 0 {

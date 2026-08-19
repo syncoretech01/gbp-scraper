@@ -108,6 +108,23 @@ func (repo *repo) ImportLegacyCSV(
 		return web.ResultFileImport{}, fmt.Errorf("start legacy result import: %w", err)
 	}
 
+	// Snapshot the rescan baseline before any row lands: businesses already
+	// linked to this job identify a rescan pass, and businesses flagged
+	// possibly_removed may be restored if this import sees them again. Both
+	// must be read up front because the row loop rewrites change_status.
+	var previouslyLinked int64
+	if err := tx.QueryRowContext(
+		ctx,
+		`SELECT COUNT(*) FROM job_businesses WHERE job_id = ?`,
+		job.ID,
+	).Scan(&previouslyLinked); err != nil {
+		return web.ResultFileImport{}, fmt.Errorf("count previously linked businesses: %w", err)
+	}
+	possiblyRemoved, err := possiblyRemovedBusinessIDs(ctx, tx)
+	if err != nil {
+		return web.ResultFileImport{}, err
+	}
+
 	reader := resultimport.NewReader(file, resultimport.Options{
 		SourceID:   job.ID,
 		JobID:      job.ID,
@@ -115,6 +132,7 @@ func (repo *repo) ImportLegacyCSV(
 		ObservedAt: job.Date,
 	})
 	summary := web.ResultFileImport{JobID: job.ID, Checksum: checksum}
+	seenStatus := make(map[string]string)
 	for {
 		record, readErr := reader.Next(ctx)
 		if errors.Is(readErr, io.EOF) {
@@ -126,9 +144,38 @@ func (repo *repo) ImportLegacyCSV(
 
 		summary.Rows++
 		summary.Warnings += int64(len(record.Warnings))
-		_, importErr := importNormalizedRecord(ctx, tx, job, record)
+		imported, importErr := importNormalizedRecord(ctx, tx, job, record)
 		if importErr != nil {
 			return web.ResultFileImport{}, importErr
+		}
+		switch current := seenStatus[imported.businessID]; {
+		case imported.wasNew:
+			seenStatus[imported.businessID] = "new"
+		case current == "new" || current == "changed":
+		case imported.changed:
+			seenStatus[imported.businessID] = "changed"
+		default:
+			seenStatus[imported.businessID] = "unchanged"
+		}
+	}
+
+	importedAt := time.Now().UTC().Unix()
+	reappeared, err := restoreReappearedBusinesses(ctx, tx, possiblyRemoved, seenStatus, importedAt)
+	if err != nil {
+		return web.ResultFileImport{}, err
+	}
+	summary.Disappeared, err = flagDisappearedBusinesses(ctx, tx, job.ID, seenStatus, importedAt)
+	if err != nil {
+		return web.ResultFileImport{}, err
+	}
+	for _, status := range seenStatus {
+		switch status {
+		case "new":
+			summary.New++
+		case "changed":
+			summary.Changed++
+		default:
+			summary.Unchanged++
 		}
 	}
 
@@ -211,11 +258,228 @@ func (repo *repo) ImportLegacyCSV(
 		return web.ResultFileImport{}, err
 	}
 
+	rescan := previouslyLinked > 0
+	incrementalMessage := fmt.Sprintf(
+		"Import summary: %d new, %d changed, %d unchanged",
+		summary.New, summary.Changed, summary.Unchanged,
+	)
+	if rescan {
+		incrementalMessage = fmt.Sprintf(
+			"Rescan summary: %d new, %d changed, %d unchanged, %d disappeared",
+			summary.New, summary.Changed, summary.Unchanged, summary.Disappeared,
+		)
+	}
+	if err := insertJobEvent(ctx, tx, jobEventInput{
+		jobID:    job.ID,
+		typeName: "incremental-summary",
+		severity: "information",
+		stage:    jobruntime.StageDeduplicating,
+		message:  incrementalMessage,
+		context: map[string]any{
+			"new":              summary.New,
+			"changed":          summary.Changed,
+			"unchanged":        summary.Unchanged,
+			"disappeared":      summary.Disappeared,
+			"reappeared":       reappeared,
+			"rescan":           rescan,
+			"incremental_mode": job.Data.IncrementalMode,
+		},
+		createdAt: finishedAt,
+	}); err != nil {
+		return web.ResultFileImport{}, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return web.ResultFileImport{}, fmt.Errorf("commit result import: %w", err)
 	}
 
 	return summary, nil
+}
+
+// possiblyRemovedBusinessIDs snapshots every live business currently flagged
+// possibly_removed so a later pass can restore the ones this import sees again.
+func possiblyRemovedBusinessIDs(ctx context.Context, tx *sql.Tx) (map[string]struct{}, error) {
+	rows, err := tx.QueryContext(
+		ctx,
+		`SELECT id FROM businesses
+		WHERE change_status = 'possibly_removed' AND deleted_at IS NULL AND merged_into_id IS NULL`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("read possibly removed businesses: %w", err)
+	}
+	defer rows.Close()
+
+	ids := make(map[string]struct{})
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan possibly removed business: %w", err)
+		}
+		ids[id] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read possibly removed businesses: %w", err)
+	}
+
+	return ids, nil
+}
+
+// restoreReappearedBusinesses records evidence for every business this import
+// observed while it was flagged possibly_removed: one "reappeared" change row
+// and change_status restored to "changed". The seen-status map is bumped so
+// summary counts report the business as changed.
+func restoreReappearedBusinesses(
+	ctx context.Context,
+	tx *sql.Tx,
+	possiblyRemoved map[string]struct{},
+	seenStatus map[string]string,
+	detectedAt int64,
+) (int64, error) {
+	var reappeared int64
+	for businessID := range possiblyRemoved {
+		if _, seen := seenStatus[businessID]; !seen {
+			continue
+		}
+		if err := insertRecordLevelChange(
+			ctx, tx, businessID, "reappeared", "possibly_removed", "changed", detectedAt,
+		); err != nil {
+			return 0, err
+		}
+		if _, err := tx.ExecContext(
+			ctx,
+			`UPDATE businesses SET change_status = 'changed', updated_at = MAX(updated_at, ?)
+			WHERE id = ? AND deleted_at IS NULL AND merged_into_id IS NULL`,
+			detectedAt,
+			businessID,
+		); err != nil {
+			return 0, fmt.Errorf("restore reappeared business: %w", err)
+		}
+		if seenStatus[businessID] == "unchanged" {
+			seenStatus[businessID] = "changed"
+		}
+		reappeared++
+	}
+
+	return reappeared, nil
+}
+
+// flagDisappearedBusinesses records evidence for businesses an earlier import
+// linked to the job that this rescan pass no longer observed. The flag is
+// evidence, not deletion: deleted_at is never touched, and repeated imports do
+// not stack duplicate "not_seen_in_rescan" rows for the same business.
+func flagDisappearedBusinesses(
+	ctx context.Context,
+	tx *sql.Tx,
+	jobID string,
+	seenStatus map[string]string,
+	detectedAt int64,
+) (int64, error) {
+	rows, err := tx.QueryContext(
+		ctx,
+		`SELECT job_businesses.business_id, businesses.change_status,
+			COALESCE((SELECT change_kind FROM business_changes
+				WHERE business_changes.business_id = job_businesses.business_id
+				ORDER BY detected_at DESC, id DESC LIMIT 1), '')
+		FROM job_businesses
+		JOIN businesses ON businesses.id = job_businesses.business_id
+		WHERE job_businesses.job_id = ?
+			AND businesses.deleted_at IS NULL AND businesses.merged_into_id IS NULL`,
+		jobID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("read rescan candidates: %w", err)
+	}
+	type disappearedBusiness struct {
+		id           string
+		changeStatus string
+		lastKind     string
+	}
+	disappeared := make([]disappearedBusiness, 0)
+	for rows.Next() {
+		var candidate disappearedBusiness
+		if err := rows.Scan(&candidate.id, &candidate.changeStatus, &candidate.lastKind); err != nil {
+			_ = rows.Close()
+
+			return 0, fmt.Errorf("scan rescan candidate: %w", err)
+		}
+		if _, seen := seenStatus[candidate.id]; !seen {
+			disappeared = append(disappeared, candidate)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+
+		return 0, fmt.Errorf("read rescan candidates: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("close rescan candidates: %w", err)
+	}
+
+	for _, business := range disappeared {
+		if business.lastKind != "not_seen_in_rescan" {
+			if err := insertRecordLevelChange(
+				ctx, tx, business.id, "not_seen_in_rescan",
+				business.changeStatus, "possibly_removed", detectedAt,
+			); err != nil {
+				return 0, err
+			}
+		}
+		if _, err := tx.ExecContext(
+			ctx,
+			`UPDATE businesses SET change_status = 'possibly_removed', updated_at = MAX(updated_at, ?)
+			WHERE id = ? AND deleted_at IS NULL AND merged_into_id IS NULL`,
+			detectedAt,
+			business.id,
+		); err != nil {
+			return 0, fmt.Errorf("flag possibly removed business: %w", err)
+		}
+	}
+
+	return int64(len(disappeared)), nil
+}
+
+// insertRecordLevelChange mirrors the field-level business_changes shape for
+// whole-record observations: field_name is empty and the before/after values
+// carry the change_status transition as JSON strings.
+func insertRecordLevelChange(
+	ctx context.Context,
+	tx *sql.Tx,
+	businessID string,
+	changeKind string,
+	beforeStatus string,
+	afterStatus string,
+	detectedAt int64,
+) error {
+	var latestVersionID sql.NullInt64
+	if err := tx.QueryRowContext(
+		ctx,
+		`SELECT id FROM business_versions WHERE business_id = ?
+		ORDER BY observed_at DESC, id DESC LIMIT 1`,
+		businessID,
+	).Scan(&latestVersionID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("read latest business version: %w", err)
+	}
+	var fromVersion any
+	if latestVersionID.Valid {
+		fromVersion = latestVersionID.Int64
+	}
+	if _, err := tx.ExecContext(
+		ctx,
+		`INSERT INTO business_changes(
+			business_id, from_version_id, to_version_id, field_name,
+			before_value, after_value, change_kind, detected_at
+		) VALUES (?, ?, NULL, '', ?, ?, ?, ?)`,
+		businessID,
+		fromVersion,
+		mustJSON(beforeStatus, `""`),
+		mustJSON(afterStatus, `""`),
+		changeKind,
+		detectedAt,
+	); err != nil {
+		return fmt.Errorf("insert %s business change: %w", changeKind, err)
+	}
+
+	return nil
 }
 
 func (repo *repo) recordLegacyImportFailure(
@@ -348,7 +612,33 @@ func (repo *repo) completedLegacyImport(
 	}
 	summary.Duplicates = max(int64(0), rows-summary.UniqueBusinesses)
 
+	// A skipped re-import changed nothing, so report the durable link flags
+	// and the businesses still flagged possibly_removed for this job.
+	if err := repo.db.QueryRowContext(
+		ctx,
+		`SELECT
+			COALESCE(SUM(CASE WHEN job_businesses.is_new = 1 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN job_businesses.is_new = 0 AND job_businesses.is_changed = 1 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN job_businesses.is_new = 0 AND job_businesses.is_changed = 0 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN businesses.change_status = 'possibly_removed'
+				AND businesses.deleted_at IS NULL AND businesses.merged_into_id IS NULL THEN 1 ELSE 0 END), 0)
+		FROM job_businesses
+		JOIN businesses ON businesses.id = job_businesses.business_id
+		WHERE job_businesses.job_id = ?`,
+		jobID,
+	).Scan(&summary.New, &summary.Changed, &summary.Unchanged, &summary.Disappeared); err != nil {
+		return web.ResultFileImport{}, false, fmt.Errorf("summarize existing import changes: %w", err)
+	}
+
 	return summary, true, nil
+}
+
+// importedRecord reports which normalized business one source row resolved to
+// and how the observation classified it during the current import pass.
+type importedRecord struct {
+	businessID string
+	wasNew     bool
+	changed    bool
 }
 
 func importNormalizedRecord(
@@ -356,7 +646,7 @@ func importNormalizedRecord(
 	tx *sql.Tx,
 	job web.Job,
 	record resultimport.Record,
-) (bool, error) {
+) (importedRecord, error) {
 	observedAt := job.Date.UTC()
 	if record.Source.ObservedAt != nil {
 		observedAt = record.Source.ObservedAt.UTC()
@@ -365,7 +655,7 @@ func importNormalizedRecord(
 
 	targetID, matchedIDs, err := resolveBusinessID(ctx, tx, record.Business)
 	if err != nil {
-		return false, err
+		return importedRecord{}, err
 	}
 	if targetID == "" {
 		targetID = record.Business.ID
@@ -373,11 +663,11 @@ func importNormalizedRecord(
 
 	rawJSON, err := json.Marshal(record.Raw)
 	if err != nil {
-		return false, fmt.Errorf("encode raw result row: %w", err)
+		return importedRecord{}, fmt.Errorf("encode raw result row: %w", err)
 	}
 	normalizedJSON, err := json.Marshal(record.Business)
 	if err != nil {
-		return false, fmt.Errorf("encode normalized result row: %w", err)
+		return importedRecord{}, fmt.Errorf("encode normalized result row: %w", err)
 	}
 
 	targetID, wasNew, previousHash, err := ensureBusiness(
@@ -390,7 +680,7 @@ func importNormalizedRecord(
 		observedUnix,
 	)
 	if err != nil {
-		return false, err
+		return importedRecord{}, err
 	}
 
 	sourceID, inserted, err := insertBusinessSource(
@@ -403,8 +693,14 @@ func importNormalizedRecord(
 		string(normalizedJSON),
 		observedUnix,
 	)
-	if err != nil || !inserted {
-		return inserted, err
+	if err != nil {
+		return importedRecord{}, err
+	}
+	if !inserted {
+		// The exact source row was already ingested by an earlier pass, so the
+		// business was still observed by this import even though nothing new
+		// was recorded.
+		return importedRecord{businessID: targetID}, nil
 	}
 
 	changed := wasNew || previousHash != record.Business.RecordHash
@@ -418,36 +714,36 @@ func importNormalizedRecord(
 		string(normalizedJSON),
 		observedUnix,
 	); err != nil {
-		return false, err
+		return importedRecord{}, err
 	}
 
 	if err := storeIdentityKeys(ctx, tx, targetID, sourceID, record.Business.IdentityKeys, observedUnix); err != nil {
-		return false, err
+		return importedRecord{}, err
 	}
 	if err := storeContacts(ctx, tx, targetID, record, observedUnix); err != nil {
-		return false, err
+		return importedRecord{}, err
 	}
 	if err := storeProvenance(ctx, tx, targetID, sourceID, record, observedUnix); err != nil {
-		return false, err
+		return importedRecord{}, err
 	}
 	if err := linkJobBusiness(ctx, tx, job.ID, targetID, sourceID, observedUnix, wasNew, changed); err != nil {
-		return false, err
+		return importedRecord{}, err
 	}
 	if err := storeDuplicateCandidates(ctx, tx, targetID, matchedIDs, record.Business.IdentityKeys, observedUnix); err != nil {
-		return false, err
+		return importedRecord{}, err
 	}
 	if err := storeFuzzyDuplicateCandidates(ctx, tx, targetID, observedUnix); err != nil {
-		return false, err
+		return importedRecord{}, err
 	}
 	rules, err := ensureActiveQualityRules(ctx, tx)
 	if err != nil {
-		return false, err
+		return importedRecord{}, err
 	}
 	if _, err := scoreBusiness(ctx, tx, targetID, rules, observedAt); err != nil {
-		return false, err
+		return importedRecord{}, err
 	}
 
-	return true, nil
+	return importedRecord{businessID: targetID, wasNew: wasNew, changed: changed && !wasNew}, nil
 }
 
 func resolveBusinessID(

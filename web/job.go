@@ -104,7 +104,16 @@ type JobData struct {
 	AreaGeoJSON     string                `json:"area_geojson,omitempty"`
 	GridBBox        string                `json:"grid_bbox,omitempty"`
 	GridCellKM      float64               `json:"grid_cell_km,omitempty"`
+	IncrementalMode string                `json:"incremental_mode,omitempty"`
 }
+
+// Incremental rescan modes. An empty mode is a full collection; the other
+// modes narrow what a rescan keeps, while new/changed/disappeared detection
+// always happens when results are imported.
+const (
+	IncrementalModeNewOnly    = "new_only"
+	IncrementalModeNewChanged = "new_changed"
+)
 
 func (d *JobData) Validate() error {
 	if len(d.Keywords) == 0 {
@@ -168,6 +177,14 @@ func (d *JobData) Validate() error {
 		if err := d.Enrichment.Validate(); err != nil {
 			return err
 		}
+	}
+	switch d.IncrementalMode {
+	case "", IncrementalModeNewOnly, IncrementalModeNewChanged:
+	default:
+		return fmt.Errorf(
+			"rescan mode must be empty for a full collection, %q, or %q; got %q",
+			IncrementalModeNewOnly, IncrementalModeNewChanged, d.IncrementalMode,
+		)
 	}
 	if d.SavedAreaID != "" && !validMapEntityID(d.SavedAreaID) {
 		return errors.New("saved area ID is invalid")
