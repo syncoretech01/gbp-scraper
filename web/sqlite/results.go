@@ -1776,6 +1776,7 @@ func (repo *repo) SearchBusinesses(ctx context.Context, search web.ResultSearch)
 			ORDER BY confidence DESC, id LIMIT 1), ''),
 		businesses.website, businesses.domain, businesses.website_status,
 		businesses.website_response_ms, businesses.rating, businesses.review_count,
+		businesses.prospect_status, businesses.prospect_score, businesses.prospect_tier,
 		businesses.quality_score, businesses.quality_confidence, businesses.reviewed,
 		businesses.notes, businesses.change_status, businesses.maps_url, businesses.place_id,
 		businesses.cid, businesses.data_id, ` + sourceIDSQL + `, ` + sourceJobSQL + `,
@@ -1826,9 +1827,9 @@ func (repo *repo) GetBusiness(ctx context.Context, id string) (web.BusinessDetai
 	detail := web.BusinessDetail{Business: page.Results[0]}
 	if err := repo.db.QueryRowContext(
 		ctx,
-		`SELECT raw_json FROM businesses WHERE id = ?`,
+		`SELECT raw_json, COALESCE(prospect_reasons, '[]') FROM businesses WHERE id = ?`,
 		id,
-	).Scan(&detail.RawJSON); err != nil {
+	).Scan(&detail.RawJSON, &detail.ProspectReasons); err != nil {
 		return web.BusinessDetail{}, fmt.Errorf("read business raw JSON: %w", err)
 	}
 
@@ -2371,7 +2372,7 @@ func scanBusinessResult(scanner resultScanner) (web.BusinessResult, error) {
 	var result web.BusinessResult
 	var categories, tags string
 	var claimed sql.NullBool
-	var latitude, longitude, rating sql.NullFloat64
+	var latitude, longitude, rating, prospectScore sql.NullFloat64
 	var websiteResponse, reviewCount sql.NullInt64
 	var reviewed int
 	var scrapedAt, updatedAt int64
@@ -2398,6 +2399,9 @@ func scanBusinessResult(scanner resultScanner) (web.BusinessResult, error) {
 		&websiteResponse,
 		&rating,
 		&reviewCount,
+		&result.ProspectStatus,
+		&prospectScore,
+		&result.ProspectTier,
 		&result.QualityScore,
 		&result.Confidence,
 		&reviewed,
@@ -2423,6 +2427,7 @@ func scanBusinessResult(scanner resultScanner) (web.BusinessResult, error) {
 	result.Latitude = nullFloatPointer(latitude)
 	result.Longitude = nullFloatPointer(longitude)
 	result.Rating = nullFloatPointer(rating)
+	result.ProspectScore = nullFloatPointer(prospectScore)
 	result.ReviewCount = nullIntPointer(reviewCount)
 	result.WebsiteResponseMS = nullIntPointer(websiteResponse)
 	result.ScrapedAt = time.Unix(scrapedAt, 0).UTC()
@@ -2468,6 +2473,8 @@ func resultFilterSQL(filter web.ResultFilter) (string, []any, error) {
 		"website_status":  "businesses.website_status",
 		"domain":          "businesses.domain",
 		"change_status":   "businesses.change_status",
+		"prospect_status": "businesses.prospect_status",
+		"prospect_tier":   "businesses.prospect_tier",
 		"place_id":        "businesses.place_id",
 		"cid":             "businesses.cid",
 		"data_id":         "businesses.data_id",
@@ -2484,6 +2491,7 @@ func resultFilterSQL(filter web.ResultFilter) (string, []any, error) {
 		"quality_score":       "businesses.quality_score",
 		"confidence":          "businesses.quality_confidence",
 		"website_response_ms": "businesses.website_response_ms",
+		"prospect_score":      "businesses.prospect_score",
 	}
 	if column, ok := numericColumns[field]; ok {
 		return numericFilterSQL(column, field, operator, value)

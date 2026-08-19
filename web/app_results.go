@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gosom/google-maps-scraper/web/prospect"
 )
 
 type resultsPageData struct {
@@ -60,6 +63,7 @@ type appResultCapabilities struct {
 	CanCheckEmails   bool
 	CanMerge         bool
 	CanDelete        bool
+	CanProspect      bool
 }
 
 type resultJobOption struct {
@@ -86,6 +90,11 @@ type appResultRow struct {
 	ConfidenceLabel  string
 	UpdatedLabel     string
 	ScrapedLabel     string
+	// ProspectState and ProspectTierState are CSS-safe badge suffixes for the
+	// stored prospect taxonomy values; ProspectScoreLabel is display-ready.
+	ProspectState      string
+	ProspectTierState  string
+	ProspectScoreLabel string
 }
 
 type appBusinessDetail struct {
@@ -106,6 +115,27 @@ type appBusinessDetail struct {
 	Duplicates       []string
 	DuplicateMatches []appDuplicateMatch
 	Quality          appQualityReport
+	Prospect         appProspectDetail
+}
+
+// appProspectDetail is the drawer view of the stored GBP-prospecting signals.
+type appProspectDetail struct {
+	HasStatus  bool
+	Status     string
+	State      string
+	ScoreLabel string
+	Tier       string
+	TierState  string
+	Reasons    []appProspectReason
+	Opener     string
+}
+
+// appProspectReason is one explainable score component parsed from the
+// stored prospect_reasons JSON array.
+type appProspectReason struct {
+	Signal            string
+	ContributionLabel string
+	Detail            string
 }
 
 type appBusinessSource struct {
@@ -270,6 +300,7 @@ func (s *Server) buildResultsPage(r *http.Request, search ResultSearch) (results
 			CanCheckEmails:   s.enrichmentAvailable(),
 			CanMerge:         s.duplicateReviewAvailable(),
 			CanDelete:        s.resultMutationAvailable(),
+			CanProspect:      s.svc.SupportsProspects(),
 		},
 	}
 	flatFilters := search.Filters
@@ -284,7 +315,8 @@ func (s *Server) buildResultsPage(r *http.Request, search ResultSearch) (results
 	}
 	page.Capabilities.CanSelect = page.Capabilities.CanTag || page.Capabilities.CanMarkReviewed ||
 		page.Capabilities.CanEnrich || page.Capabilities.CanCheckWebsites ||
-		page.Capabilities.CanCheckEmails || page.Capabilities.CanMerge || page.Capabilities.CanDelete
+		page.Capabilities.CanCheckEmails || page.Capabilities.CanMerge || page.Capabilities.CanDelete ||
+		page.Capabilities.CanProspect
 	for _, filter := range flatFilters {
 		page.Filters = append(page.Filters, appResultFilter{
 			Field:         filter.Field,
@@ -425,6 +457,7 @@ func (s *Server) loadAppBusinessDetail(r *http.Request) (appBusinessDetail, int,
 		Duplicates:     detail.Duplicates,
 		Phones:         detail.Phones,
 		SocialProfiles: detail.SocialProfiles,
+		Prospect:       s.newAppProspectDetail(r.Context(), detail),
 		Quality: appQualityReport{
 			BusinessQualityReport: detail.Quality,
 			ScoreLabel:            strconv.FormatFloat(detail.Quality.Score, 'f', 0, 64),
@@ -567,17 +600,118 @@ func newAppResultRow(result BusinessResult) appResultRow {
 	if websiteState == "" {
 		websiteState = "unknown"
 	}
+	prospectScore := ""
+	if result.ProspectScore != nil {
+		prospectScore = strconv.FormatFloat(*result.ProspectScore, 'f', 0, 64)
+	}
 
 	return appResultRow{
-		BusinessResult:   result,
-		RatingLabel:      rating,
-		ReviewCountLabel: reviews,
-		WebsiteState:     safeCSSState(websiteState),
-		ResponseTime:     responseTime,
-		QualityLabel:     strconv.FormatFloat(result.QualityScore, 'f', 0, 64),
-		ConfidenceLabel:  fmt.Sprintf("%.0f%%", result.Confidence*100),
-		UpdatedLabel:     appResultTime(result.UpdatedAt),
-		ScrapedLabel:     appResultTime(result.ScrapedAt),
+		BusinessResult:     result,
+		RatingLabel:        rating,
+		ReviewCountLabel:   reviews,
+		WebsiteState:       safeCSSState(websiteState),
+		ResponseTime:       responseTime,
+		QualityLabel:       strconv.FormatFloat(result.QualityScore, 'f', 0, 64),
+		ConfidenceLabel:    fmt.Sprintf("%.0f%%", result.Confidence*100),
+		UpdatedLabel:       appResultTime(result.UpdatedAt),
+		ScrapedLabel:       appResultTime(result.ScrapedAt),
+		ProspectState:      prospectStateClass(result.ProspectStatus),
+		ProspectTierState:  prospectStateClass(result.ProspectTier),
+		ProspectScoreLabel: prospectScore,
+	}
+}
+
+// prospectStateClass converts a stored prospect taxonomy value (for example
+// NO_WEBSITE or tier A) into a CSS-safe badge suffix such as "no-website".
+func prospectStateClass(value string) string {
+	value = strings.ReplaceAll(strings.ToLower(strings.TrimSpace(value)), "_", "-")
+	if value == "" {
+		return ""
+	}
+
+	return safeCSSState(value)
+}
+
+// parseProspectReasons tolerantly decodes the stored prospect_reasons JSON
+// into displayable rows; malformed JSON simply yields no explanation.
+func parseProspectReasons(raw string) []appProspectReason {
+	var stored []struct {
+		Signal       string  `json:"signal"`
+		Contribution float64 `json:"contribution"`
+		Detail       string  `json:"detail"`
+	}
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		return nil
+	}
+	reasons := make([]appProspectReason, 0, len(stored))
+	for _, reason := range stored {
+		if strings.TrimSpace(reason.Signal) == "" && strings.TrimSpace(reason.Detail) == "" {
+			continue
+		}
+		reasons = append(reasons, appProspectReason{
+			Signal:            reason.Signal,
+			ContributionLabel: fmt.Sprintf("%+.1f", reason.Contribution),
+			Detail:            reason.Detail,
+		})
+	}
+
+	return reasons
+}
+
+// prospectOpener renders the status-matched call opener for one business
+// entirely on the server so the drawer needs no additional JavaScript.
+func (s *Server) prospectOpener(ctx context.Context, detail BusinessDetail) string {
+	if s == nil || s.svc == nil || !s.svc.SupportsProspects() {
+		return ""
+	}
+	templates, err := s.svc.ProspectOpenerTemplates(ctx)
+	if err != nil || len(templates) == 0 {
+		return ""
+	}
+	opener := prospect.OpenerTemplateFor(templates, detail.Business.ProspectStatus)
+	if strings.TrimSpace(opener) == "" {
+		return ""
+	}
+	rating := ""
+	if detail.Business.Rating != nil {
+		rating = strconv.FormatFloat(*detail.Business.Rating, 'f', 1, 64)
+	}
+	reviews := ""
+	if detail.Business.ReviewCount != nil {
+		reviews = strconv.FormatInt(*detail.Business.ReviewCount, 10)
+	}
+
+	return strings.TrimSpace(prospect.RenderOpener(opener, map[string]string{
+		"name":     detail.Business.Name,
+		"category": detail.Business.PrimaryCategory,
+		"city":     detail.Business.City,
+		"status":   detail.Business.ProspectStatus,
+		"tier":     detail.Business.ProspectTier,
+		"rating":   rating,
+		"reviews":  reviews,
+	}))
+}
+
+// newAppProspectDetail assembles the drawer's Prospecting section data.
+func (s *Server) newAppProspectDetail(ctx context.Context, detail BusinessDetail) appProspectDetail {
+	status := strings.TrimSpace(detail.Business.ProspectStatus)
+	if status == "" {
+		return appProspectDetail{}
+	}
+	scoreLabel := ""
+	if detail.Business.ProspectScore != nil {
+		scoreLabel = strconv.FormatFloat(*detail.Business.ProspectScore, 'f', 0, 64)
+	}
+
+	return appProspectDetail{
+		HasStatus:  true,
+		Status:     status,
+		State:      prospectStateClass(status),
+		ScoreLabel: scoreLabel,
+		Tier:       detail.Business.ProspectTier,
+		TierState:  prospectStateClass(detail.Business.ProspectTier),
+		Reasons:    parseProspectReasons(detail.ProspectReasons),
+		Opener:     s.prospectOpener(ctx, detail),
 	}
 }
 
@@ -603,6 +737,8 @@ func resultFieldLabel(value string) string {
 		"updated_at": "Updated date", "first_seen_at": "First seen date", "last_seen_at": "Last seen date",
 		"scraped_at": "Scraped date", "last_checked_at": "Website checked date",
 		"distance": "Distance from point", "bbox": "Bounding box", "polygon": "GeoJSON polygon",
+		"prospect_status": "Prospect status", "prospect_tier": "Prospect tier",
+		"prospect_score": "Prospect score",
 	}
 	if label := labels[strings.ToLower(strings.TrimSpace(value))]; label != "" {
 		return label

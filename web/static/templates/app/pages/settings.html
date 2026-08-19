@@ -1,5 +1,7 @@
 {{define "app/page/settings"}}{{template "app/layout" .}}{{end}}
 
+{{define "app/head"}}<script defer src="/static/js/app-prospects.js"></script>{{end}}
+
 {{define "app/page-actions"}}<div class="page-actions"><a class="button" href="/app/scrapes/new">Preview in New Scrape</a></div>{{end}}
 
 {{define "app/content"}}
@@ -116,5 +118,29 @@
         </div>
         <div class="card-footer form-actions"><button class="button button-primary" type="submit">Save scoring rules</button></div>
     </form>
+
+    <section class="card section-stack" data-prospect-settings>
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <div class="card-header"><div><h2>Prospecting</h2><p>Configurable worth-calling score weights, editable call-opener templates, and optional local integration endpoints. Values load from and save to the local prospecting API.</p></div></div>
+        <div class="card-body section-stack">
+            <div class="prospect-editor" data-prospect-editor="scoring" data-endpoint="/api/v1/prospects/scoring">
+                <h3>Score weights</h3>
+                <div class="grid grid-4" data-prospect-fields></div>
+                <div class="form-actions"><button class="button button-primary" type="button" data-action="save-prospect-editor" hidden>Save score weights</button><span class="field-hint" data-prospect-status aria-live="polite">Loading score weights&hellip;</span></div>
+            </div>
+            <div class="prospect-editor" data-prospect-editor="openers" data-endpoint="/api/v1/prospects/openers">
+                <h3>Call openers</h3>
+                <p class="field-hint">One template per website status plus a default. Placeholders such as <code>{name}</code>, <code>{category}</code>, <code>{city}</code>, <code>{rating}</code>, and <code>{reviews}</code> are filled per business in the result drawer.</p>
+                <div class="section-stack" data-prospect-fields></div>
+                <div class="form-actions"><button class="button button-primary" type="button" data-action="save-prospect-editor" hidden>Save openers</button><span class="field-hint" data-prospect-status aria-live="polite">Loading call openers&hellip;</span></div>
+            </div>
+            <div class="prospect-editor" data-prospect-editor="integrations" data-endpoint="/api/v1/prospects/integrations">
+                <h3>Integration boundaries</h3>
+                <p class="field-hint">Optional local services such as an email verifier URL and a website audit service URL. Leave a field empty to keep the built-in behaviour.</p>
+                <div class="grid grid-2" data-prospect-fields></div>
+                <div class="form-actions"><button class="button button-primary" type="button" data-action="save-prospect-editor" hidden>Save integrations</button><span class="field-hint" data-prospect-status aria-live="polite">Loading integrations&hellip;</span></div>
+            </div>
+        </div>
+    </section>
 </div>
 {{end}}

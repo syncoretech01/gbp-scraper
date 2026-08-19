@@ -81,6 +81,27 @@
         <article class="card"><div class="card-header"><div><h2>Rating bands</h2><p>Unique businesses by rating</p></div></div><div class="card-body">{{if .Page.RatingBands}}<table class="data-table"><thead><tr><th>Rating</th><th>Businesses</th></tr></thead><tbody>{{range .Page.RatingBands}}<tr><td>{{.Label}}</td><td>{{.Value}}</td></tr>{{end}}</tbody></table>{{else}}<p class="field-hint">No rating data yet.</p>{{end}}</div></article>
     </section>
 
+    {{if .Page.Prospects.Supported}}
+    <section class="card" aria-labelledby="prospecting-heading">
+        <div class="card-header"><div><h2 id="prospecting-heading">Prospecting</h2><p>GBP website-signal statuses and worth-calling tiers from the local database</p></div><a href="/app/results" data-action="navigate" data-endpoint="/app/results">Explore results</a></div>
+        <div class="card-body">
+            {{if or .Page.Prospects.ByStatus .Page.Prospects.ByTier}}
+            <div class="grid grid-2">
+                <div>
+                    <h3>Website status</h3>
+                    {{if .Page.Prospects.ByStatus}}<table class="data-table"><thead><tr><th>Status</th><th>Businesses</th></tr></thead><tbody>{{range .Page.Prospects.ByStatus}}<tr><td><span class="prospect-badge prospect-{{.State}}">{{.Label}}</span></td><td>{{.Value}}</td></tr>{{end}}</tbody></table>{{else}}<p class="field-hint">No website statuses recorded yet.</p>{{end}}
+                </div>
+                <div>
+                    <h3>Worth-calling tier</h3>
+                    {{if .Page.Prospects.ByTier}}<table class="data-table"><thead><tr><th>Tier</th><th>Businesses</th></tr></thead><tbody>{{range .Page.Prospects.ByTier}}<tr><td><span class="prospect-badge prospect-tier-{{.State}}">Tier {{.Label}}</span></td><td>{{.Value}}</td></tr>{{end}}</tbody></table>{{else}}<p class="field-hint">No tiers recorded yet.</p>{{end}}
+                    <p class="field-hint">{{.Page.Prospects.Scored}} businesses have a prospect score.</p>
+                </div>
+            </div>
+            {{else}}<div class="empty-state"><div><strong>No prospect signals yet</strong><span>Select businesses in Results and run &ldquo;Recompute prospect score&rdquo; to classify their websites and tiers.</span></div></div>{{end}}
+        </div>
+    </section>
+    {{end}}
+
     <section class="grid grid-2" aria-label="Operational trends">
         <article class="card"><div class="card-header"><div><h2>Job outcomes over time</h2><p>Terminal states by UTC day</p></div></div><div class="card-body">{{if .Page.JobTrends}}<div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Completed</th><th>Partial</th><th>Failed</th><th>Cancelled</th></tr></thead><tbody>{{range .Page.JobTrends}}<tr><td>{{.Label}}</td><td>{{.Completed}}</td><td>{{.Partial}}</td><td>{{.Failed}}</td><td>{{.Cancelled}}</td></tr>{{end}}</tbody></table></div>{{else}}<p class="field-hint">No terminal job history in the last 30 days.</p>{{end}}</div></article>
         <article class="card"><div class="card-header"><div><h2>Speed and warnings</h2><p>Recorded throughput and worker warning/error events</p></div></div><div class="card-body">{{if .Page.SpeedTrends}}<div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Places/min</th><th>Warning events</th></tr></thead><tbody>{{range .Page.SpeedTrends}}<tr><td>{{.Label}}</td><td>{{printf "%.1f" .PlacesPerMinute}}</td><td>{{.WarningEvents}}</td></tr>{{end}}</tbody></table></div>{{else}}<p class="field-hint">Speed and warning telemetry appears as checkpoint-enabled jobs run.</p>{{end}}</div></article>

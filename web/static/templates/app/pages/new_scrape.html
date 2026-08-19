@@ -57,6 +57,18 @@
                 <div class="field"><label for="combo-locations-file">Add locations from a TXT or CSV file</label><input class="input" id="combo-locations-file" type="file" accept=".txt,.csv,text/plain,text/csv" data-combo-locations-file><p class="field-hint">The first CSV column is used; maximum file size is 2 MB.</p></div>
                 <div class="form-actions"><button class="button" type="button" data-action="generate-combinations">Generate combinations</button><span class="field-hint" data-combo-status aria-live="polite"></span></div>
             </div></details>
+            {{if .Page.ProspectQueriesSupported}}<details class="card disclosure" data-gbp-coverage><summary>GBP prospecting coverage (ZIP &times; synonym queries)</summary><div class="card-body section-stack">
+                <div class="grid grid-3">
+                    <div class="field"><label for="gbp-state">State (2-letter)</label><input class="input" id="gbp-state" maxlength="2" minlength="2" autocomplete="off" placeholder="CA" data-gbp-state></div>
+                    <div class="field"><label for="gbp-city">City (optional)</label><input class="input" id="gbp-city" maxlength="120" autocomplete="off" placeholder="San Francisco" data-gbp-city></div>
+                    <div class="field"><label for="gbp-top-n">Top N ZIPs by population</label><input class="input" id="gbp-top-n" type="number" min="1" max="500" value="25" data-gbp-top-n></div>
+                </div>
+                <div class="grid grid-2">
+                    <div class="field"><label for="gbp-synonyms">Category synonyms (one per line)</label><textarea class="textarea" id="gbp-synonyms" rows="4" placeholder="plumber&#10;plumbing company&#10;emergency plumber" data-gbp-synonyms></textarea></div>
+                    <div class="field"><label for="gbp-zips-file">ZIP CSV (optional)</label><input class="input" id="gbp-zips-file" type="file" accept=".csv,text/csv" data-gbp-zips-file><p class="field-hint">The bundled ZIP list is a small sample. Upload a CSV with columns <code>zip,city,state,latitude,longitude,population</code> for real coverage.</p></div>
+                </div>
+                <div class="form-actions"><button class="button" type="button" data-action="generate-gbp-queries">Generate coverage queries</button><span class="field-hint" data-gbp-status aria-live="polite"></span></div>
+            </div></details>{{end}}
             {{if .Page.LocalAI.Enabled}}<details class="card disclosure"><summary>Ask the enabled local model for keyword variations</summary><div class="card-body section-stack"><div class="field"><label for="local-ai-keyword-request">Research description</label><textarea class="textarea" id="local-ai-keyword-request" rows="3" maxlength="16384" placeholder="Independent dentists serving families in San Francisco; exclude orthodontists" data-local-ai-input></textarea></div><div class="form-actions"><button class="button" type="button" data-action="local-ai-keywords">Generate locally</button><span class="field-hint" data-local-ai-status aria-live="polite">Uses {{.Page.LocalAI.Model}} through {{.Page.LocalAI.Endpoint}}.</span></div></div></details>{{end}}
             <div class="form-actions"><button class="button button-primary" type="button" data-action="wizard-next">Set location &rarr;</button></div>
         </section>

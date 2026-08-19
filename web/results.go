@@ -101,6 +101,9 @@ type BusinessResult struct {
 	WebsiteResponseMS    *int64    `json:"website_response_ms,omitempty"`
 	Rating               *float64  `json:"rating,omitempty"`
 	ReviewCount          *int64    `json:"review_count,omitempty"`
+	ProspectStatus       string    `json:"prospect_status,omitempty"`
+	ProspectScore        *float64  `json:"prospect_score,omitempty"`
+	ProspectTier         string    `json:"prospect_tier,omitempty"`
 	QualityScore         float64   `json:"quality_score"`
 	Confidence           float64   `json:"confidence"`
 	Reviewed             bool      `json:"reviewed"`
@@ -293,8 +296,11 @@ type DuplicateMatchView struct {
 // BusinessDetail combines the preferred row with its local history and raw
 // normalized JSON snapshot.
 type BusinessDetail struct {
-	Business         BusinessResult        `json:"business"`
-	RawJSON          string                `json:"raw_json"`
+	Business BusinessResult `json:"business"`
+	RawJSON  string         `json:"raw_json"`
+	// ProspectReasons is the stored prospect_reasons JSON array explaining the
+	// prospect score; it is empty when the business has not been scored.
+	ProspectReasons  string                `json:"prospect_reasons,omitempty"`
 	Sources          []BusinessSourceView  `json:"sources"`
 	Provenance       []FieldProvenanceView `json:"provenance"`
 	Websites         []WebsiteView         `json:"websites"`
