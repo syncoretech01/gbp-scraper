@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	currentSchemaVersion           = 9
+	currentSchemaVersion           = 10
 	migrationChecksumSchemaVersion = 4
 )
 
@@ -1057,6 +1057,20 @@ var schemaMigrations = []schemaMigration{
 				updated_at INTEGER NOT NULL
 			)`,
 			`CREATE INDEX idx_keyword_sets_name ON keyword_sets(name)`,
+		},
+	},
+	{
+		version: 10,
+		name:    "live-controls-and-screenshots",
+		statements: []string{
+			// Live job controls: the worker polls these between tasks, which is
+			// the safe reconfiguration boundary the engine supports.
+			`ALTER TABLE job_runtime ADD COLUMN extended_seconds INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE job_runtime ADD COLUMN concurrency_override INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE job_runtime ADD COLUMN proxy_pool_override TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE job_runtime ADD COLUMN retry_current_requested INTEGER NOT NULL DEFAULT 0`,
+			// Homepage screenshots captured by the browser-capable enrichment path.
+			`ALTER TABLE website_audits ADD COLUMN screenshot_path TEXT NOT NULL DEFAULT ''`,
 		},
 	},
 }
