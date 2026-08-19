@@ -362,7 +362,7 @@ func extractSocialProfiles(document *goquery.Document, baseURL *url.URL, source 
 			return
 		}
 
-		profileURL.Fragment = ""
+		standardizeSocialProfileURL(profileURL)
 		socialSource := source
 		socialSource.Method = MethodSocialLink
 		profiles = append(profiles, rawSocial{
@@ -395,6 +395,42 @@ func socialPlatform(profileURL *url.URL) string {
 		return "whatsapp"
 	default:
 		return ""
+	}
+}
+
+// standardizeSocialProfileURL removes fragments and query tracking parameters
+// from a social profile link while keeping meaningful path and query parts,
+// such as facebook.com/profile.php?id=123. The same page shared from different
+// campaigns then produces one stable profile URL.
+func standardizeSocialProfileURL(profileURL *url.URL) {
+	profileURL.Fragment = ""
+	profileURL.RawFragment = ""
+
+	query := profileURL.Query()
+	for key := range query {
+		if isSocialTrackingParameter(key) {
+			delete(query, key)
+		}
+	}
+
+	if len(query) == 0 {
+		profileURL.RawQuery = ""
+	} else {
+		profileURL.RawQuery = query.Encode()
+	}
+}
+
+func isSocialTrackingParameter(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if strings.HasPrefix(key, "utm_") {
+		return true
+	}
+
+	switch key {
+	case "fbclid", "gclid", "igshid", "ref", "ref_src", "mibextid", "share_id", "s", "feature":
+		return true
+	default:
+		return false
 	}
 }
 
