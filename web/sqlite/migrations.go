@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	currentSchemaVersion           = 8
+	currentSchemaVersion           = 9
 	migrationChecksumSchemaVersion = 4
 )
 
@@ -1032,6 +1032,31 @@ var schemaMigrations = []schemaMigration{
 			`ALTER TABLE job_tasks ADD COLUMN heartbeat_at INTEGER`,
 			`CREATE INDEX IF NOT EXISTS idx_job_tasks_lease
 			ON job_tasks(state, lease_expires_at)`,
+		},
+	},
+	{
+		version: 9,
+		name:    "automation-and-keyword-sets",
+		statements: []string{
+			// Schedule-level automation: bounded retries with backoff, an
+			// optional export after a completed run, and retention for old runs.
+			`ALTER TABLE schedules ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE schedules ADD COLUMN retry_backoff_seconds INTEGER NOT NULL DEFAULT 60`,
+			`ALTER TABLE schedules ADD COLUMN auto_export_format TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE schedules ADD COLUMN runs_retention_days INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE schedule_runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1`,
+			// Reusable keyword sets for the wizard.
+			`CREATE TABLE keyword_sets (
+				id TEXT PRIMARY KEY,
+				name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+				description TEXT NOT NULL DEFAULT '',
+				keywords TEXT NOT NULL DEFAULT '[]',
+				use_count INTEGER NOT NULL DEFAULT 0,
+				last_used_at INTEGER,
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL
+			)`,
+			`CREATE INDEX idx_keyword_sets_name ON keyword_sets(name)`,
 		},
 	},
 }

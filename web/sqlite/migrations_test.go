@@ -845,7 +845,7 @@ func assertCurrentSchema(t *testing.T, db *sql.DB) {
 		"exports", "field_provenance", "integrations", "job_businesses",
 		"job_checkpoints", "job_config_versions", "job_events", "job_logs",
 		"job_progress", "job_runtime", "job_tags", "job_tasks",
-		"jobs", "legacy_imports", "notes", "phones",
+		"jobs", "keyword_sets", "legacy_imports", "notes", "phones",
 		"proxies", "proxy_health", "proxy_pool_members", "proxy_pools",
 		"quality_rule_sets", "saved_areas", "saved_views", "schedule_runs",
 		"schedules", "schema_migration_checksums", "schema_migrations", "settings",
