@@ -383,8 +383,30 @@ func prospectSignalsFromBusiness(business BusinessResult) prospect.Signals {
 // matching the stored prospect_status default.
 func computeProspectExportData(business BusinessResult, weights prospect.ScoreWeights, templates map[string]string) prospectExportData {
 	signals := prospectSignalsFromBusiness(business)
-	status, _ := prospect.Classify(signals)
-	score, tier, reasons := prospect.Score(status, signals, weights)
+
+	// The durable classification (written at import and after every website
+	// audit) is authoritative when present: it was computed with audit
+	// evidence this read-time view may not carry. Read-time classification is
+	// the fallback for rows the recompute pass has not reached yet.
+	status := business.ProspectStatus
+	var (
+		score   float64
+		tier    string
+		reasons []prospect.Reason
+	)
+
+	if status != "" {
+		if business.ProspectScore != nil {
+			score = *business.ProspectScore
+			tier = business.ProspectTier
+			_, _, reasons = prospect.Score(status, signals, weights)
+		} else {
+			score, tier, reasons = prospect.Score(status, signals, weights)
+		}
+	} else {
+		status, _ = prospect.Classify(signals)
+		score, tier, reasons = prospect.Score(status, signals, weights)
+	}
 
 	template := prospect.OpenerTemplateFor(templates, status)
 	if strings.TrimSpace(template) == "" {

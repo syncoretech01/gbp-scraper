@@ -426,10 +426,12 @@ func (repository *starterSeedRepository) validateSeedFilter(filter ResultFilter)
 		"business_status": true, "website_status": true, "domain": true,
 		"change_status": true, "place_id": true, "cid": true, "data_id": true,
 		"maps_url": true, "website": true, "email": true, "phone": true,
+		"prospect_status": true, "prospect_tier": true,
 	}
 	numericFields := map[string]bool{
 		"rating": true, "reviews": true, "review_count": true,
 		"quality_score": true, "confidence": true, "website_response_ms": true,
+		"prospect_score": true,
 	}
 
 	switch {
@@ -459,3 +461,44 @@ var (
 	_ reusableRepository = (*starterSeedRepository)(nil)
 	_ ResultRepository   = (*starterSeedRepository)(nil)
 )
+
+func TestSeedProspectStarterViewsRunsOnceAndValidates(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repository := newStarterSeedRepository()
+	service := NewService(repository, t.TempDir())
+
+	seeded, err := service.SeedProspectStarterViews(ctx)
+	if err != nil {
+		t.Fatalf("SeedProspectStarterViews: %v", err)
+	}
+
+	if seeded == 0 {
+		t.Fatal("no GBP prospecting views were seeded")
+	}
+
+	views, err := service.ListSavedResultViews(ctx, "")
+	if err != nil {
+		t.Fatalf("list views: %v", err)
+	}
+
+	found := map[string]bool{}
+	for _, view := range views {
+		found[view.Name] = true
+	}
+
+	for _, name := range []string{
+		"GBP: no website", "GBP: social profile only", "GBP: tier A prospects",
+	} {
+		if !found[name] {
+			t.Fatalf("seeded views missing %q: %v", name, found)
+		}
+	}
+
+	// Second call is a no-op.
+	again, err := service.SeedProspectStarterViews(ctx)
+	if err != nil || again != 0 {
+		t.Fatalf("second seeding = %d, %v", again, err)
+	}
+}

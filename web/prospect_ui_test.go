@@ -1,6 +1,8 @@
 package web
 
 import (
+	"context"
+	"github.com/gosom/google-maps-scraper/web/prospect"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -330,4 +332,14 @@ func TestProspectStateClassAndReasonParsing(t *testing.T) {
 		// same honest fallback so either representation is acceptable.
 		t.Log("empty reasons array parsed to nil")
 	}
+}
+
+// The shared results stub gains prospect capability so these tests exercise
+// the real SupportsProspects semantics (repository interface assertion).
+func (r *fixedResultRepository) RecomputeProspects(context.Context, prospect.ScoreWeights, []string) (int64, error) {
+	return 0, nil
+}
+
+func (r *fixedResultRepository) ProspectSummary(context.Context) (ProspectSummary, error) {
+	return ProspectSummary{}, nil
 }

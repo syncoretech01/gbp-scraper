@@ -99,6 +99,11 @@ func (w *webrunner) Run(ctx context.Context) error {
 	} else if seeded > 0 {
 		log.Printf("seeded %d starter templates and saved result views", seeded)
 	}
+	if seeded, err := w.svc.SeedProspectStarterViews(ctx); err != nil {
+		log.Printf("warning: prospect starter views could not be seeded: %v", err)
+	} else if seeded > 0 {
+		log.Printf("seeded %d GBP prospecting saved views", seeded)
+	}
 
 	if report, err := w.svc.ApplyRetentionPolicies(ctx); err != nil &&
 		!errors.Is(err, web.ErrRetentionUnsupported) {

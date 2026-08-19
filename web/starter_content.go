@@ -114,6 +114,87 @@ func (s *Service) seedStarterTemplates(ctx context.Context) (int, error) {
 // but only into a workspace that has no saved views at all. Every candidate
 // search is executed once against the repository's bounded query language;
 // a search the validator rejects is skipped rather than forced.
+const prospectStarterSettingKey = "seed.starter_content.gbp"
+
+// SeedProspectStarterViews seeds the GBP prospecting saved views once. It is
+// keyed independently of the original starter content so workspaces that were
+// seeded before the prospecting layer existed still receive these views.
+func (s *Service) SeedProspectStarterViews(ctx context.Context) (int, error) {
+	settings, err := s.LoadSettings(ctx)
+	if err != nil {
+		if errors.Is(err, ErrSettingsUnsupported) {
+			return 0, nil
+		}
+
+		return 0, fmt.Errorf("load prospect starter flag: %w", err)
+	}
+
+	if settings[prospectStarterSettingKey] != "" {
+		return 0, nil
+	}
+
+	if _, err := s.reusableRepository(); err != nil {
+		return 0, nil
+	}
+
+	seeded := 0
+
+	for _, view := range prospectStarterViews(time.Now().UTC()) {
+		if err := s.validateStarterViewSearch(ctx, view.Search); err != nil {
+			continue
+		}
+
+		if err := s.SaveResultView(ctx, view); err != nil {
+			return seeded, fmt.Errorf("save prospect starter view %q: %w", view.Name, err)
+		}
+
+		seeded++
+	}
+
+	if err := s.SaveSettings(ctx, map[string]string{prospectStarterSettingKey: "v1"}); err != nil {
+		return seeded, fmt.Errorf("store prospect starter flag: %w", err)
+	}
+
+	return seeded, nil
+}
+
+// prospectStarterViews are the GBP call-sheet entry points: each one is a
+// worth-calling slice of the prospect taxonomy.
+func prospectStarterViews(now time.Time) []SavedResultView {
+	view := func(name string, search ResultSearch) SavedResultView {
+		search.Limit = 25
+		search.Sort = "updated_desc"
+
+		return SavedResultView{
+			ID: uuid.NewString(), Name: name, Search: search,
+			CreatedAt: now, UpdatedAt: now,
+		}
+	}
+
+	return []SavedResultView{
+		view("GBP: no website", ResultSearch{Filters: []ResultFilter{
+			{Field: "prospect_status", Operator: "eq", Value: "NO_WEBSITE"},
+		}}),
+		view("GBP: dead or broken sites", ResultSearch{FilterGroup: &ResultFilterGroup{
+			Logic: "or",
+			Filters: []ResultFilter{
+				{Field: "prospect_status", Operator: "eq", Value: "DEAD"},
+				{Field: "prospect_status", Operator: "eq", Value: "SSL_BROKEN"},
+				{Field: "prospect_status", Operator: "eq", Value: "PARKED"},
+			},
+		}}),
+		view("GBP: social profile only", ResultSearch{Filters: []ResultFilter{
+			{Field: "prospect_status", Operator: "eq", Value: "SOCIAL_ONLY"},
+		}}),
+		view("GBP: free site builders", ResultSearch{Filters: []ResultFilter{
+			{Field: "prospect_status", Operator: "eq", Value: "FREE_BUILDER"},
+		}}),
+		view("GBP: tier A prospects", ResultSearch{Filters: []ResultFilter{
+			{Field: "prospect_tier", Operator: "eq", Value: "A"},
+		}}),
+	}
+}
+
 func (s *Service) seedStarterViews(ctx context.Context) (int, error) {
 	existing, err := s.ListSavedResultViews(ctx, "")
 	if err != nil {
