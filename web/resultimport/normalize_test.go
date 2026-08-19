@@ -163,3 +163,79 @@ func TestFallbackIdentityIsStableButSemanticChangesHash(t *testing.T) {
 	}
 	assertWarning(t, first.Warnings, "identity", IssueMissingIdentity)
 }
+
+func TestCountryNamesNormalizeToISOAlpha2(t *testing.T) {
+	t.Parallel()
+
+	for input, want := range map[string]string{
+		"United States": "US", "USA": "US", "us": "US", "United States of America": "US",
+		"United Kingdom": "GB", "UK": "GB", "Great Britain": "GB", "gb": "GB",
+		"Canada": "CA", "Australia": "AU", "New Zealand": "NZ",
+		"Germany": "DE", "Deutschland": "DE",
+		"France": "FR", "Spain": "ES", "Italy": "IT",
+		"Netherlands": "NL", "The Netherlands": "NL",
+		"Ireland": "IE", "India": "IN", "Mexico": "MX",
+		"Brazil": "BR", "Brasil": "BR", "Japan": "JP", "China": "CN",
+		"Switzerland": "CH", "Austria": "AT", "Belgium": "BE", "Sweden": "SE",
+	} {
+		if got := normalizeCountry(input); got != want {
+			t.Errorf("normalizeCountry(%q) = %q, want %q", input, got, want)
+		}
+	}
+
+	// Unknown countries must come back unchanged rather than guessed at.
+	for input, want := range map[string]string{
+		"Nigeria":          "Nigeria",
+		"Atlantis":         "Atlantis",
+		"  South   Africa": "South Africa",
+	} {
+		if got := normalizeCountry(input); got != want {
+			t.Errorf("normalizeCountry(%q) = %q, want unchanged %q", input, got, want)
+		}
+	}
+}
+
+func TestCanadianProvincesNormalizeLikeUSStates(t *testing.T) {
+	t.Parallel()
+
+	for input, want := range map[string]string{
+		"Alberta": "AB", "British Columbia": "BC", "Manitoba": "MB",
+		"New Brunswick": "NB", "Newfoundland and Labrador": "NL", "Newfoundland": "NL",
+		"Northwest Territories": "NT", "Nova Scotia": "NS", "Nunavut": "NU",
+		"Ontario": "ON", "Prince Edward Island": "PE",
+		"Quebec": "QC", "Québec": "QC", "Saskatchewan": "SK",
+		"Yukon": "YT", "Yukon Territory": "YT",
+		// Two-letter codes pass through exactly as US state codes do.
+		"on": "ON", "qc": "QC", "bc": "BC",
+		// US states keep working.
+		"California": "CA", "New York": "NY",
+	} {
+		if got := normalizeState(input); got != want {
+			t.Errorf("normalizeState(%q) = %q, want %q", input, got, want)
+		}
+	}
+
+	if got := normalizeState("Bavaria"); got != "" {
+		t.Errorf("normalizeState(Bavaria) = %q, want empty for unknown regions", got)
+	}
+}
+
+func TestAddressTextCountryDetectionStaysConservative(t *testing.T) {
+	t.Parallel()
+
+	canadian := parseAddress("1 Yonge St, Toronto, ON M5E 1E5, Canada", JSONValue{})
+	if canadian.Country != "CA" || canadian.City != "Toronto" || canadian.State != "ON" {
+		t.Errorf("canadian address = %#v", canadian)
+	}
+
+	german := parseAddress("Musterstrasse 1, Berlin, Germany", JSONValue{})
+	if german.Country != "DE" || german.City != "Berlin" {
+		t.Errorf("german address = %#v", german)
+	}
+
+	// The IN state code must never be read as the country India.
+	domestic := parseAddress("742 Evergreen Terrace, Indianapolis, IN 46220", JSONValue{})
+	if domestic.Country != "" || domestic.State != "IN" || domestic.PostalCode != "46220" {
+		t.Errorf("domestic address = %#v", domestic)
+	}
+}

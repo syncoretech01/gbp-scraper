@@ -425,3 +425,92 @@ func assertWarning(t *testing.T, warnings []Warning, field string, code IssueCod
 	}
 	t.Errorf("missing warning field=%q code=%q in %#v", field, code, warnings)
 }
+
+func hasWarning(warnings []Warning, field string, code IssueCode) bool {
+	for _, warning := range warnings {
+		if warning.Field == field && warning.Code == code {
+			return true
+		}
+	}
+
+	return false
+}
+
+func TestSuspiciousPhonePlaceholdersAreFlaggedButKept(t *testing.T) {
+	t.Parallel()
+
+	headers := []string{"title", "phone"}
+	for _, test := range []struct {
+		name       string
+		phone      string
+		suspicious bool
+	}{
+		{name: "all zeros", phone: "0000000000", suspicious: true},
+		{name: "all ones", phone: "1111111111", suspicious: true},
+		{name: "ascending sequence", phone: "1234567890", suspicious: true},
+		{name: "formatted placeholder", phone: "(123) 456-7890", suspicious: true},
+		{name: "real number", phone: "+1 (415) 555-2671", suspicious: false},
+	} {
+		record := mustReadOne(t, makeCSV(t, headers, []string{"Placeholder Test", test.phone}), Options{SourceID: "sus-phone"})
+		if len(record.Business.Phones) != 1 {
+			t.Fatalf("%s: phone %q was dropped: %#v", test.name, test.phone, record.Business.Phones)
+		}
+		if got := hasWarning(record.Warnings, "phone", IssueSuspiciousValue); got != test.suspicious {
+			t.Errorf("%s: suspicious flag for %q = %v, want %v (warnings %#v)",
+				test.name, test.phone, got, test.suspicious, record.Warnings)
+		}
+	}
+}
+
+func TestSuspiciousWebsitePlaceholdersAreFlaggedButKept(t *testing.T) {
+	t.Parallel()
+
+	headers := []string{"title", "website"}
+	for _, test := range []struct {
+		name       string
+		website    string
+		suspicious bool
+	}{
+		{name: "documentation domain", website: "https://example.com/contact", suspicious: true},
+		{name: "documentation org domain", website: "http://www.example.org", suspicious: true},
+		{name: "localhost", website: "http://localhost:8080", suspicious: true},
+		{name: "loopback", website: "http://127.0.0.1/site", suspicious: true},
+		{name: "literal n/a", website: "N/A", suspicious: true},
+		{name: "literal none", website: "none", suspicious: true},
+		{name: "real website", website: "https://acmedental.com", suspicious: false},
+	} {
+		record := mustReadOne(t, makeCSV(t, headers, []string{"Placeholder Test", test.website}), Options{SourceID: "sus-web"})
+		if record.Raw.Value("website") != test.website {
+			t.Fatalf("%s: raw website %q was not preserved", test.name, test.website)
+		}
+		if got := hasWarning(record.Warnings, "website", IssueSuspiciousValue); got != test.suspicious {
+			t.Errorf("%s: suspicious flag for %q = %v, want %v (warnings %#v)",
+				test.name, test.website, got, test.suspicious, record.Warnings)
+		}
+	}
+}
+
+func TestSuspiciousEmailPlaceholdersAreFlaggedButKept(t *testing.T) {
+	t.Parallel()
+
+	headers := []string{"title", "emails"}
+	for _, test := range []struct {
+		name       string
+		email      string
+		suspicious bool
+	}{
+		{name: "documentation domain", email: "info@example.com", suspicious: true},
+		{name: "test domain", email: "owner@test.com", suspicious: true},
+		{name: "no-reply mailbox", email: "NoReply@acmedental.com", suspicious: true},
+		{name: "real mailbox", email: "reception@acmedental.com", suspicious: false},
+	} {
+		record := mustReadOne(t, makeCSV(t, headers, []string{"Placeholder Test", test.email}), Options{SourceID: "sus-mail"})
+		if len(record.Business.Emails) != 1 {
+			t.Fatalf("%s: email %q was dropped: %#v", test.name, test.email, record.Business.Emails)
+		}
+		if got := hasWarning(record.Warnings, "emails", IssueSuspiciousValue); got != test.suspicious {
+			t.Errorf("%s: suspicious flag for %q = %v, want %v (warnings %#v)",
+				test.name, test.email, got, test.suspicious, record.Warnings)
+		}
+	}
+}

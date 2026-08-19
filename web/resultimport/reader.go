@@ -332,6 +332,24 @@ func (r *Reader) normalizeRow(values []string) Record {
 		warnings = append(warnings, warning("emails", IssueDuplicateContact))
 	}
 
+	// Placeholder-looking contacts are flagged for review but never dropped:
+	// the values stay in the record exactly as normalized above.
+	for _, phone := range phones {
+		if isSuspiciousPhone(phone.MatchKey) {
+			warnings = append(warnings, warning("phone", IssueSuspiciousValue))
+			break
+		}
+	}
+	if isSuspiciousWebsite(raw.Value("website"), website) {
+		warnings = append(warnings, warning("website", IssueSuspiciousValue))
+	}
+	for _, email := range emails {
+		if isSuspiciousEmail(email) {
+			warnings = append(warnings, warning("emails", IssueSuspiciousValue))
+			break
+		}
+	}
+
 	reviewCount := parseInteger(raw.Value("review_count"), "review_count", &warnings)
 	if reviewCount != nil && *reviewCount < 0 {
 		reviewCount = nil
@@ -583,6 +601,56 @@ func firstNonEmptyRaw(raw RawRecord, fields ...string) string {
 	return ""
 }
 
+// isSuspiciousPhone reports whether normalized phone digits look like a
+// keyboard placeholder: one repeated digit (0000000000, 1111111111, ...) or a
+// consecutive ascending run such as 1234567890.
+func isSuspiciousPhone(digits string) bool {
+	if len(digits) < 7 {
+		return false
+	}
+
+	repeated, sequential := true, true
+	for index := 1; index < len(digits); index++ {
+		if digits[index] != digits[0] {
+			repeated = false
+		}
+		if digits[index] != '0'+byte((int(digits[index-1]-'0')+1)%10) {
+			sequential = false
+		}
+	}
+
+	return repeated || sequential
+}
+
+// isSuspiciousWebsite reports whether a website value is a documentation or
+// loopback placeholder. The value itself is kept; only a warning is added.
+func isSuspiciousWebsite(raw string, website URLValue) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "n/a", "none":
+		return true
+	}
+	if !website.Valid {
+		return false
+	}
+
+	switch website.Domain {
+	case "example.com", "example.org", "localhost", "127.0.0.1":
+		return true
+	default:
+		return false
+	}
+}
+
+// isSuspiciousEmail reports whether a syntactically valid email is a
+// placeholder: a documentation or test domain, or a no-reply sender.
+func isSuspiciousEmail(email Email) bool {
+	if email.Domain == "example.com" || email.Domain == "test.com" {
+		return true
+	}
+
+	return strings.HasPrefix(email.Normalized, "noreply@")
+}
+
 func warning(field string, code IssueCode) Warning {
 	return Warning{Field: field, Code: code, Message: warningMessage(code)}
 }
@@ -609,6 +677,8 @@ func warningMessage(code IssueCode) string {
 		return "structured value is not valid JSON"
 	case IssueInvalidTimestamp:
 		return "source timestamp could not be parsed"
+	case IssueSuspiciousValue:
+		return "value looks like a placeholder and needs review"
 	case IssueDuplicateContact:
 		return "duplicate normalized contact values were removed"
 	case IssueUnsupportedScheme:

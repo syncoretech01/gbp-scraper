@@ -662,35 +662,94 @@ func normalizeState(value string) string {
 		return "WI"
 	case "wyoming":
 		return "WY"
+	case "alberta":
+		return "AB"
+	case "british columbia":
+		return "BC"
+	case "manitoba":
+		return "MB"
+	case "new brunswick":
+		return "NB"
+	case "newfoundland", "newfoundland and labrador":
+		return "NL"
+	case "northwest territories":
+		return "NT"
+	case "nova scotia":
+		return "NS"
+	case "nunavut":
+		return "NU"
+	case "ontario":
+		return "ON"
+	case "prince edward island":
+		return "PE"
+	case "quebec", "québec":
+		return "QC"
+	case "saskatchewan":
+		return "SK"
+	case "yukon", "yukon territory":
+		return "YT"
 	default:
 		return ""
 	}
 }
 
-func normalizeCountry(value string) string {
-	switch strings.ToLower(normalizeWords(value, false)) {
-	case "us", "usa", "united states", "united states of america":
-		return "US"
-	case "ca", "canada":
-		return "CA"
-	case "uk", "gb", "great britain", "united kingdom":
-		return "GB"
-	case "au", "australia":
-		return "AU"
-	case "nz", "new zealand":
-		return "NZ"
-	default:
-		return strings.ToUpper(cleanDisplay(value))
-	}
+// countryNameCodes maps common English country names, obvious native variants,
+// and ISO-3166 alpha-2 codes to their canonical alpha-2 code. Keys are in the
+// comparison form produced by normalizeWords.
+//
+//nolint:gochecknoglobals // Immutable lookup tables are safe to share.
+var countryNameCodes = map[string]string{
+	"us": "US", "usa": "US", "united states": "US", "united states of america": "US",
+	"uk": "GB", "gb": "GB", "great britain": "GB", "united kingdom": "GB",
+	"ca": "CA", "canada": "CA",
+	"au": "AU", "australia": "AU",
+	"nz": "NZ", "new zealand": "NZ",
+	"de": "DE", "germany": "DE", "deutschland": "DE",
+	"fr": "FR", "france": "FR",
+	"es": "ES", "spain": "ES",
+	"it": "IT", "italy": "IT",
+	"nl": "NL", "netherlands": "NL", "the netherlands": "NL",
+	"ie": "IE", "ireland": "IE",
+	"in": "IN", "india": "IN",
+	"mx": "MX", "mexico": "MX",
+	"br": "BR", "brazil": "BR", "brasil": "BR",
+	"jp": "JP", "japan": "JP",
+	"cn": "CN", "china": "CN",
+	"ch": "CH", "switzerland": "CH",
+	"at": "AT", "austria": "AT",
+	"be": "BE", "belgium": "BE",
+	"se": "SE", "sweden": "SE",
 }
 
-func isKnownCountry(value string) bool {
-	switch strings.ToLower(normalizeWords(value, false)) {
-	case "us", "usa", "united states", "united states of america", "ca", "canada", "uk", "gb", "great britain", "united kingdom", "au", "australia", "nz", "new zealand":
-		return true
-	default:
-		return false
+// normalizeCountry converts recognized country names and codes to ISO-3166
+// alpha-2. Unknown input is never guessed at: it is returned unchanged apart
+// from whitespace cleanup.
+func normalizeCountry(value string) string {
+	if code, ok := countryNameCodes[strings.ToLower(normalizeWords(value, false))]; ok {
+		return code
 	}
+
+	return cleanDisplay(value)
+}
+
+// isKnownCountry decides whether a free-text address component is a country.
+// Two-letter codes are only trusted for the historical set: new codes such as
+// IN, DE, and NL collide with US state and Canadian province abbreviations, so
+// in free text they keep being treated as regions rather than countries.
+func isKnownCountry(value string) bool {
+	normalized := strings.ToLower(normalizeWords(value, false))
+	if len(normalized) <= 3 {
+		switch normalized {
+		case "us", "usa", "ca", "uk", "gb", "au", "nz":
+			return true
+		default:
+			return false
+		}
+	}
+
+	_, ok := countryNameCodes[normalized]
+
+	return ok
 }
 
 func normalizePostalCode(value string) string {
