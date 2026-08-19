@@ -265,6 +265,7 @@ func exportExtension(format string) (string, bool) {
 		"csv": "csv", "json": "json", "jsonl": "jsonl", "geojson": "geojson",
 		"kml": "kml", "vcard": "vcf", "txt": "txt",
 		"postgresql_sql": "sql", "mysql_sql": "sql", "xlsx": "xlsx", "sqlite": "sqlite",
+		"discovered_companies": "jsonl",
 	}
 	extension, ok := extensions[format]
 	return extension, ok
