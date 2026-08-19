@@ -1161,6 +1161,73 @@ func recordWebsiteAuditChanges(
 	return nil
 }
 
+// AttachAuditScreenshot records the stored homepage screenshot for one audit
+// and mirrors the same relative path onto the audited website row so the
+// results drawer can render the preview. It only ever touches the two
+// screenshot_path columns; immutable audit evidence stays untouched.
+func (repo *repo) AttachAuditScreenshot(ctx context.Context, auditID int64, relativePath string) error {
+	relativePath = strings.TrimSpace(relativePath)
+	if relativePath == "" {
+		return fmt.Errorf("attach audit screenshot: empty screenshot path")
+	}
+	tx, err := repo.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var websiteID sql.NullInt64
+	err = tx.QueryRowContext(ctx, `SELECT website_id FROM website_audits WHERE id = ?`, auditID).Scan(&websiteID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("attach audit screenshot: website audit %d not found", auditID)
+	}
+	if err != nil {
+		return fmt.Errorf("read audited website: %w", err)
+	}
+	if _, err := tx.ExecContext(
+		ctx,
+		`UPDATE website_audits SET screenshot_path = ? WHERE id = ?`,
+		relativePath,
+		auditID,
+	); err != nil {
+		return fmt.Errorf("store audit screenshot path: %w", err)
+	}
+	if websiteID.Valid {
+		if _, err := tx.ExecContext(
+			ctx,
+			`UPDATE websites SET screenshot_path = ? WHERE id = ?`,
+			relativePath,
+			websiteID.Int64,
+		); err != nil {
+			return fmt.Errorf("store website screenshot path: %w", err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+// RecordScreenshotEvent appends one auditable screenshot event, for example
+// screenshot_failed or screenshot_skipped_no_driver. Events deliberately live
+// in audit_logs so a capture problem never rewrites audit evidence.
+func (repo *repo) RecordScreenshotEvent(ctx context.Context, action, entityID, details string) error {
+	if strings.TrimSpace(details) == "" {
+		details = "{}"
+	}
+	if _, err := repo.db.ExecContext(
+		ctx,
+		`INSERT INTO audit_logs(action, entity_type, entity_id, details, created_at)
+		VALUES (?, 'website_audit', ?, ?, ?)`,
+		action,
+		entityID,
+		details,
+		time.Now().UTC().Unix(),
+	); err != nil {
+		return fmt.Errorf("record screenshot event: %w", err)
+	}
+
+	return nil
+}
+
 func (repo *repo) WebsiteAuditHistory(
 	ctx context.Context,
 	businessID string,
@@ -1173,7 +1240,7 @@ func (repo *repo) WebsiteAuditHistory(
 			redirect_chain, internal_links_checked, broken_internal_link_count,
 			broken_internal_links, mixed_content, parked, coming_soon, placeholder,
 			template_indicators, technologies, trackers, emails, phones,
-			social_profiles, raw_result, error, started_at, completed_at
+			social_profiles, screenshot_path, raw_result, error, started_at, completed_at
 		FROM website_audits WHERE business_id = ?
 		ORDER BY completed_at DESC, id DESC LIMIT ?`,
 		businessID,
@@ -1220,6 +1287,7 @@ func (repo *repo) WebsiteAuditHistory(
 			&emailsJSON,
 			&phonesJSON,
 			&socialsJSON,
+			&audit.ScreenshotPath,
 			&rawJSON,
 			&audit.Error,
 			&startedAt,

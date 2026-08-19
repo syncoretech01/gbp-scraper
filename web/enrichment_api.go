@@ -165,6 +165,7 @@ func enrichmentOptionsFromForm(r *http.Request) EnrichmentOptions {
 		MaxInternalLinkChecks: formInteger(r.FormValue("enrichment_internal_links")),
 		DisableInternalChecks: r.FormValue("enrichment_check_links") == "off",
 		CheckMX:               r.FormValue("enrichment_check_mx") == "on",
+		CaptureScreenshot:     r.FormValue("enrichment_capture_screenshot") == "on",
 		Force:                 r.FormValue("enrichment_force") == "on",
 		StaleAfterHours:       formInteger(r.FormValue("enrichment_stale_hours")),
 	}
