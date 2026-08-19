@@ -477,6 +477,13 @@ value for a local-first tool. None is a technical limitation.
   already-known Place IDs would save time on rescans; detection-at-import
   covers correctness today.
 - **Spreadsheet keyboard model and a formal WCAG conformance audit.**
+- **GBP prospecting externals** — website auditing (site-whisper), email
+  verification (syncore-email-verifier) and the CRM/Lead-Engine pipeline stay
+  in their own repositories per the GBP build specification's DO-NOT-BUILD
+  table; this application stores their boundary URLs and serves the
+  DiscoveredCompany contract endpoint (see docs/gbp-prospecting.md).
+  domain_age_days from the spec's optional rawPayload needs WHOIS data and is
+  deferred with them.
 
 ## Genuinely infeasible locally or without paid services
 

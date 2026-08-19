@@ -35,6 +35,7 @@ Corollaries:
 | `docs/implementation-progress.md` | The requirement checklist and implementation log. Update as work lands. |
 | `docs/technical-limitations.md` | Authoritative boundary for spec items that are *not* implemented. Anything unimplemented must be recorded here with a specific technical reason. |
 | `docs/local-workspace.md` | Operator guide for the local Docker workspace. |
+| `docs/gbp-prospecting.md` | GBP prospecting layer: spec-to-repo mapping, Engine contract boundary, DO-NOT-BUILD table. |
 | `AGENTS.md` | Go code style rules. Still applies; this file does not replace it. |
 | `README.md` | Upstream CLI/user documentation. Keep flag docs accurate. |
 
@@ -108,6 +109,12 @@ node --test skills/google-maps-scraper/scripts/select-proxy-sponsors.test.mjs
 `gofmt -l` over the whole tree is **not** a useful gate here: files checked out
 from git carry CRLF endings and gofmt reports every one of them. Only check the
 files you actually touched.
+
+Windows Defender's ML heuristic intermittently flags freshly linked Go TEST
+binaries ("file contains a virus or potentially unwanted software"), most often
+`sqlite.test.exe`. This is a binary-hash false positive, not a code signal —
+never bisect code because of it. Validate the affected package in the golang
+container instead (the race gate does this anyway).
 
 Race gate (container, since `-race` needs cgo):
 
