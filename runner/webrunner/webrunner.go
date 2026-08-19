@@ -91,6 +91,12 @@ func (w *webrunner) Run(ctx context.Context) error {
 		log.Printf("warning: some legacy result CSV files could not be imported: %v", err)
 	}
 
+	if seeded, err := w.svc.SeedStarterContent(ctx); err != nil {
+		log.Printf("warning: starter content could not be seeded: %v", err)
+	} else if seeded > 0 {
+		log.Printf("seeded %d starter templates and saved result views", seeded)
+	}
+
 	if report, err := w.svc.ApplyRetentionPolicies(ctx); err != nil &&
 		!errors.Is(err, web.ErrRetentionUnsupported) {
 		if ctxErr := ctx.Err(); ctxErr != nil {
