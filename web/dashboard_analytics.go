@@ -75,6 +75,18 @@ type DashboardAnalytics struct {
 	JobTrends        []DashboardJobTrend          `json:"job_trends"`
 	SpeedTrends      []DashboardSpeedTrend        `json:"speed_trends"`
 	Proxy            DashboardProxySummary        `json:"proxy"`
+
+	// ProxyLatencyBuckets buckets only enabled proxies by their most recent
+	// recorded latency sample (<200 ms, 200–499 ms, 500–999 ms, 1000+ ms,
+	// Unknown). Disabled proxies are excluded because they can no longer be
+	// selected for a scrape.
+	ProxyLatencyBuckets []DashboardCountPoint `json:"proxy_latency_buckets"`
+	// ProxyReliability reports one point per proxy pool: the label is the pool
+	// name and the value is the success share as a whole percent (0–100),
+	// computed as success/(success+failure) over the pool's stored counters.
+	// Pools without a single recorded success or failure are omitted rather
+	// than shown as a misleading 0%.
+	ProxyReliability []DashboardCountPoint `json:"proxy_reliability"`
 }
 
 type dashboardAnalyticsRepository interface {

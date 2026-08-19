@@ -42,7 +42,7 @@
     </section>
 
     <section class="grid grid-2">
-        <article class="card"><div class="card-header"><div><h2>Versions and binding</h2><p>Useful for local troubleshooting</p></div></div><div class="card-body"><dl class="key-value"><dt>Go</dt><dd>{{.Page.GoVersion}}</dd><dt>Operating system</dt><dd>{{.Page.OS}}</dd><dt>SQLite</dt><dd>{{.Page.Snapshot.SQLiteVersion}}</dd><dt>Database schema</dt><dd>{{.Page.Snapshot.SchemaVersion}}</dd><dt>HTTP binding</dt><dd>{{.Page.Bind}}</dd></dl></div></article>
+        <article class="card"><div class="card-header"><div><h2>Versions and binding</h2><p>Useful for local troubleshooting</p></div></div><div class="card-body"><dl class="key-value"><dt>Go</dt><dd>{{.Page.GoVersion}}</dd><dt>Operating system</dt><dd>{{.Page.OS}}</dd><dt>SQLite</dt><dd>{{.Page.Snapshot.SQLiteVersion}}</dd><dt>Database schema</dt><dd>{{.Page.Snapshot.SchemaVersion}}</dd><dt>Browser automation</dt><dd>{{.Page.BrowserAutomation}}</dd><dt>HTTP binding</dt><dd>{{.Page.Bind}}</dd></dl></div></article>
         <article class="card"><div class="card-header"><div><h2>Safe maintenance</h2><p>Every mutation is CSRF-protected and confined to the mounted local data directory.</p></div></div><div class="card-body section-stack">
             <form action="/api/v1/system/vacuum" method="post" data-confirm="Compact the local database now? Active database work may wait briefly."><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button" type="submit">VACUUM database</button></form>
             <form action="/api/v1/system/cache/clear" method="post" data-confirm="Clear only cached OpenStreetMap tile files?"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button" type="submit">Clear map cache</button></form>
@@ -54,7 +54,7 @@
     </section>
 
     <section class="card" aria-labelledby="self-test-title">
-        <div class="card-header"><div><h2 id="self-test-title">Local self-test</h2><p>Checks database reads/writes, output storage, memory, disk, worker heartbeat, and optionally public network reachability.</p></div><div class="table-actions"><button class="button" type="button" data-system-self-test="offline">Run offline checks</button><button class="button" type="button" data-system-self-test="network">Include internet and Maps</button></div></div>
+        <div class="card-header"><div><h2 id="self-test-title">Local self-test</h2><p>Checks database reads/writes, output storage, memory, disk, worker heartbeat, the Playwright browser driver, proxy credentials, and optionally public network reachability. Driver and proxy results are advisory: only a real scrape proves a browser launch or end-to-end proxy access.</p></div><div class="table-actions"><button class="button" type="button" data-system-self-test="offline">Run offline checks</button><button class="button" type="button" data-system-self-test="network">Include internet and Maps</button></div></div>
         <div class="card-body section-stack" data-system-test-results><p class="field-hint">Network checks run only when explicitly selected.</p></div>
     </section>
 
