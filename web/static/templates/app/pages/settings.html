@@ -70,6 +70,22 @@
         <div class="form-actions"><button class="button button-primary" type="submit">Save settings</button></div>
     </form>
 
+    <form class="card section-stack" action="/api/v1/security/password" method="post">
+        <div class="card-header"><div><h2>Local access password</h2><p>Optional. When set, every page requires a sign-in and API requests require an API key. Sessions live in memory, so restarting the application signs everyone out.</p></div></div>
+        <div class="card-body">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <div class="form-grid form-grid-3">
+                {{if .AuthEnabled}}<div class="field"><label for="security-current">Current password</label><input class="input" id="security-current" name="current_password" type="password" autocomplete="current-password"></div>{{end}}
+                <div class="field"><label for="security-new">New password</label><input class="input" id="security-new" name="new_password" type="password" minlength="8" maxlength="128" autocomplete="new-password"><span class="field-hint">8 to 128 characters. Changing it signs out every session.</span></div>
+                <div class="field"><label for="security-timeout">Session timeout (minutes)</label><input class="input" id="security-timeout" name="session_minutes" type="number" min="15" max="10080" placeholder="720"></div>
+            </div>
+        </div>
+        <div class="card-footer form-actions">
+            <button class="button button-primary" type="submit">{{if .AuthEnabled}}Change password{{else}}Set password{{end}}</button>
+            {{if .AuthEnabled}}<button class="button button-danger" type="submit" name="action" value="remove" data-confirm="Remove the local password? The workspace returns to loopback trust.">Remove password</button>{{end}}
+        </div>
+    </form>
+
     <form class="card section-stack" action="/api/v1/quality/rules" method="post">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <div class="card-header"><div><h2>Business quality scoring</h2><p>Edit the local, explainable score model. Saving creates an immutable rules version; existing scores retain their historical version until recalculated.</p></div><code>{{.Page.Quality.Version}}</code></div>

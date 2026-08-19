@@ -564,8 +564,8 @@ func (s *Server) buildDashboard(r *http.Request) (dashboardPageData, appActivity
 		page.RatingBands = dashboardPoints(analytics.RatingBands)
 		page.JobTrends = analytics.JobTrends
 		page.SpeedTrends = analytics.SpeedTrends
-		page.ProxyLatency = dashboardPoints(analytics.Proxy.LatencyDistribution)
-		page.ProxyReliability = dashboardPoints(analytics.Proxy.ReliabilityDistribution)
+		page.ProxyLatency = dashboardPoints(analytics.ProxyLatencyBuckets)
+		page.ProxyReliability = dashboardPoints(analytics.ProxyReliability)
 		page.Metrics.TotalProxies = int(analytics.Proxy.Total)
 		page.Metrics.HealthyProxies = int(analytics.Proxy.Healthy)
 		page.Metrics.ProxySuccessRate = ratioLabel(analytics.Proxy.Successes, analytics.Proxy.Successes+analytics.Proxy.Failures)
