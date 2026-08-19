@@ -322,6 +322,12 @@ type resultMutationRepository interface {
 	MutateBusinesses(context.Context, ResultMutation) (int64, error)
 }
 
+// duplicateReviewAvailable reports whether an operator decision on a duplicate
+// pair can be recorded durably.
+func (s *Server) duplicateReviewAvailable() bool {
+	return s != nil && s.svc != nil && s.svc.SupportsDuplicateReview()
+}
+
 func (s *Server) resultMutationAvailable() bool {
 	if s == nil || s.svc == nil {
 		return false

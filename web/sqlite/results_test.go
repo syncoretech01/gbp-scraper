@@ -302,7 +302,10 @@ func TestBusinessWorkflowMutationsAreSearchableAndAudited(t *testing.T) {
 	if _, err := concrete.MutateBusinesses(ctx, web.ResultMutation{IDs: []string{id}, Action: "untag", Value: "priority"}); err != nil {
 		t.Fatalf("untag error = %v", err)
 	}
-	if _, err := concrete.MutateBusinesses(ctx, web.ResultMutation{IDs: []string{id}, Action: "delete"}); !errors.Is(err, web.ErrInvalidResultMutation) {
+	// delete and restore are now supported workflow actions; see
+	// TestBulkDeleteHidesResultsReversiblyAndKeepsHistory. An unknown action must
+	// still be refused.
+	if _, err := concrete.MutateBusinesses(ctx, web.ResultMutation{IDs: []string{id}, Action: "purge"}); !errors.Is(err, web.ErrInvalidResultMutation) {
 		t.Fatalf("unsupported mutation error = %v", err)
 	}
 }

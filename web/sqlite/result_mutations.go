@@ -27,7 +27,8 @@ func (repo *repo) MutateBusinesses(ctx context.Context, mutation web.ResultMutat
 		}
 	}
 	if mutation.Action != "tag" && mutation.Action != "untag" && mutation.Action != "reviewed" &&
-		mutation.Action != "unreviewed" && mutation.Action != "notes" {
+		mutation.Action != "unreviewed" && mutation.Action != "notes" &&
+		mutation.Action != "delete" && mutation.Action != "restore" {
 		return 0, fmt.Errorf("%w: unsupported action", web.ErrInvalidResultMutation)
 	}
 	if (mutation.Action == "tag" || mutation.Action == "untag") &&
@@ -94,6 +95,31 @@ func (repo *repo) MutateBusinesses(ctx context.Context, mutation web.ResultMutat
 			)
 			if err != nil {
 				return 0, fmt.Errorf("mark business reviewed: %w", err)
+			}
+			rows, _ := result.RowsAffected()
+			changed += rows
+		}
+	case "delete", "restore":
+		// Deletion is reversible: the row keeps its sources, versions and
+		// provenance and simply stops appearing in results and exports.
+		for _, id := range mutation.IDs {
+			var result sql.Result
+			if mutation.Action == "delete" {
+				result, err = tx.ExecContext(ctx,
+					"UPDATE businesses SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+					now,
+					now,
+					id,
+				)
+			} else {
+				result, err = tx.ExecContext(ctx,
+					"UPDATE businesses SET deleted_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL",
+					now,
+					id,
+				)
+			}
+			if err != nil {
+				return 0, fmt.Errorf("%s business: %w", mutation.Action, err)
 			}
 			rows, _ := result.RowsAffected()
 			changed += rows

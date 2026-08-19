@@ -168,8 +168,9 @@ The build provides the following working paths:
   per-email type/status, the individual social platforms, ratings breakdown,
   user reviews, and popular times. Some of these exist in the detail drawer or
   in `raw_json`, but they are not table columns.
-- Bulk delete and duplicate merge are declared but never enabled, so both stay
-  hidden and no merge route is registered.
+- Bulk delete is a reversible soft delete: the record stops appearing in results
+  and exports but keeps its sources, versions and provenance, and a restore
+  action brings it back. There is no permanent purge.
 - The record drawer has no website preview or screenshot, and tags are not
   editable from it.
 - None of the eight suggested example views is seeded. Saved views exist only
@@ -180,10 +181,14 @@ The build provides the following working paths:
 - Place ID, CID, Data ID, normalized phone, domain, and normalized address are
   stable exact identity keys. Exact matches merge automatically while retaining
   all source observations and versions.
-- Duplicate candidates are surfaced read-only with score, match signals, and
-  state. Side-by-side field alignment, keep-both, ignore/non-match rules, manual
-  field selection, and operator-driven merge are not exposed; `dedup_rules` and
-  `business_merges` exist in the schema but nothing writes them.
+- Duplicate candidates are reviewable side by side with score and match signals,
+  and an operator can merge, keep both, or ignore a pair. Merging is
+  non-destructive: the merged record keeps its row, versions and provenance, its
+  source observations and per-job links move to the surviving record, and a
+  reversible snapshot is written to `business_merges`. Keep-both writes a
+  permanent non-match rule to `dedup_rules`. What remains absent is manual
+  field-by-field value selection during a merge and an undo action; a merge is
+  reversible only by reading the stored snapshot.
 - Preferred values are chosen automatically by recency. There is no operator
   choice by source confidence, recency, or completeness.
 - Phone, email, URL, name, whitespace, legal-suffix, address, rating, and review
@@ -277,8 +282,7 @@ The build provides the following working paths:
 
 ### 23-25: API, integrations, and optional AI
 
-- There is no job validate/dry-run endpoint, no results deduplicate/merge
-  endpoint, no pool-level proxy test endpoint, and no schedule update or
+- There is no job validate/dry-run endpoint, and no schedule update or
   run-history endpoint.
 - OpenAPI JSON and the Redoc page are served and linked, and cURL/Python/
   JavaScript/Go examples are shown, but neither the document nor the examples

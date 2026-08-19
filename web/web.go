@@ -185,6 +185,7 @@ func New(svc *Service, addr string) (*Server, error) {
 	ans.registerLifecycleRoutes(mux)
 	ans.registerCheckpointRoutes(mux)
 	ans.registerResultRoutes(mux)
+	ans.registerDuplicateRoutes(mux)
 	ans.registerEnrichmentRoutes(mux)
 	ans.registerMapRoutes(mux)
 	ans.registerQualityRoutes(mux)

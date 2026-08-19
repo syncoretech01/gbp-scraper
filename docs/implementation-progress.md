@@ -375,10 +375,10 @@ Last updated: 2026-08-19
 ### Duplicate review and merge
 
 - [x] Show raw count, unique count, duplicate candidates, exact auto-merged count, and items needing review.
-- [ ] Side-by-side comparison of conflicting records.
-- [ ] Keep both, merge, ignore match, or establish a permanent non-match rule.
+- [x] Side-by-side comparison of conflicting records.
+- [x] Keep both, merge, ignore match, or establish a permanent non-match rule.
 - [ ] Choose preferred value by source confidence, recency, or completeness.
-- [ ] Preserve all source queries, cells, timestamps, and historical values after merging.
+- [x] Preserve all source queries, cells, timestamps, and historical values after merging.
 
 ## 11 Data Cleaning and Normalization
 
@@ -906,3 +906,5 @@ Last updated: 2026-08-19
 - 2026-08-20: Cancellation, shutdown and the low-disk pause now release an in-flight task instead of failing it, so a restart resumes it exactly without consuming an attempt. CSV merges are serialised behind one lock and stay idempotent by business identity.
 - 2026-08-20: Validated the pool under concurrency (bounded parallelism proven by a four-way rendezvous, every task run exactly once), cancellation (in-flight work released, committed rows kept, nothing marked failed), restart (completed tasks never re-run, no duplicated rows), lease expiry (reclaimed without consuming an attempt, the stale owner's heartbeat refused), and a 24-task 8-worker claim race. The webrunner suite ran three times under `-race` in a container with zero data races.
 - 2026-08-20: A crashing task is now retried to its attempt limit while other workers continue, and the job ends partial with a task-failure reason rather than failed. The monitor Checkpoint card reports recovery state, last checkpoint time, and completed/running/remaining/failed counts.
+- 2026-08-20: Implemented duplicate review and bulk delete, the two Results controls that were rendered but permanently capability-gated off. Merging is non-destructive: the merged record keeps its row, versions and provenance, its source observations and per-job links move to the surviving record, and a reversible snapshot plus an audit entry record the decision. Keep-both writes a permanent non-match rule so the pair is never suggested again. Deleting is a reversible soft delete that hides a record from results and exports without touching its evidence, and a restore action brings it back.
+- 2026-08-20: Verified on a copy of the live workspace: schema migrated v7 to v8 cleanly, and merging a real candidate pair took the visible result count from 36 to 35 while the stored business and source counts both stayed at 36, which is the non-destructive guarantee in practice.

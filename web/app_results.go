@@ -158,6 +158,11 @@ type appDuplicateMatch struct {
 	DuplicateMatchView
 	ScoreLabel   string
 	SignalsLabel string
+	CanResolve   bool
+	KeepID       string
+	OtherID      string
+	ThisName     string
+	ThisAddress  string
 }
 
 type appQualityReport struct {
@@ -263,6 +268,8 @@ func (s *Server) buildResultsPage(r *http.Request, search ResultSearch) (results
 			CanEnrich:        s.enrichmentAvailable(),
 			CanCheckWebsites: s.enrichmentAvailable(),
 			CanCheckEmails:   s.enrichmentAvailable(),
+			CanMerge:         s.duplicateReviewAvailable(),
+			CanDelete:        s.resultMutationAvailable(),
 		},
 	}
 	flatFilters := search.Filters
@@ -492,11 +499,20 @@ func (s *Server) loadAppBusinessDetail(r *http.Request) (appBusinessDetail, int,
 			AfterLabel:         prettyJSON(item.AfterValue),
 		})
 	}
+	canResolve := s.duplicateReviewAvailable()
+
 	for _, item := range detail.DuplicateMatches {
 		page.DuplicateMatches = append(page.DuplicateMatches, appDuplicateMatch{
 			DuplicateMatchView: item,
 			ScoreLabel:         fmt.Sprintf("%.0f%%", item.Score*100),
 			SignalsLabel:       prettyJSON(item.Signals),
+			// Only a pending pair may still be decided, and only when the
+			// repository can record the decision.
+			CanResolve:  canResolve && item.State == "pending" && item.CandidateID > 0,
+			KeepID:      detail.Business.ID,
+			OtherID:     item.BusinessID,
+			ThisName:    detail.Business.Name,
+			ThisAddress: detail.Business.Address,
 		})
 	}
 

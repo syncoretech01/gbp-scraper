@@ -534,3 +534,13 @@ html[data-reduced-motion="true"] *, html[data-reduced-motion="true"] *::before, 
     .app-main { max-width: none; padding: 0; }
     .card, .table-wrap { box-shadow: none; break-inside: avoid; }
 }
+
+.duplicate-compare {
+    margin-top: .75rem;
+    border-top: 1px solid var(--border);
+    padding-top: .75rem;
+}
+
+.duplicate-compare .data-table {
+    margin-bottom: .5rem;
+}
