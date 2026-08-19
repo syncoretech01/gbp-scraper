@@ -667,6 +667,42 @@ type checkpointQueryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
+// MapCellTasks returns every task of a job that carries a source cell, with
+// its checkpoint payload, so the Map Explorer can aggregate per-cell duplicate
+// evidence from the durable plan.
+func (repo *repo) MapCellTasks(ctx context.Context, jobID string) ([]web.JobTask, error) {
+	rows, err := repo.db.QueryContext(
+		ctx,
+		`SELECT id, job_id, task_key, kind, state, sequence, query, source_cell, input_id,
+			payload, checkpoint, attempts, max_attempts, last_error, started_at, finished_at, updated_at
+		FROM job_tasks WHERE job_id = ? AND source_cell <> ''
+		ORDER BY sequence, task_key`,
+		jobID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list map cell tasks: %w", err)
+	}
+
+	defer func() { _ = rows.Close() }()
+
+	tasks := make([]web.JobTask, 0)
+
+	for rows.Next() {
+		task, scanErr := scanJobTask(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan map cell task: %w", scanErr)
+		}
+
+		tasks = append(tasks, task)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read map cell tasks: %w", err)
+	}
+
+	return tasks, nil
+}
+
 func readJobTask(ctx context.Context, queryer checkpointQueryer, jobID, taskKey string) (web.JobTask, error) {
 	row := queryer.QueryRowContext(
 		ctx,

@@ -194,6 +194,8 @@ func New(svc *Service, addr string) (*Server, error) {
 	ans.registerScheduleAutomationRoutes(mux)
 	ans.registerManualEditRoutes(mux)
 	ans.registerLiveControlRoutes(mux)
+	ans.registerScreenshotRoutes(mux)
+	ans.registerTemplateRenameRoutes(mux)
 	ans.registerCheckpointRoutes(mux)
 	ans.registerResultRoutes(mux)
 	ans.registerDuplicateRoutes(mux)
