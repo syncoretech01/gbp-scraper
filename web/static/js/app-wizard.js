@@ -121,6 +121,14 @@
             item.hidden = Boolean(panel && panel.dataset.modeHidden === "true");
         });
 
+        // In Basic mode a "next" button can lead somewhere other than the step
+        // its label names, so any button that declares a Basic label swaps to
+        // it rather than promising a step the mode has removed.
+        wizard.querySelectorAll("[data-next-label-basic]").forEach((button) => {
+            if (!button.dataset.nextLabelDefault) button.dataset.nextLabelDefault = button.textContent;
+            button.textContent = chosen === "basic" ? button.dataset.nextLabelBasic : button.dataset.nextLabelDefault;
+        });
+
         const hint = wizard.querySelector("[data-wizard-mode-hint]");
         if (hint) hint.textContent = modeHints[chosen] || modeHints.advanced;
         if (chosen === "gbp") {

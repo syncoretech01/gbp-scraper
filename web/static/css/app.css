@@ -122,8 +122,11 @@ html[data-theme="dark"] {
     --cell-stroke: rgba(226, 233, 247, .45);
 }
 
+/* The app shell always stamps data-theme; the sign-in page renders before a
+   session exists and carries none, so :not([data-theme]) is included here to
+   keep it consistent with the operator's system preference. */
 @media (prefers-color-scheme: dark) {
-    html[data-theme="system"] {
+    html[data-theme="system"], html:not([data-theme]) {
         color-scheme: dark;
         --bg: #0d1320;
         --surface: #151d2c;
@@ -827,23 +830,31 @@ html[data-reduced-motion="true"] *, html[data-reduced-motion="true"] *::before, 
     font-size: .85rem;
 }
 
+/* The sign-in page renders before any session exists and therefore carries
+   no data-theme attribute; it uses the same tokens so the card separates
+   from the page instead of sitting white-on-white. */
 .login-body {
     display: flex;
     align-items: center;
     justify-content: center;
     min-height: 100vh;
-    background: var(--surface, #f5f6f8);
+    background: var(--bg);
+    color: var(--text);
 }
 
 .login-card {
     width: min(24rem, 92vw);
     padding: 2rem;
-    border: 1px solid var(--border, #d5d9e0);
-    border-radius: .75rem;
-    background: var(--panel, #fff);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    box-shadow: var(--shadow-md);
     display: grid;
     gap: .75rem;
 }
+
+.login-card p { margin: 0; color: var(--text-muted); }
+.login-card label { font-size: var(--text-base); font-weight: var(--weight-semibold); }
 
 .login-card h1 {
     margin: 0;
