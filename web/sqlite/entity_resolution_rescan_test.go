@@ -619,6 +619,144 @@ func runOrderedRescan(
 	return liveBusinessCount(t, repository), pendingCandidatePairs(t, repository)
 }
 
+func TestMixedMarketOrderProducesTheSameDecisions(t *testing.T) {
+	t.Parallel()
+
+	// Each batch carries one half of three independent decisions: a franchise
+	// pair that must stay apart, a drifted place_id that must collapse, and a
+	// near-duplicate name pair that must stay apart. Whichever half lands
+	// first, the outcome has to be identical.
+	franchise := map[string]string{
+		"title": "Gulf Coast Tyres", "category": "Tire shop",
+		"phone": "+1 713 555 0100", "website": "https://gulfcoasttyres.example",
+	}
+	batchA := []map[string]string{
+		rescanRow(franchise, map[string]string{
+			"place_id": "gct-houston", "address": "1 Bay Area Blvd, Houston, TX 77058, United States",
+			"latitude": "29.5600", "longitude": "-95.0900",
+		}),
+		{
+			"title": "Bayou Bakery", "category": "Bakery", "place_id": "bayou-old",
+			"address": "44 Bayou St, Houston, TX 77007, United States",
+			"phone":   "+1 713 555 0200", "website": "https://bayoubakery.example",
+			"latitude": "29.7700", "longitude": "-95.4000",
+		},
+		{
+			"title": "Heights Barbecue", "category": "Barbecue restaurant", "place_id": "heights-1",
+			"address":  "80 Heights Blvd, Houston, TX 77007, United States",
+			"phone":    "+1 713 555 0300",
+			"latitude": "29.7860", "longitude": "-95.3980",
+		},
+	}
+	batchB := []map[string]string{
+		rescanRow(franchise, map[string]string{
+			"place_id": "gct-katy", "address": "2 Katy Fwy, Katy, TX 77494, United States",
+			"latitude": "29.7850", "longitude": "-95.8240",
+		}),
+		{
+			"title": "Bayou Bakery", "category": "Bakery", "place_id": "bayou-new",
+			"address": "44 Bayou St, Houston, TX 77007, United States",
+			"phone":   "+1 713 555 0200", "website": "https://bayoubakery.example",
+			"latitude": "29.7700", "longitude": "-95.4000",
+		},
+		{
+			"title": "Heights Barbecue Co", "category": "Barbecue restaurant", "place_id": "heights-2",
+			"address":  "82 Heights Blvd, Houston, TX 77007, United States",
+			"phone":    "+1 713 555 0399",
+			"latitude": "29.7861", "longitude": "-95.3980",
+		},
+	}
+
+	forward, forwardCandidates := runOrderedRescan(t, "mixed-fwd", batchA, batchB)
+	reverse, reverseCandidates := runOrderedRescan(t, "mixed-rev", batchB, batchA)
+
+	// Two franchise rows, one bakery after the drift, two barbecue rows.
+	const wantRows = 5
+	if forward != wantRows || reverse != wantRows {
+		t.Fatalf("row counts A->B = %d, B->A = %d, want %d each", forward, reverse, wantRows)
+	}
+	if !equalStringSlices(forwardCandidates, reverseCandidates) {
+		t.Fatalf(
+			"import order changed the review queue:\n A->B %v\n B->A %v",
+			forwardCandidates, reverseCandidates,
+		)
+	}
+}
+
+func TestExactKeyCandidateRespectsKeepSeparateRule(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repository, _, closeRepository := newLocalFeatureRepository(t)
+	defer closeRepository()
+
+	anchor := map[string]string{
+		"title": "Harbor Dental", "category": "Dentist", "place_id": "harbor-anchor",
+		"address":  "500 Mission St, San Francisco, CA 94105, United States",
+		"phone":    "+1 415 555 0100",
+		"latitude": "37.7880", "longitude": "-122.3970",
+	}
+	neighbour := map[string]string{
+		"title": "Presidio Dental", "category": "Dentist", "place_id": "presidio-1",
+		"address":  "3000 Lombard St, San Francisco, CA 94123, United States",
+		"phone":    "+1 415 555 0200",
+		"latitude": "37.7990", "longitude": "-122.4430",
+	}
+
+	batch := []map[string]string{anchor, neighbour}
+	importRescanBatch(t, repository, "rescan-exact-1", 0, batch)
+
+	anchorID := businessIDByPlaceKey(t, repository, "harbor-anchor")
+	neighbourID := businessIDByPlaceKey(t, repository, "presidio-1")
+
+	// A workspace migrated from a legacy database can hold two rows carrying
+	// the same Google place_id, because the legacy schema had no uniqueness
+	// there. That is the only way the exact fast path sees two matches.
+	if _, err := repository.db.ExecContext(
+		ctx,
+		`INSERT INTO business_identity_keys(business_id, key_type, key_value, confidence, created_at)
+		VALUES (?, 'place_id', 'harbor-anchor', 1, ?)`,
+		neighbourID,
+		entityResolutionBase.Unix(),
+	); err != nil {
+		t.Fatalf("seed the migrated duplicate key: %v", err)
+	}
+
+	importRescanBatch(t, repository, "rescan-exact-2", time.Hour, []map[string]string{anchor})
+	if got := pendingCandidateCount(t, repository, anchorID, neighbourID); got != 1 {
+		t.Fatalf("shared place_id filed %d candidates, want 1", got)
+	}
+
+	var candidateID int64
+	if err := repository.db.QueryRowContext(
+		ctx,
+		`SELECT id FROM duplicate_candidates WHERE state = 'pending'
+			AND ((left_business_id = ? AND right_business_id = ?)
+				OR (left_business_id = ? AND right_business_id = ?))`,
+		anchorID, neighbourID, neighbourID, anchorID,
+	).Scan(&candidateID); err != nil {
+		t.Fatalf("read the exact-key candidate: %v", err)
+	}
+	if _, err := repository.ResolveDuplicateCandidate(ctx, web.DuplicateDecision{
+		CandidateID: candidateID, Action: "keep_both", Note: "legacy key collision",
+	}); err != nil {
+		t.Fatalf("record keep_both decision: %v", err)
+	}
+	if _, err := repository.db.ExecContext(
+		ctx, `DELETE FROM duplicate_candidates WHERE id = ?`, candidateID,
+	); err != nil {
+		t.Fatalf("clear the resolved candidate: %v", err)
+	}
+
+	importRescanBatch(t, repository, "rescan-exact-3", 2*time.Hour, []map[string]string{anchor})
+	if got := pendingCandidateCount(t, repository, anchorID, neighbourID); got != 0 {
+		t.Fatalf("keep_separate rule ignored: the exact path re-filed %d candidates", got)
+	}
+	if got := liveBusinessCount(t, repository); got != 2 {
+		t.Fatalf("live rows = %d, want 2", got)
+	}
+}
+
 func TestKeepSeparateRuleSurvivesRepeatedRescans(t *testing.T) {
 	t.Parallel()
 
