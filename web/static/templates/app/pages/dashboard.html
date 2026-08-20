@@ -9,6 +9,15 @@
 
 {{define "app/content"}}
 <div class="section-stack" data-dashboard data-endpoint="/api/v1/dashboard">
+    <section class="quick-actions" aria-label="Quick actions">
+        <a class="quick-action" href="/app/scrapes/new" data-action="navigate" data-endpoint="/app/scrapes/new"><strong>New scrape</strong><span>Guided wizard with presets</span></a>
+        <a class="quick-action" href="/app/jobs?state=running,queued" data-action="navigate" data-endpoint="/app/jobs?state=running,queued"><strong>Active jobs</strong><span>{{.Page.Metrics.ActiveJobs}} running &middot; {{.Page.Metrics.QueuedJobs}} queued</span></a>
+        <a class="quick-action" href="/app/results" data-action="navigate" data-endpoint="/app/results"><strong>Results</strong><span>{{.Page.Metrics.UniqueBusinesses}} unique businesses</span></a>
+        <a class="quick-action" href="/app/map" data-action="navigate" data-endpoint="/app/map"><strong>Map Explorer</strong><span>Plan areas and inspect coverage</span></a>
+        {{if .Features.Exports}}<a class="quick-action" href="/app/exports" data-action="navigate" data-endpoint="/app/exports"><strong>Exports</strong><span>CSV, JSON, Excel, and more</span></a>{{end}}
+        {{if .Features.Proxies}}<a class="quick-action" href="/app/proxies" data-action="navigate" data-endpoint="/app/proxies"><strong>Proxies</strong><span>{{.Page.Metrics.HealthyProxies}}/{{.Page.Metrics.TotalProxies}} healthy</span></a>{{end}}
+    </section>
+
     <section class="grid metrics-grid" aria-label="Workspace summary">
         <article class="card metric">
             <div class="metric-label"><span>Unique businesses</span><span aria-hidden="true">▦</span></div>
@@ -121,7 +130,7 @@
                         <td><strong><a href="/app/jobs/{{.ID}}" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}">{{.Name}}</a></strong><br><small>{{.Stage}}</small></td>
                         <td><span class="status status-{{.State}}">{{.State}}</span></td>
                         <td><div class="progress-track" role="progressbar" aria-label="{{.Name}} progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{.Percent}}"><div class="progress-bar" style="--progress: {{.Percent}}%"></div></div><small>{{.Percent}}% · ETA {{.ETA}}</small></td>
-                        <td>{{.RawRecords}} found · {{.UniqueRecords}} unique<br><small>{{.Emails}} emails</small></td>
+                        <td>{{.RawRecords}} found · {{.UniqueRecords}} unique<br><small>{{.UniqueYield}} unique yield · {{.Emails}} emails</small></td>
                         <td>{{.Runtime}}</td>
                         <td><div class="table-actions">
                             <a class="button button-small" href="/app/jobs/{{.ID}}" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}">Open</a>

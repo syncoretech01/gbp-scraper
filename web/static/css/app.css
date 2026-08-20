@@ -163,7 +163,13 @@ kbd { padding: .08rem .38rem; border: 1px solid var(--border-strong); border-bot
 .button-danger { border-color: var(--danger); color: var(--danger); }
 .button-quiet { border-color: transparent; background: transparent; }
 .button-small { min-height: 2rem; padding: .35rem .65rem; font-size: .82rem; }
+.button:active { transform: translateY(1px); }
+.button-primary:active { background: var(--primary-hover); }
+.button-danger:hover { background: var(--danger-soft); }
+.button-quiet:hover { border-color: var(--border); }
 .button[disabled], .button[aria-disabled="true"] { opacity: .5; cursor: not-allowed; pointer-events: none; }
+.button[aria-busy="true"] { position: relative; color: transparent; pointer-events: none; }
+.button[aria-busy="true"]::after { content: ""; position: absolute; inset: 0; margin: auto; width: 1rem; height: 1rem; border: 2px solid var(--text-faint); border-top-color: var(--primary); border-radius: 50%; animation: busy-spin .7s linear infinite; }
 
 .card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow-sm); }
 .card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; padding: 1rem 1.1rem; border-bottom: 1px solid var(--border); }
@@ -206,12 +212,19 @@ html[data-compact-tables="true"] .data-table th, html[data-compact-tables="true"
 .status { display: inline-flex; align-items: center; gap: .35rem; padding: .22rem .52rem; border-radius: 2rem; font-size: .74rem; font-weight: 750; white-space: nowrap; }
 .status::before { content: ""; width: .45rem; height: .45rem; border-radius: 50%; background: currentColor; }
 .status-draft, .status-cancelled { background: var(--surface-muted); color: var(--text-muted); }
-.status-queued, .status-starting { background: #e9eef5; color: #536278; }
+.status-queued, .status-starting { background: var(--surface-muted); color: var(--text-muted); }
 .status-running { background: var(--primary-soft); color: var(--primary); }
 .status-paused { background: var(--purple-soft); color: var(--purple); }
 .status-completed, .status-healthy { background: var(--success-soft); color: var(--success); }
 .status-partial, .status-warning, .status-slow { background: var(--warning-soft); color: var(--warning); }
 .status-failed, .status-blocked, .status-offline { background: var(--danger-soft); color: var(--danger); }
+/* Legacy REST statuses (pending/working/ok/failed) and durable task states
+   (waiting/running/done/failed/skipped/retry) share the same badge scale. */
+.status-pending, .status-waiting { background: var(--surface-muted); color: var(--text-muted); }
+.status-working { background: var(--primary-soft); color: var(--primary); }
+.status-ok, .status-done { background: var(--success-soft); color: var(--success); }
+.status-skipped { background: var(--surface-muted); color: var(--text-muted); }
+.status-retry, .status-expansion { background: var(--warning-soft); color: var(--warning); }
 
 .field { display: grid; gap: .38rem; min-width: 0; }
 .field > label, .field-label { color: var(--text); font-size: .82rem; font-weight: 680; }
@@ -327,12 +340,16 @@ html[data-theme="dark"] .map-canvas { background-color: #1e322d; }
 .notice-error { border-color: var(--danger); background: var(--danger-soft); color: var(--danger); }
 .toast-region { position: fixed; z-index: 100; right: 1rem; bottom: 1rem; display: grid; width: min(23rem, calc(100vw - 2rem)); gap: .5rem; pointer-events: none; }
 .toast { padding: .75rem .9rem; border: 1px solid var(--border); border-radius: .6rem; background: var(--surface-raised); box-shadow: var(--shadow-md); animation: toast-in .18s ease-out; }
+.toast.notice-success { border-color: var(--success); background: var(--success-soft); color: var(--success); }
+.toast.notice-warning { border-color: var(--warning); background: var(--warning-soft); color: var(--warning); }
+.toast.notice-error { border-color: var(--danger); background: var(--danger-soft); color: var(--danger); }
+.toast.notice-info { border-color: var(--primary); background: var(--primary-soft); color: var(--text); }
 .command-palette { width: min(37rem, calc(100vw - 2rem)); margin-top: 12vh; padding: .7rem; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-raised); color: var(--text); box-shadow: var(--shadow-md); }
 .palette-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .2rem .2rem .6rem; font-weight: 750; }
 .command-palette > input { width: 100%; padding: .7rem; border: 1px solid var(--border-strong); border-radius: .5rem; background: var(--surface); }
-.command-palette nav { display: grid; gap: .2rem; margin-top: .5rem; }
-.command-palette nav a { display: flex; justify-content: space-between; gap: 1rem; padding: .65rem; border-radius: .45rem; color: var(--text); text-decoration: none; }
-.command-palette nav a:hover, .command-palette nav a[data-active="true"] { background: var(--surface-hover); }
+.command-palette nav { display: grid; gap: .2rem; margin-top: .5rem; max-height: 20rem; overflow-y: auto; }
+.command-palette nav a, .command-palette nav button { display: flex; justify-content: space-between; gap: 1rem; padding: .65rem; border: 0; border-radius: .45rem; background: transparent; color: var(--text); font: inherit; text-align: left; text-decoration: none; cursor: pointer; }
+.command-palette nav a:hover, .command-palette nav button:hover, .command-palette nav [data-active="true"] { background: var(--surface-hover); }
 
 .app-shell[data-sidebar="collapsed"] { --sidebar-width: 4.5rem; }
 .app-shell[data-sidebar="collapsed"] .brand-copy,
@@ -423,7 +440,8 @@ html[data-theme="dark"] .map-canvas { background-color: #1e322d; }
 .map-cell-paused { fill: #805dc8; }
 .map-marker circle { fill: var(--primary); stroke: #fff; stroke-width: 2; }
 .legend-swatch { display: inline-block; width: .65rem; height: .65rem; margin-right: .25rem; border-radius: .18rem; background: #8f99aa; }
-.cell-running { background: #477ae8; }.cell-completed { background: #3aa778; }.cell-partial { background: #d79a36; }.cell-failed, .cell-blocked { background: #d94d5b; }.cell-paused { background: #805dc8; }
+.cell-waiting { background: #8f99aa; }.cell-running { background: #477ae8; }.cell-completed { background: #3aa778; }.cell-partial { background: #d79a36; }.cell-failed, .cell-blocked { background: #d94d5b; }.cell-paused { background: #805dc8; }
+html[data-theme="dark"] .map-fallback { color: #b8c8bf; }
 .map-control-section .check { display: inline-flex; align-items: center; gap: .35rem; color: var(--text-muted); font-size: .78rem; }
 .map-control-section .check input { margin: 0; }
 .map-control-section [data-map-heatmap] { min-width: 12rem; }
@@ -468,6 +486,46 @@ html[data-theme="dark"] .map-canvas { background-color: #1e322d; }
 .resource-card h2 { font-size: 1rem; }.resource-card p { margin: .25rem 0 .5rem; color: var(--text-muted); }
 
 @keyframes toast-in { from { opacity: 0; transform: translateY(.5rem); } }
+@keyframes busy-spin { to { transform: rotate(360deg); } }
+@keyframes skeleton-pulse { 50% { opacity: .45; } }
+
+/* Async feedback: any region marked busy dims and blocks input; skeleton
+   blocks stand in for content that is still loading. */
+form[aria-busy="true"], [data-drawer-body][aria-busy="true"], .card[aria-busy="true"] { opacity: .6; pointer-events: none; }
+.skeleton { display: block; min-height: 1rem; border-radius: .35rem; background: var(--surface-muted); animation: skeleton-pulse 1.4s ease-in-out infinite; }
+.skeleton-text { width: 100%; max-width: 18rem; }
+.skeleton-block { min-height: 6rem; }
+
+/* Sortable table headers: the whole label is a real button so keyboard focus
+   and aria-sort stay in sync with the server-backed sort parameter. */
+th .sort-button { display: inline-flex; align-items: center; gap: .3rem; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer; }
+th .sort-button:hover { color: var(--primary); }
+th .sort-button::after { content: "↕"; opacity: 0; font-size: .8rem; }
+th .sort-button:hover::after { opacity: .6; }
+th[aria-sort="ascending"] .sort-button::after { content: "↑"; opacity: 1; color: var(--primary); }
+th[aria-sort="descending"] .sort-button::after { content: "↓"; opacity: 1; color: var(--primary); }
+
+/* Dashboard quick actions: compact operator shortcuts to real routes. */
+.quick-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: .6rem; }
+.quick-action { display: grid; gap: .15rem; padding: .75rem .85rem; border: 1px solid var(--border); border-radius: .6rem; background: var(--surface); color: var(--text); text-decoration: none; }
+.quick-action:hover { border-color: var(--primary); background: var(--surface-hover); }
+.quick-action strong { font-size: .9rem; }
+.quick-action span { color: var(--text-muted); font-size: .76rem; }
+
+/* Adaptive coverage panel on the job monitor. */
+.coverage-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: .6rem; }
+.coverage-summary > div { padding: .65rem .75rem; border-radius: .55rem; background: var(--surface-muted); }
+.coverage-summary strong { display: block; font-size: 1.2rem; letter-spacing: -.02em; }
+.coverage-summary span { color: var(--text-muted); font-size: .76rem; }
+.coverage-trend { min-height: 8rem; }
+.coverage-trend > span[data-kind="duplicates"] { background: var(--purple); }
+.coverage-saturation { display: flex; flex-wrap: wrap; align-items: center; gap: .55rem; margin: 0; padding: .55rem .7rem; border-radius: .5rem; background: var(--surface-muted); color: var(--text-muted); font-size: .82rem; }
+
+/* Wizard modes: Basic / Advanced / GBP Prospecting progressive disclosure. */
+.wizard-mode { display: grid; gap: .4rem; margin-bottom: .75rem; }
+.wizard-mode .segmented { display: grid; grid-auto-flow: column; width: 100%; }
+.wizard-mode .segmented label { text-align: center; }
+.wizard-mode-hint { margin: 0; color: var(--text-muted); font-size: .74rem; }
 
 @media (max-width: 75rem) {
     .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }

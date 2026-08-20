@@ -147,7 +147,10 @@ type dashboardJob struct {
 	RawRecords    int64
 	UniqueRecords int
 	Emails        int
-	Runtime       string
+	// UniqueYield is the unique-per-raw share for this job ("62.0%"), or
+	// "not recorded" before any raw record exists.
+	UniqueYield string
+	Runtime     string
 	CanPause      bool
 	CanResume     bool
 	CanCancel     bool
@@ -541,6 +544,7 @@ func (s *Server) buildDashboard(r *http.Request) (dashboardPageData, appActivity
 				RawRecords:    runtime.RawRecords,
 				UniqueRecords: stats.UniqueBusinesses,
 				Emails:        stats.WithEmail,
+				UniqueYield:   ratioLabel(int64(stats.UniqueBusinesses), runtime.RawRecords),
 				Runtime:       runtimeLabel(runtime),
 				CanPause:      canPause,
 				CanResume:     canResume,

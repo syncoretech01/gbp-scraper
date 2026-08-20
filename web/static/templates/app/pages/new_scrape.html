@@ -12,14 +12,23 @@
 {{define "app/content"}}
 <div class="wizard" data-wizard>
     <aside class="card wizard-steps" aria-label="Scrape configuration steps">
+        <fieldset class="fieldset wizard-mode" data-wizard-mode-switch>
+            <legend class="sr-only">Wizard mode</legend>
+            <div class="segmented" role="radiogroup" aria-label="Wizard mode">
+                <input id="wizard-mode-basic" name="wizard-mode" type="radio" value="basic" data-wizard-mode-input><label for="wizard-mode-basic">Basic</label>
+                <input id="wizard-mode-advanced" name="wizard-mode" type="radio" value="advanced" checked data-wizard-mode-input><label for="wizard-mode-advanced">Advanced</label>
+                {{if .Page.ProspectQueriesSupported}}<input id="wizard-mode-gbp" name="wizard-mode" type="radio" value="gbp" data-wizard-mode-input><label for="wizard-mode-gbp">GBP Prospecting</label>{{end}}
+            </div>
+            <p class="wizard-mode-hint" data-wizard-mode-hint aria-live="polite">Every option, including enrichment and performance tuning.</p>
+        </fieldset>
         <progress class="sr-only" data-wizard-progress max="7" value="1">1 of 7</progress>
         <ol>
             <li><button type="button" data-action="wizard-step" data-step-target="1" aria-current="step"><span class="step-number">1</span><span>Business search</span></button></li>
             <li><button type="button" data-action="wizard-step" data-step-target="2"><span class="step-number">2</span><span>Location</span></button></li>
-            <li><button type="button" data-action="wizard-step" data-step-target="3"><span class="step-number">3</span><span>Data fields</span></button></li>
-            <li><button type="button" data-action="wizard-step" data-step-target="4"><span class="step-number">4</span><span>Enrichment</span></button></li>
-            <li><button type="button" data-action="wizard-step" data-step-target="5"><span class="step-number">5</span><span>Filters</span></button></li>
-            <li><button type="button" data-action="wizard-step" data-step-target="6"><span class="step-number">6</span><span>Performance</span></button></li>
+            <li data-wizard-advanced><button type="button" data-action="wizard-step" data-step-target="3"><span class="step-number">3</span><span>Data fields</span></button></li>
+            <li data-wizard-advanced><button type="button" data-action="wizard-step" data-step-target="4"><span class="step-number">4</span><span>Enrichment</span></button></li>
+            <li data-wizard-advanced><button type="button" data-action="wizard-step" data-step-target="5"><span class="step-number">5</span><span>Filters</span></button></li>
+            <li data-wizard-advanced><button type="button" data-action="wizard-step" data-step-target="6"><span class="step-number">6</span><span>Performance</span></button></li>
             <li><button type="button" data-action="wizard-step" data-step-target="7"><span class="step-number">7</span><span>Review</span></button></li>
         </ol>
     </aside>

@@ -19,7 +19,7 @@
             <span data-activity-label>{{if .Activity.Running}}{{.Activity.Running}} running{{else}}No active jobs{{end}}</span>
             {{if .Activity.Queued}}<span class="badge">{{.Activity.Queued}} queued</span>{{end}}
         </a>
-        <button class="icon-button" type="button" data-action="open-command-palette" aria-haspopup="dialog" aria-controls="command-palette"><span aria-hidden="true">⌘</span><span class="sr-only">Open command palette</span></button>
+        <button class="icon-button" type="button" data-action="open-command-palette" aria-haspopup="dialog" aria-controls="command-palette" aria-keyshortcuts="Control+K" title="Command palette (Ctrl+K)"><span aria-hidden="true">⌘</span><span class="sr-only">Open command palette</span></button>
         <button class="icon-button" type="button" data-action="cycle-theme" aria-label="Change appearance"><span data-theme-icon aria-hidden="true">◐</span></button>
     </div>
 </header>

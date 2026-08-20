@@ -177,14 +177,46 @@
         input.addEventListener("blur", () => window.setTimeout(() => { results.hidden = true; input.setAttribute("aria-expanded", "false"); }, 150));
     }
 
+    function paletteItems() {
+        return palette ? Array.from(palette.querySelectorAll("[data-command]")).filter((item) => !item.hidden) : [];
+    }
+
+    function highlightPaletteItem(items, index) {
+        items.forEach((item, position) => {
+            if (position === index) {
+                item.dataset.active = "true";
+                item.scrollIntoView({ block: "nearest" });
+            } else delete item.dataset.active;
+        });
+    }
+
     function setupCommandFilter() {
         const input = palette && palette.querySelector("[data-command-query]");
         if (!input) return;
         input.addEventListener("input", () => {
             const query = input.value.trim().toLowerCase();
             palette.querySelectorAll("[data-command]").forEach((item) => {
-                item.hidden = query && !item.dataset.command.includes(query);
+                item.hidden = Boolean(query) && !item.dataset.command.includes(query) && !item.textContent.toLowerCase().includes(query);
+                delete item.dataset.active;
             });
+            highlightPaletteItem(paletteItems(), 0);
+        });
+        input.addEventListener("keydown", (event) => {
+            const items = paletteItems();
+            if (!items.length) return;
+            const active = items.findIndex((item) => item.dataset.active === "true");
+            if (event.key === "ArrowDown") {
+                event.preventDefault();
+                highlightPaletteItem(items, active >= items.length - 1 ? 0 : active + 1);
+            } else if (event.key === "ArrowUp") {
+                event.preventDefault();
+                highlightPaletteItem(items, active <= 0 ? items.length - 1 : active - 1);
+            } else if (event.key === "Enter") {
+                event.preventDefault();
+                const target = items[active >= 0 ? active : 0];
+                if (target) target.click();
+                closePalette();
+            }
         });
     }
 
@@ -216,7 +248,7 @@
         if (!trigger) return;
         const action = trigger.dataset.action;
         if (action === "toggle-sidebar") { event.preventDefault(); toggleSidebar(); }
-        else if (action === "cycle-theme") { event.preventDefault(); cycleTheme(); }
+        else if (action === "cycle-theme") { event.preventDefault(); cycleTheme(); if (palette && palette.open && palette.contains(trigger)) closePalette(); }
         else if (action === "open-command-palette") { event.preventDefault(); openPalette(); }
         else if (action === "close-command-palette") { closePalette(); }
         else if (action === "open-dialog") { event.preventDefault(); openDialog(trigger.dataset.target); }
@@ -239,6 +271,12 @@
             if (shell) shell.dataset.mobileNav = "closed";
             return;
         }
+		if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "k") {
+			event.preventDefault();
+			if (palette && palette.open) closePalette();
+			else openPalette();
+			return;
+		}
 		if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "e") {
 			event.preventDefault();
 			window.location.assign("/app/exports");

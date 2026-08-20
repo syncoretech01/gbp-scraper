@@ -903,8 +903,35 @@
         if (nested) nested.addEventListener("input", () => nested.setCustomValidity(""));
     }
 
+    // setupSortableHeaders turns headers that map onto a server-supported
+    // sort key into real buttons. Sorting always round-trips through the
+    // backend query so every page of results is ordered, not just this one.
+    function setupSortableHeaders() {
+        if (!table) return;
+        const activeSort = new URLSearchParams(window.location.search).get("sort") || "updated_desc";
+        table.querySelectorAll("thead th[data-sort-key]").forEach((header) => {
+            const key = header.dataset.sortKey;
+            const label = header.dataset.columnLabel || header.textContent.trim();
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "sort-button";
+            button.textContent = label;
+            button.setAttribute("aria-label", "Sort by " + label.toLowerCase() +
+                (header.dataset.sortDirection === "ascending" ? " (A to Z)" : " (highest first)"));
+            if (key === activeSort) header.setAttribute("aria-sort", header.dataset.sortDirection || "descending");
+            button.addEventListener("click", () => {
+                const target = new URL(window.location.href);
+                target.searchParams.set("sort", key);
+                target.searchParams.delete("page");
+                window.location.assign(target.toString());
+            });
+            header.replaceChildren(button);
+        });
+    }
+
     explorer.querySelectorAll(".filter-row").forEach(updateFilterRow);
     populateLayoutSelect();
+    setupSortableHeaders();
     setupResizeHandles();
     applyLayout(layout, false);
     updateSelection();
