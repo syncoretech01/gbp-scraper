@@ -65,21 +65,115 @@
         return items.length ? items : [value("location_label", "San Francisco, California")];
     }
 
+    // --- Wizard modes -------------------------------------------------------
+    // Basic exposes only the search, location, and review steps. Advanced adds
+    // data fields, enrichment, filters, and performance. GBP Prospecting is
+    // Advanced plus the coverage generator, the pipeline preset, and the
+    // adaptive-coverage controls. Mode only changes what is *shown*: hidden
+    // fields are never disabled, so every step's values still submit and the
+    // job that is created is identical to the one Advanced would create.
+    const modeStorageKey = "gmaps-wizard-mode";
+    const modeInputs = Array.from(wizard.querySelectorAll("[data-wizard-mode-input]"));
+    const modeHints = {
+        basic: "Just the search, the area, and launch. Saved defaults cover everything else.",
+        advanced: "Every option, including data fields, enrichment, filtering, and performance tuning.",
+        gbp: "Advanced plus the ZIP coverage generator, the prospecting pipeline preset, and adaptive coverage."
+    };
+    let mode = "advanced";
+
+    function modeAllows(element) {
+        if (element.hasAttribute("data-wizard-gbp")) return mode === "gbp";
+        if (element.hasAttribute("data-wizard-advanced")) return mode !== "basic";
+        return true;
+    }
+
+    function availablePanels() {
+        return panels.filter((panel) => panel.dataset.modeHidden !== "true");
+    }
+
+    function readStoredMode() {
+        try {
+            const stored = window.localStorage.getItem(modeStorageKey);
+            return modeInputs.some((input) => input.value === stored) ? stored : "";
+        } catch (_) {
+            return "";
+        }
+    }
+
+    function applyMode(next, remember) {
+        const chosen = modeInputs.some((input) => input.value === next) ? next : "advanced";
+        mode = chosen;
+        modeInputs.forEach((input) => { input.checked = input.value === chosen; });
+        if (remember) {
+            try { window.localStorage.setItem(modeStorageKey, chosen); } catch (_) { /* storage may be disabled */ }
+        }
+
+        wizard.querySelectorAll("[data-wizard-advanced], [data-wizard-gbp]").forEach((element) => {
+            const allowed = modeAllows(element);
+            if (element.matches("[data-wizard-panel]")) element.dataset.modeHidden = allowed ? "false" : "true";
+            else element.hidden = !allowed;
+        });
+        // A step button lives in the <li>; hide the list item so the rail does
+        // not leave a gap where a step used to be.
+        wizard.querySelectorAll(".wizard-steps li").forEach((item) => {
+            const panelNumber = item.querySelector("[data-step-target]");
+            const panel = panelNumber && wizard.querySelector('[data-wizard-panel="' + panelNumber.dataset.stepTarget + '"]');
+            item.hidden = Boolean(panel && panel.dataset.modeHidden === "true");
+        });
+
+        const hint = wizard.querySelector("[data-wizard-mode-hint]");
+        if (hint) hint.textContent = modeHints[chosen] || modeHints.advanced;
+        if (chosen === "gbp") {
+            const coverage = wizard.querySelector("[data-gbp-coverage]");
+            if (coverage) coverage.open = true;
+        }
+        renumberSteps();
+        const visible = availablePanels();
+        const currentPanel = wizard.querySelector('[data-wizard-panel="' + current + '"]');
+        if (!currentPanel || currentPanel.dataset.modeHidden === "true") setStep(visible.length ? visible[0].dataset.wizardPanel : 1, false);
+        else setStep(current, false);
+    }
+
+    // renumberSteps keeps the visible rail numbered 1..n for the current mode
+    // rather than leaving gaps where advanced steps were removed.
+    function renumberSteps() {
+        let position = 0;
+        wizard.querySelectorAll(".wizard-steps li").forEach((item) => {
+            if (item.hidden) return;
+            position += 1;
+            const number = item.querySelector(".step-number");
+            if (number) number.textContent = String(position);
+        });
+    }
+
     function setStep(step, focusHeading) {
-        current = Math.max(1, Math.min(panels.length, Number(step) || 1));
-        panels.forEach((panel) => { panel.hidden = Number(panel.dataset.wizardPanel) !== current; });
+        const visible = availablePanels();
+        if (!visible.length) return;
+        const requested = Number(step) || 1;
+        let target = visible.find((panel) => Number(panel.dataset.wizardPanel) === requested);
+        if (!target) {
+            // Moving into a step the current mode hides: land on the nearest
+            // available step in the direction of travel.
+            target = requested > current
+                ? visible.find((panel) => Number(panel.dataset.wizardPanel) > current)
+                : visible.slice().reverse().find((panel) => Number(panel.dataset.wizardPanel) < current);
+            if (!target) target = requested > current ? visible[visible.length - 1] : visible[0];
+        }
+        current = Number(target.dataset.wizardPanel);
+        panels.forEach((panel) => { panel.hidden = panel !== target; });
         stepButtons.forEach((button) => {
             const selected = Number(button.dataset.stepTarget) === current;
             if (selected) button.setAttribute("aria-current", "step");
             else button.removeAttribute("aria-current");
         });
+        const position = visible.indexOf(target) + 1;
         const progress = wizard.querySelector("[data-wizard-progress]");
-        if (progress) { progress.value = current; progress.textContent = current + " of " + panels.length; }
+        if (progress) { progress.max = visible.length; progress.value = position; progress.textContent = position + " of " + visible.length; }
         if (focusHeading) {
-            const heading = panels[current - 1] && panels[current - 1].querySelector("h2");
+            const heading = target.querySelector("h2");
             if (heading) { heading.tabIndex = -1; heading.focus(); }
         }
-        if (current === panels.length) updateReview();
+        if (target === visible[visible.length - 1]) updateReview();
     }
 
     function setText(selector, text) {
@@ -435,6 +529,10 @@
     });
 
     wizard.addEventListener("change", (event) => {
+        if (event.target.matches("[data-wizard-mode-input]")) {
+            applyMode(event.target.value, true);
+            return;
+        }
         if (event.target.matches("[data-saved-area-picker]")) {
             const areaID = event.target.value;
             if (areaID) window.location.assign("/app/scrapes/new?area_id=" + encodeURIComponent(areaID));
@@ -450,7 +548,21 @@
         if (["keywords", "locations", "radius", "grid_cell_km", "depth", "concurrency", "browser_pool_size", "pages_per_browser", "maxtime"].includes(event.target.name)) updatePreview();
     });
 
+    // A required control inside a step the current mode hides cannot be
+    // focused, which would make submit fail silently. Reveal its step (and
+    // leave Basic mode if that is what is hiding it) before the browser
+    // reports the problem.
+    if (form) {
+        form.addEventListener("invalid", (event) => {
+            const panel = event.target.closest && event.target.closest("[data-wizard-panel]");
+            if (!panel) return;
+            if (panel.dataset.modeHidden === "true") applyMode("advanced", true);
+            setStep(panel.dataset.wizardPanel, false);
+        }, true);
+    }
+
     panels.forEach((panel, index) => { panel.hidden = index !== 0; });
+    applyMode(readStoredMode() || "advanced", false);
     setStep(1, false);
     updatePreview();
 })();

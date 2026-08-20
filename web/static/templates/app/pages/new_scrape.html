@@ -66,7 +66,7 @@
                 <div class="field"><label for="combo-locations-file">Add locations from a TXT or CSV file</label><input class="input" id="combo-locations-file" type="file" accept=".txt,.csv,text/plain,text/csv" data-combo-locations-file><p class="field-hint">The first CSV column is used; maximum file size is 2 MB.</p></div>
                 <div class="form-actions"><button class="button" type="button" data-action="generate-combinations">Generate combinations</button><span class="field-hint" data-combo-status aria-live="polite"></span></div>
             </div></details>
-            {{if .Page.ProspectQueriesSupported}}<details class="card disclosure" data-gbp-coverage><summary>GBP prospecting coverage (ZIP &times; synonym queries)</summary><div class="card-body section-stack">
+            {{if .Page.ProspectQueriesSupported}}<details class="card disclosure" data-gbp-coverage data-wizard-gbp><summary>GBP prospecting coverage (ZIP &times; synonym queries)</summary><div class="card-body section-stack">
                 <div class="grid grid-3">
                     <div class="field"><label for="gbp-state">State (2-letter)</label><input class="input" id="gbp-state" maxlength="2" minlength="2" autocomplete="off" placeholder="CA" data-gbp-state></div>
                     <div class="field"><label for="gbp-city">City (optional)</label><input class="input" id="gbp-city" maxlength="120" autocomplete="off" placeholder="San Francisco" data-gbp-city></div>
@@ -102,10 +102,30 @@
                 <div class="field"><label for="lang">Maps language</label><input class="input" id="lang" name="lang" value="{{.Page.Defaults.Language}}" minlength="2" maxlength="2" required></div>
             </div>
             <div class="estimate"><div><span>Locations</span><strong data-estimate-locations>1</strong></div><div><span>Cells</span><strong data-estimate-cells>0</strong></div><div><span>Queries</span><strong data-estimate-queries>0</strong></div><div><span>Tasks</span><strong data-estimate-tasks>0</strong></div></div>
+            {{if .Page.ProspectQueriesSupported}}
+            {{/*
+            Adaptive coverage. These controls decide when the run stops on its
+            own and whether it may spill into neighbouring ZIPs; the defaults
+            reproduce today's behaviour (auto-stop off, no expansions).
+            */}}
+            <fieldset class="fieldset wizard-gbp-fieldset" data-wizard-gbp data-adaptive-coverage>
+                <legend>Adaptive coverage</legend>
+                <label class="check-row"><input id="coverage-auto-stop" name="coverage_auto_stop" type="checkbox" value="on"><span>Stop automatically when new results dry up<small>The run ends early once a run of recent queries stops producing new businesses, instead of burning the rest of the grid on duplicates.</small></span></label>
+                <div class="grid grid-2">
+                    <div class="field"><label for="coverage-saturation-window">Queries watched before stopping</label><input class="input" id="coverage-saturation-window" name="coverage_saturation_window" type="number" min="3" max="50" value="8"><p class="field-hint">How many recent queries the saturation check averages over.</p></div>
+                    <div class="field"><label for="coverage-min-new-ratio">Minimum share of new results</label><input class="input" id="coverage-min-new-ratio" name="coverage_min_new_ratio" type="number" min="0" max="1" step="0.01" value="0.10"><p class="field-hint">Below this share of genuinely new businesses, coverage counts as saturated. 0.10 means one in ten.</p></div>
+                </div>
+                <p class="fieldset-subhead" id="coverage-expansion-heading">Expand into neighbouring ZIPs while yield is high</p>
+                <div class="grid grid-2" role="group" aria-labelledby="coverage-expansion-heading">
+                    <div class="field"><label for="coverage-max-expansions">Maximum extra ZIPs</label><input class="input" id="coverage-max-expansions" name="coverage_max_expansions" type="number" min="0" max="500" value="0"><p class="field-hint">0 keeps the run inside the ZIPs you generated.</p></div>
+                    <div class="field"><label for="coverage-expansion-min-new">New businesses needed to justify an expansion</label><input class="input" id="coverage-expansion-min-new" name="coverage_expansion_min_new" type="number" min="0" max="10000" value="10"><p class="field-hint">A ZIP only pulls in its neighbours after clearing this many new businesses.</p></div>
+                </div>
+            </fieldset>
+            {{end}}
             <div class="form-actions"><button class="button" type="button" data-action="wizard-back">Back</button><button class="button button-primary" type="button" data-action="wizard-next">Review fields &rarr;</button></div>
         </section>
 
-        <section class="card-body wizard-panel" id="wizard-step-3" data-wizard-panel="3" aria-labelledby="wizard-step-3-title">
+        <section class="card-body wizard-panel" id="wizard-step-3" data-wizard-panel="3" data-wizard-advanced aria-labelledby="wizard-step-3-title">
             <h2 id="wizard-step-3-title">Data fields retained</h2>
             <p>The scraper stores every field returned by its selected mode so the original CSV stays compatible and future filters do not discard source data.</p>
             <div class="grid grid-3">
@@ -117,7 +137,7 @@
             <div class="form-actions"><button class="button" type="button" data-action="wizard-back">Back</button><button class="button button-primary" type="button" data-action="wizard-next">Choose enrichment &rarr;</button></div>
         </section>
 
-        <section class="card-body wizard-panel" id="wizard-step-4" data-wizard-panel="4" aria-labelledby="wizard-step-4-title">
+        <section class="card-body wizard-panel" id="wizard-step-4" data-wizard-panel="4" data-wizard-advanced aria-labelledby="wizard-step-4-title">
             <h2 id="wizard-step-4-title">Optional local enrichment</h2>
             <p>Email extraction visits business websites and can substantially increase runtime. For the broadest first pass, leave it off and run a targeted second job later.</p>
             <div class="check-grid">
@@ -134,7 +154,7 @@
             <div class="form-actions"><button class="button" type="button" data-action="wizard-back">Back</button><button class="button button-primary" type="button" data-action="wizard-next">Plan filtering &rarr;</button></div>
         </section>
 
-        <section class="card-body wizard-panel" id="wizard-step-5" data-wizard-panel="5" aria-labelledby="wizard-step-5-title">
+        <section class="card-body wizard-panel" id="wizard-step-5" data-wizard-panel="5" data-wizard-advanced aria-labelledby="wizard-step-5-title">
             <h2 id="wizard-step-5-title">Keep source data, filter safely</h2>
             <p>All collected rows are preserved. After records commit, use Results to search and filter by rating, review count, category, city, status, website, email, phone, job and quality fields. This avoids losing data because of an overly strict scrape-time filter.</p>
             <div class="notice notice-info"><div><strong>Why there is no destructive pre-filter here</strong><p>Google can omit or change fields between list and detail views. Applying filters to the normalized local database is repeatable and auditable.</p></div></div>
@@ -142,7 +162,7 @@
             <div class="form-actions"><button class="button" type="button" data-action="wizard-back">Back</button><button class="button button-primary" type="button" data-action="wizard-next">Tune performance &rarr;</button></div>
         </section>
 
-        <section class="card-body wizard-panel" id="wizard-step-6" data-wizard-panel="6" aria-labelledby="wizard-step-6-title">
+        <section class="card-body wizard-panel" id="wizard-step-6" data-wizard-panel="6" data-wizard-advanced aria-labelledby="wizard-step-6-title">
             <h2 id="wizard-step-6-title">Performance and browser capacity</h2>
             <p>These values are saved with this job and applied by the local worker. Balanced is the safest starting point.</p>
             <fieldset class="fieldset"><legend>Preset</legend><div class="preset-grid">
