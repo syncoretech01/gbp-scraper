@@ -527,6 +527,33 @@ func TestCoverageExpandsOneNeighbourhoodPerParentZIP(t *testing.T) {
 	}
 }
 
+func TestRefinementTaskKeyIsDeterministicAndDistinct(t *testing.T) {
+	t.Parallel()
+
+	area := prospect.ZIPArea{ZIP: "60001", City: "Alpha", State: "IL", Latitude: 40.0, Longitude: -89.0}
+
+	// The key is derived from the job, the query and the zoom alone, so a
+	// restart that re-decides the same refinement re-enqueues nothing: the
+	// durable append is a no-op on a key the plan already holds.
+	first := refinementTaskDefinition("job-key", "dentist", area, 17, 3)
+	second := refinementTaskDefinition("job-key", "dentist", area, 17, 99)
+
+	if first.Key != second.Key {
+		t.Fatalf("keys = %q and %q, want the same deterministic key", first.Key, second.Key)
+	}
+
+	for _, other := range []web.JobTaskDefinition{
+		refinementTaskDefinition("job-other", "dentist", area, 17, 3),
+		refinementTaskDefinition("job-key", "dental clinic", area, 17, 3),
+		refinementTaskDefinition("job-key", "dentist", area, 19, 3),
+		expansionTaskDefinition("job-key", "dentist", "60001", area, 3),
+	} {
+		if other.Key == first.Key {
+			t.Fatalf("distinct task %q collided with the refinement key %q", other.Query, first.Key)
+		}
+	}
+}
+
 func TestCoverageNetNewRows(t *testing.T) {
 	t.Parallel()
 
