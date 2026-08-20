@@ -656,10 +656,11 @@ func importNormalizedRecord(
 	}
 	observedUnix := observedAt.Unix()
 
-	targetID, matchedIDs, err := resolveBusinessID(ctx, tx, record.Business)
+	resolution, err := resolveBusinessIdentity(ctx, tx, record.Business)
 	if err != nil {
 		return importedRecord{}, err
 	}
+	targetID := resolution.businessID
 	if targetID == "" {
 		targetID = record.Business.ID
 	}
@@ -723,6 +724,9 @@ func importNormalizedRecord(
 	if err := storeIdentityKeys(ctx, tx, targetID, sourceID, record.Business.IdentityKeys, observedUnix); err != nil {
 		return importedRecord{}, err
 	}
+	if err := applyIdentityOutcome(ctx, tx, targetID, record.Business, resolution, wasNew, observedUnix); err != nil {
+		return importedRecord{}, err
+	}
 	if err := storeContacts(ctx, tx, targetID, record, observedUnix); err != nil {
 		return importedRecord{}, err
 	}
@@ -732,7 +736,10 @@ func importNormalizedRecord(
 	if err := linkJobBusiness(ctx, tx, job.ID, targetID, sourceID, observedUnix, wasNew, changed); err != nil {
 		return importedRecord{}, err
 	}
-	if err := storeDuplicateCandidates(ctx, tx, targetID, matchedIDs, record.Business.IdentityKeys, observedUnix); err != nil {
+	if err := storeDuplicateCandidates(ctx, tx, targetID, resolution.exactIDs, record.Business.IdentityKeys, observedUnix); err != nil {
+		return importedRecord{}, err
+	}
+	if err := storeFallbackCandidates(ctx, tx, targetID, resolution.candidates, observedUnix); err != nil {
 		return importedRecord{}, err
 	}
 	if err := storeFuzzyDuplicateCandidates(ctx, tx, targetID, observedUnix); err != nil {
@@ -747,109 +754,6 @@ func importNormalizedRecord(
 	}
 
 	return importedRecord{businessID: targetID, wasNew: wasNew, changed: changed && !wasNew}, nil
-}
-
-func resolveBusinessID(
-	ctx context.Context,
-	tx *sql.Tx,
-	business resultimport.Business,
-) (string, []string, error) {
-	matched := make([]string, 0)
-	seen := make(map[string]struct{})
-	for _, key := range business.IdentityKeys {
-		rows, err := tx.QueryContext(
-			ctx,
-			`SELECT business_id FROM business_identity_keys
-			WHERE key_type = ? AND key_value = ? ORDER BY created_at, business_id`,
-			key.Kind,
-			key.Value,
-		)
-		if err != nil {
-			return "", nil, fmt.Errorf("match business identity: %w", err)
-		}
-		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err != nil {
-				_ = rows.Close()
-
-				return "", nil, fmt.Errorf("scan business identity: %w", err)
-			}
-			if _, ok := seen[id]; !ok {
-				seen[id] = struct{}{}
-				matched = append(matched, id)
-			}
-		}
-		if err := rows.Err(); err != nil {
-			_ = rows.Close()
-
-			return "", nil, fmt.Errorf("read business identity matches: %w", err)
-		}
-		if err := rows.Close(); err != nil {
-			return "", nil, fmt.Errorf("close business identity rows: %w", err)
-		}
-	}
-
-	if len(matched) == 0 {
-		legacyID, err := matchLegacyBusiness(ctx, tx, business)
-		if err != nil {
-			return "", nil, err
-		}
-		if legacyID != "" {
-			matched = append(matched, legacyID)
-		}
-	}
-
-	if len(matched) == 0 {
-		return "", nil, nil
-	}
-
-	return matched[0], matched, nil
-}
-
-func matchLegacyBusiness(ctx context.Context, tx *sql.Tx, business resultimport.Business) (string, error) {
-	tests := []struct {
-		column string
-		value  string
-	}{
-		{column: "place_id", value: business.PlaceID},
-		{column: "cid", value: business.CID},
-		{column: "data_id", value: business.DataID},
-	}
-	if len(business.Phones) > 0 {
-		tests = append(tests, struct {
-			column string
-			value  string
-		}{column: "normalized_phone", value: business.Phones[0].Normalized})
-	}
-	tests = append(tests,
-		struct {
-			column string
-			value  string
-		}{column: "domain", value: business.Website.Domain},
-		struct {
-			column string
-			value  string
-		}{column: "normalized_address", value: business.Address.Normalized},
-	)
-
-	for _, test := range tests {
-		if test.value == "" {
-			continue
-		}
-		query := `SELECT id FROM businesses WHERE ` + test.column + ` = ? AND deleted_at IS NULL ORDER BY created_at, id LIMIT 1`
-		var id string
-		err := tx.QueryRowContext(ctx, query, test.value).Scan(&id)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
-		}
-		if err != nil {
-			return "", fmt.Errorf("match migrated business by %s: %w", test.column, err)
-		}
-
-		return id, nil
-	}
-
-	return "", nil
 }
 
 func ensureBusiness(
