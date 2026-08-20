@@ -84,8 +84,16 @@
     <form action="/api/v1/results/bulk" method="post" data-confirm="Apply this action to every selected business?">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <input type="hidden" name="return_to" value="{{.Page.CurrentURL}}">
-        {{if .Page.Capabilities.CanSelect}}<div class="selection-bar" data-selection-bar hidden>
+        {{/*
+        The bulk toolbar only ever acts on the checkboxes rendered on this
+        page: /api/v1/results/bulk takes an explicit result_ids list, so there
+        is deliberately no "select every matching row" control to promise
+        something the backend cannot do.
+        */}}
+        {{if .Page.Capabilities.CanSelect}}<div class="selection-bar" data-selection-bar hidden role="group" aria-label="Bulk actions for the selected businesses">
             <strong><span data-selection-count>0</span> selected</strong>
+            <span class="selection-scope">on this page of {{.Page.Total}}</span>
+            <button class="button button-small" type="button" data-action="clear-selection">Clear</button>
             {{if .Page.Capabilities.CanTag}}<input class="input input-compact" name="tag" maxlength="64" aria-label="Tag name" placeholder="Tag name"><button class="button button-small" type="submit" name="action" value="tag" data-requires-selection data-endpoint="/api/v1/results/bulk">Tag</button><button class="button button-small" type="submit" name="action" value="untag" data-requires-selection data-endpoint="/api/v1/results/bulk">Untag</button>{{end}}
             {{if .Page.Capabilities.CanMarkReviewed}}<button class="button button-small" type="submit" name="action" value="reviewed" data-requires-selection data-endpoint="/api/v1/results/bulk">Mark reviewed</button><button class="button button-small" type="submit" name="action" value="unreviewed" data-requires-selection data-endpoint="/api/v1/results/bulk">Needs review</button>{{end}}
             {{if .Page.Capabilities.CanEnrich}}<button class="button button-small" type="submit" name="action" value="enrich" data-requires-selection data-endpoint="/api/v1/results/bulk">Re-enrich</button>{{end}}

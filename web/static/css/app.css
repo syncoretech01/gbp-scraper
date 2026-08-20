@@ -681,6 +681,7 @@ dialog[open] { animation: dialog-in .16s ease-out; }
 .selection-bar strong { font-variant-numeric: tabular-nums; }
 .selection-scope { color: var(--text-muted); font-size: var(--text-xs); }
 .selection-bar .button-small { background: var(--surface); }
+.input-compact { width: min(11rem, 100%); min-height: 2rem; padding: .3rem .5rem; font-size: .82rem; }
 
 /* Meters used for funnels and coverage shares. */
 .meter-row { display: grid; gap: var(--space-1); }
@@ -691,6 +692,34 @@ dialog[open] { animation: dialog-in .16s ease-out; }
 .meter-fill[data-tone="warning"] { background: var(--warning); }
 .meter-fill[data-tone="danger"] { background: var(--danger); }
 .meter-fill[data-tone="special"] { background: var(--purple); }
+
+/* Result drawer. The summary block establishes the signal hierarchy the
+   operator reads first: tier, prospect status, website audit, then quality. */
+.result-detail > section { padding-top: var(--space-5); border-top: 1px solid var(--border); }
+.result-detail > section > h3, .result-detail > header > h3 { margin: 0 0 var(--space-2); }
+.result-detail h4 { margin: 0 0 var(--space-2); color: var(--text-muted); font-size: var(--text-sm); letter-spacing: .04em; text-transform: uppercase; }
+.result-detail > details > summary { padding: var(--space-3) 0; cursor: pointer; font-weight: var(--weight-bold); }
+.detail-summary { display: grid; gap: var(--space-3); padding: var(--space-5); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-muted); }
+.detail-summary h3 { font-size: var(--text-xl); letter-spacing: -.02em; }
+.detail-summary p { margin: 0; }
+.detail-signals { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.detail-quick-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.detail-quick-actions .button { background: var(--surface); }
+.detail-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: var(--space-3) var(--space-5); margin: 0; }
+.detail-list > div { min-width: 0; display: grid; gap: .1rem; }
+.detail-list dt { color: var(--text-muted); font-size: var(--text-xs); letter-spacing: .04em; text-transform: uppercase; }
+.detail-list dd { min-width: 0; margin: 0; overflow-wrap: anywhere; font-weight: var(--weight-semibold); }
+.inset-panel { display: grid; gap: var(--space-3); padding: var(--space-4); border: 1px solid var(--border); border-radius: .6rem; background: var(--surface-muted); }
+.inset-panel + .inset-panel { margin-top: var(--space-3); }
+.inset-panel > div:first-child { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.inset-panel p { margin: 0; }
+.timeline { display: grid; gap: var(--space-3); margin: 0; padding: 0 0 0 var(--space-5); }
+.timeline li { display: grid; gap: .1rem; }
+.timeline li > span { color: var(--text-muted); font-size: var(--text-xs); }
+.screenshot-figure { margin: 0; }
+.screenshot-preview { display: block; border: 1px solid var(--border); }
+.code-block-compact { max-height: 9rem; padding: var(--space-3); font-size: var(--text-xs); white-space: pre-wrap; }
+.opener-text { min-height: 5rem; background: var(--surface-muted); }
 
 /* Dashboard funnel + yield tables. */
 .funnel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: var(--space-4); }

@@ -504,20 +504,80 @@
         if (valueUnused) value.value = "";
     }
 
-    function updateSelection() {
-        const selected = checkboxes().filter((item) => item.checked);
-        if (count) count.textContent = String(selected.length);
-        if (bar) bar.hidden = selected.length === 0;
-        explorer.querySelectorAll("[data-requires-selection]").forEach((control) => { control.disabled = selected.length === 0; });
-        const all = explorer.querySelector("[data-select-all]");
-        if (all) {
-            all.checked = selected.length > 0 && selected.length === checkboxes().length;
-            all.indeterminate = selected.length > 0 && selected.length < checkboxes().length;
+    // Selection state is recomputed from a cached checkbox list and only the
+    // rows that actually changed are touched. Rebuilding the table on every
+    // click would thrash layout on a 250-row page for no benefit.
+    const selectionCheckboxes = checkboxes();
+    const selectAllBox = explorer.querySelector("[data-select-all]");
+    const requiresSelection = Array.from(explorer.querySelectorAll("[data-requires-selection]"));
+    let selectionCount = 0;
+
+    function markRowSelected(checkbox) {
+        const row = checkbox.closest("[data-result-row]");
+        if (!row) return;
+        const selected = String(checkbox.checked);
+        if (row.getAttribute("aria-selected") !== selected) row.setAttribute("aria-selected", selected);
+    }
+
+    function updateSelection(changed) {
+        if (changed) markRowSelected(changed);
+        else selectionCheckboxes.forEach(markRowSelected);
+        selectionCount = 0;
+        selectionCheckboxes.forEach((item) => { if (item.checked) selectionCount += 1; });
+        if (count) count.textContent = String(selectionCount);
+        if (bar) bar.hidden = selectionCount === 0;
+        requiresSelection.forEach((control) => { control.disabled = selectionCount === 0; });
+        if (selectAllBox) {
+            selectAllBox.checked = selectionCount > 0 && selectionCount === selectionCheckboxes.length;
+            selectAllBox.indeterminate = selectionCount > 0 && selectionCount < selectionCheckboxes.length;
         }
-        resultRows().forEach((row) => {
-            const checkbox = row.querySelector('[name="result_ids"]');
-            row.setAttribute("aria-selected", String(Boolean(checkbox && checkbox.checked)));
+    }
+
+    function clearSelection() {
+        selectionCheckboxes.forEach((item) => {
+            if (!item.checked) return;
+            item.checked = false;
+            markRowSelected(item);
         });
+        updateSelection();
+        announce("Selection cleared.");
+    }
+
+    // skeletonBlock and errorBlock give the drawer a designed loading and
+    // failure appearance instead of leaving the previous record on screen.
+    function skeletonBlock() {
+        const wrapper = document.createElement("div");
+        wrapper.className = "state-loading";
+        wrapper.setAttribute("aria-hidden", "true");
+        ["skeleton skeleton-text", "skeleton skeleton-text", "skeleton skeleton-block", "skeleton skeleton-block"].forEach((className) => {
+            const bar = document.createElement("span");
+            bar.className = className;
+            wrapper.appendChild(bar);
+        });
+        return wrapper;
+    }
+
+    function errorBlock(message, fallbackURL) {
+        const wrapper = document.createElement("div");
+        wrapper.className = "state-error";
+        wrapper.setAttribute("role", "alert");
+        const inner = document.createElement("div");
+        const title = document.createElement("strong");
+        title.textContent = "This record could not be loaded";
+        const detail = document.createElement("span");
+        detail.textContent = message;
+        inner.append(title, detail);
+        if (fallbackURL) {
+            const link = document.createElement("p");
+            const anchor = document.createElement("a");
+            anchor.className = "button button-small";
+            anchor.href = fallbackURL;
+            anchor.textContent = "Open the full record page";
+            link.appendChild(anchor);
+            inner.appendChild(link);
+        }
+        wrapper.appendChild(inner);
+        return wrapper;
     }
 
     function clipboardText(value, description) {
@@ -655,7 +715,7 @@
             if (checkbox) {
                 event.preventDefault();
                 checkbox.checked = !checkbox.checked;
-                updateSelection();
+                updateSelection(checkbox);
             }
             return;
         } else if (event.key === "Enter" && event.target === cell) {
@@ -744,8 +804,10 @@
     }
 
     explorer.addEventListener("change", (event) => {
-        if (event.target.matches("[data-select-all]")) checkboxes().forEach((item) => { item.checked = event.target.checked; });
-        if (event.target.matches('[name="result_ids"], [data-select-all]')) updateSelection();
+        if (event.target.matches("[data-select-all]")) {
+            selectionCheckboxes.forEach((item) => { item.checked = event.target.checked; });
+            updateSelection();
+        } else if (event.target.matches('[name="result_ids"]')) updateSelection(event.target);
         if (event.target.matches('[name="filter_field"], [name="filter_operator"]')) updateFilterRow(event.target.closest(".filter-row"));
         if (event.target.matches("[data-results-mode]")) {
             setViewMode(event.target.value);
@@ -814,16 +876,23 @@
             const drawer = document.getElementById("result-drawer");
             const body = drawer && drawer.querySelector("[data-drawer-body]");
             if (!drawer || !body) return;
+            // Open first with a skeleton so the drawer never appears to hang,
+            // and keep a designed error state inside it when the fetch fails.
+            body.replaceChildren(skeletonBlock());
             body.setAttribute("aria-busy", "true");
+            if (typeof drawer.showModal === "function") { if (!drawer.open) drawer.showModal(); }
+            else drawer.setAttribute("open", "");
             try {
                 const response = await fetch(trigger.dataset.endpoint, { headers: { Accept: "text/html" }, credentials: "same-origin" });
-                if (!response.ok) throw new Error("Could not load this business.");
+                if (!response.ok) throw new Error("Could not load this business (HTTP " + response.status + ").");
                 body.innerHTML = await response.text();
-                if (typeof drawer.showModal === "function") drawer.showModal();
-                else drawer.setAttribute("open", "");
             } catch (error) {
-                announce(error.message, "error");
+                body.replaceChildren(errorBlock(error.message || "Could not load this business.", trigger.getAttribute("href")));
+                announce(error.message || "Could not load this business.", "error");
             } finally { body.removeAttribute("aria-busy"); }
+        } else if (action === "clear-selection") {
+            event.preventDefault();
+            clearSelection();
         } else if (action === "copy-selected") {
             event.preventDefault();
             copySelected(trigger.dataset.field);
