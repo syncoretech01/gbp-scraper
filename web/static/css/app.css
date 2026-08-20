@@ -378,7 +378,8 @@ html[data-theme="dark"] .map-canvas { background-color: #1e322d; }
 .map-leaflet .leaflet-control-attribution { max-width: calc(100% - 1rem); background: color-mix(in srgb, var(--surface) 88%, transparent); color: var(--text-muted); }
 .map-leaflet .leaflet-control-attribution a { color: var(--primary); }
 .map-leaflet .leaflet-popup-content-wrapper, .map-leaflet .leaflet-popup-tip { background: var(--surface-raised); color: var(--text); }
-.map-result-popup { min-width: 13rem; }
+.map-result-popup { min-width: 14rem; }
+.map-popup-signals { display: flex; flex-wrap: wrap; gap: .3rem; margin-bottom: .45rem; }
 .map-result-popup p { margin: .3rem 0; line-height: 1.35; }
 .map-result-title { display: block; margin-bottom: .45rem; font-size: .95rem; }
 .map-popup-links { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: .6rem; padding-top: .45rem; border-top: 1px solid var(--border); }

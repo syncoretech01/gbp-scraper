@@ -460,9 +460,13 @@
     }
 
     function updateHeatLegend() {
+        const mode = explorer.dataset.mode || "planning";
+        // The grid layer is not on the map in Results mode, so the cell-state
+        // legend would be explaining colours that are not on screen.
+        const coverageLegend = explorer.querySelector("[data-map-coverage-legend]");
+        if (coverageLegend) coverageLegend.hidden = mode === "results";
         if (!heatLegend) return;
         heatLegend.replaceChildren();
-        const mode = explorer.dataset.mode || "planning";
         const addSection = function (title, rows) {
             if (!rows.length) return;
             const heading = document.createElement("span");
@@ -793,6 +797,21 @@
         }
     }
 
+    // badgeState mirrors the server's prospectStateClass/safeCSSState so a
+    // popup badge uses exactly the same class the results table does.
+    function badgeState(value) {
+        const state = String(value || "").toLowerCase().replace(/_/g, "-").replace(/[^a-z0-9-]/g, "");
+        return state || "unknown";
+    }
+
+    function appendPopupBadge(target, className, text, title) {
+        const badge = document.createElement("span");
+        badge.className = className;
+        badge.textContent = text;
+        if (title) badge.title = title;
+        target.appendChild(badge);
+    }
+
     function resultPopup(result) {
         const popup = document.createElement("div");
         popup.className = "map-result-popup";
@@ -800,14 +819,29 @@
         title.className = "map-result-title";
         title.textContent = result.name || "Unnamed business";
         popup.appendChild(title);
+
+        // Same signal hierarchy as the results table and detail drawer:
+        // worth-calling tier, prospect status, then the website audit status.
+        const signals = document.createElement("div");
+        signals.className = "map-popup-signals";
+        if (result.prospect_tier) {
+            appendPopupBadge(signals, "prospect-badge prospect-tier-" + badgeState(result.prospect_tier), "Tier " + result.prospect_tier, "Worth-calling tier");
+        }
+        if (result.prospect_status) {
+            appendPopupBadge(signals, "prospect-badge prospect-" + badgeState(result.prospect_status), result.prospect_status, "Prospect website signal");
+        }
+        appendPopupBadge(signals, "status status-" + badgeState(result.website_status), result.website_status || "unknown", "Stored website audit status");
+        if (Number.isFinite(result.quality_score)) {
+            appendPopupBadge(signals, "badge", "quality " + Math.round(result.quality_score) + "/100");
+        }
+        popup.appendChild(signals);
+
         appendPopupLine(popup, "Category", result.primary_category);
         appendPopupLine(popup, "Address", result.address);
         const rating = result.rating === null || result.rating === undefined ? "" : result.rating + " (" + (result.review_count || 0) + " reviews)";
         appendPopupLine(popup, "Rating", rating);
         appendPopupLine(popup, "Phone", result.phone);
         appendPopupLine(popup, "Email", result.primary_email);
-        appendPopupLine(popup, "Website", result.website_status || (result.website ? "available" : "not recorded"));
-        if (Number.isFinite(result.quality_score)) appendPopupLine(popup, "Quality", Math.round(result.quality_score) + "%");
 
         const links = document.createElement("div");
         links.className = "map-popup-links";
