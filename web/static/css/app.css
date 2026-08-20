@@ -602,8 +602,11 @@ th[aria-sort="descending"] .sort-button::after { content: "↓"; opacity: 1; col
 .coverage-summary > div { padding: var(--space-4) var(--space-4); border-radius: .55rem; background: var(--surface-muted); }
 .coverage-summary strong { display: block; font-size: var(--text-xl); font-weight: var(--weight-black); letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
 .coverage-summary span { color: var(--text-muted); font-size: var(--text-sm); }
-.coverage-trend { min-height: 8rem; }
-.coverage-trend > span[data-kind="duplicates"] { background: var(--purple); }
+.coverage-trend { min-height: 8rem; gap: .15rem; overflow-x: auto; }
+.coverage-trend > span { min-width: .3rem; }
+.coverage-trend > span[data-kind="added"] { background: var(--cell-running); }
+.coverage-trend > span[data-kind="duplicates"] { background: var(--cell-paused); }
+.coverage-trend[hidden] { display: none; }
 .coverage-saturation { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); margin: 0; padding: var(--space-3) var(--space-4); border-radius: .5rem; background: var(--surface-muted); color: var(--text-muted); font-size: var(--text-base); }
 .coverage-saturation strong { color: var(--text); }
 .coverage-query-table { max-height: 22rem; }

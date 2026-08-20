@@ -40,7 +40,41 @@
         <article class="card metric"><div class="metric-label">Emails found</div><p class="metric-value" data-progress-field="emails">{{.Page.Job.Emails}}</p><span class="metric-detail">{{.Page.Job.Websites}} websites</span></article>
         <article class="card metric"><div class="metric-label">Collection rate</div><p class="metric-value"><span data-progress-field="rate">{{.Page.Job.PlacesPerMinute}}</span></p><span class="metric-detail">places per minute</span></article>
         <article class="card metric"><div class="metric-label">Tasks</div><p class="metric-value"><span data-progress-field="tasks-complete">{{.Page.Job.TasksComplete}}</span>/<span data-progress-field="tasks-total">{{.Page.Job.TasksTotal}}</span></p><span class="metric-detail"><span data-progress-field="tasks-failed">{{.Page.Job.TasksFailed}}</span> failed &middot; <span data-progress-field="tasks-remaining">{{.Page.Job.TasksRemaining}}</span> remaining</span></article>
+        <article class="card metric"><div class="metric-label">Retries and skips</div><p class="metric-value"><span data-progress-field="tasks-retries">0</span></p><span class="metric-detail">retried attempts &middot; <span data-progress-field="tasks-skipped">0</span> skipped</span></article>
+        <article class="card metric"><div class="metric-label">Worker concurrency</div><p class="metric-value metric-value-small" data-progress-field="worker-concurrency">{{.Page.Job.WorkerConcurrency}}</p><span class="metric-detail">effective / desired workers</span></article>
+        <article class="card metric"><div class="metric-label">Network route</div><p class="metric-value metric-value-small">{{.Page.Job.ProxyPoolLabel}}</p><span class="metric-detail">pool health from the last stored proxy test</span></article>
         <article class="card metric"><div class="metric-label">Runtime</div><p class="metric-value">{{.Page.Job.Runtime}}</p><span class="metric-detail">limit {{.Page.Job.MaxRuntime}}</span></article>
+    </section>
+
+    {{/*
+    Adaptive coverage. The panel starts hidden and app-monitor.js reveals it
+    only after GET /api/v1/jobs/{id}/coverage answers with a usable payload;
+    a 404 or any error leaves it hidden rather than showing empty scaffolding.
+    */}}
+    <section class="card" id="job-coverage" data-coverage-panel data-coverage-endpoint="/api/v1/jobs/{{.Page.Job.ID}}/coverage" data-benchmark-url="/app/jobs/{{.Page.Job.ID}}/benchmark" hidden aria-labelledby="job-coverage-title">
+        <div class="card-header">
+            <div><h2 id="job-coverage-title">Adaptive coverage</h2><p>Saturation, per-query yield, and neighbourhood expansions recorded for this job</p></div>
+            <a class="benchmark-link" href="/app/jobs/{{.Page.Job.ID}}/benchmark" data-coverage-benchmark>Benchmark report</a>
+        </div>
+        <div class="card-body section-stack">
+            <div class="coverage-summary" data-coverage-totals></div>
+            <p class="coverage-saturation" data-coverage-saturation></p>
+            <div>
+                <h3>New rows per coverage checkpoint</h3>
+                <div class="bar-chart coverage-trend" data-coverage-trend role="img" aria-label="Rows added and duplicates skipped per coverage checkpoint"></div>
+                <p class="coverage-legend"><span><i class="legend-swatch cell-running"></i>Rows added</span><span><i class="legend-swatch cell-paused"></i>Duplicates skipped</span></p>
+            </div>
+            <div>
+                <h3>Coverage by query</h3>
+                <div class="table-wrap coverage-query-table">
+                    <table class="data-table">
+                        <caption class="sr-only">Per-query coverage outcomes for this job</caption>
+                        <thead><tr><th scope="col">Query</th><th scope="col">ZIP</th><th scope="col">Origin</th><th scope="col">State</th><th scope="col">Attempts</th><th scope="col">Rows added</th><th scope="col">Duplicates</th><th scope="col">Seconds</th></tr></thead>
+                        <tbody data-coverage-queries></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
     </section>
 
     <section class="split-layout">
@@ -61,7 +95,7 @@
             </article>
         </div>
         <aside class="section-stack" aria-label="Resource diagnostics">
-            <article class="card"><div class="card-header"><div><h2>Resources</h2><p>Current local worker usage</p></div></div><div class="card-body">{{if .Page.HasResources}}<dl class="key-value"><dt>CPU</dt><dd><span data-progress-field="cpu">{{.Page.Job.CPUPercent}}</span>%</dd><dt>Memory</dt><dd>{{.Page.Job.Memory}}</dd><dt>Disk free</dt><dd data-progress-field="disk-free">{{.Page.Job.DiskFree}}</dd><dt>Concurrency</dt><dd data-progress-field="worker-concurrency">{{.Page.Job.WorkerConcurrency}}</dd><dt>Browsers</dt><dd>{{.Page.Job.Browsers}}</dd><dt>Active pages</dt><dd>{{.Page.Job.Pages}}</dd><dt>Database writes</dt><dd>{{.Page.Job.DatabaseWrites}}</dd><dt>Proxy success</dt><dd>{{.Page.Job.ProxySuccessRate}}%</dd><dt>Block rate</dt><dd>{{.Page.Job.BlockRate}}%</dd></dl>{{else}}<p class="field-hint">Worker resource telemetry has not been reported for this job.</p>{{end}}</div></article>
+            <article class="card"><div class="card-header"><div><h2>Resources</h2><p>Current local worker usage</p></div></div><div class="card-body">{{if .Page.HasResources}}<dl class="key-value"><dt>CPU</dt><dd><span data-progress-field="cpu">{{.Page.Job.CPUPercent}}</span>%</dd><dt>Memory</dt><dd>{{.Page.Job.Memory}}</dd><dt>Disk free</dt><dd data-progress-field="disk-free">{{.Page.Job.DiskFree}}</dd><dt>Concurrency</dt><dd data-progress-field="worker-concurrency">{{.Page.Job.WorkerConcurrency}}</dd><dt>Browsers</dt><dd>{{.Page.Job.Browsers}}</dd><dt>Active pages</dt><dd>{{.Page.Job.Pages}}</dd><dt>Database writes</dt><dd>{{.Page.Job.DatabaseWrites}}</dd><dt>Network route</dt><dd>{{.Page.Job.ProxyPoolLabel}}</dd></dl>{{else}}<p class="field-hint">Worker resource telemetry has not been reported for this job.</p>{{end}}</div></article>
             <article class="card"><div class="card-header"><div><h2>Checkpoint</h2><p>Crash-safe resume position</p></div></div><div class="card-body">{{if .Page.Checkpoint.Available}}{{if .Page.Checkpoint.RecoveryRequired}}<p class="notice notice-info" role="status">Recovery required. {{.Page.Checkpoint.RecoveryMessage}}</p>{{else}}<p class="field-hint">{{.Page.Checkpoint.RecoveryMessage}}</p>{{end}}<dl class="key-value"><dt>Saved at</dt><dd>{{.Page.Checkpoint.CreatedAt}}</dd><dt>Completed tasks</dt><dd>{{.Page.Checkpoint.CompletedTasks}}</dd><dt>Running tasks</dt><dd>{{.Page.Checkpoint.RunningTasks}}</dd><dt>Remaining tasks</dt><dd>{{.Page.Checkpoint.RemainingTasks}}</dd><dt>Failed tasks</dt><dd>{{.Page.Checkpoint.FailedTasks}}</dd><dt>Version</dt><dd>{{.Page.Checkpoint.Version}}</dd></dl>{{if .Page.Job.CanRestartCheckpoint}}<form action="/api/v1/jobs/{{.Page.Job.ID}}/restart" method="post"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button" type="submit" data-endpoint="/api/v1/jobs/{{.Page.Job.ID}}/restart">Restart from checkpoint</button></form>{{end}}{{else}}<p class="field-hint">No checkpoint metadata is available through the current repository.</p>{{end}}</div></article>
         </aside>
     </section>
