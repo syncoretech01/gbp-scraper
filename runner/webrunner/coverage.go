@@ -385,29 +385,42 @@ func buildExpansionSeed(
 		seedID = task.Key
 	}
 
-	options := make([]gmaps.GmapJobOptions, 0, 3)
-	if dedup != nil {
-		options = append(options, gmaps.WithDeduper(dedup))
-	}
-
-	if exitMonitor != nil {
-		options = append(options, gmaps.WithExitMonitor(exitMonitor))
-	}
-
-	if extraReviews {
-		options = append(options, gmaps.WithExtraReviews())
-	}
-
-	seed := gmaps.NewGmapJob(
-		seedID,
+	// Fast mode and browser mode need different seed types: a fast-mode run
+	// searches through structured lat/lon/radius parameters, a browser run
+	// drives a map viewport. Building a browser seed inside a fast-mode job
+	// silently returned nothing, which is why expansion measured zero new
+	// businesses in every market. CreateSeedJobs owns that branching for the
+	// plan, so expansion reuses it rather than restating half of it.
+	seeds, seedErr := runner.CreateSeedJobs(
+		job.Data.FastMode,
 		job.Data.Lang,
-		payload.Query,
+		strings.NewReader(payload.Query),
 		job.Data.Depth,
 		job.Data.Email,
 		payload.Coordinates,
 		resolveSeedZoom(job.Data.Zoom, payload.Zoom),
-		options...,
+		float64(job.Data.Radius),
+		dedup,
+		exitMonitor,
+		extraReviews,
 	)
+	if seedErr != nil {
+		return nil, fmt.Errorf("build expansion seed for task %q: %w", task.Key, seedErr)
+	}
+
+	if len(seeds) != 1 {
+		return nil, fmt.Errorf("expansion task %q produced %d seeds, want exactly one", task.Key, len(seeds))
+	}
+
+	seed := seeds[0]
+	// The durable task key is the seed identity, so a restart re-runs the
+	// same expansion instead of a fresh random one.
+	switch typed := seed.(type) {
+	case *gmaps.GmapJob:
+		typed.ID = seedID
+	case *gmaps.SearchJob:
+		typed.ID = seedID
+	}
 
 	runner.ConfigureSeedRuntime([]scrapemate.IJob{seed}, runner.SeedRuntimeOptions{
 		Timeout:           job.Data.PageTimeout,

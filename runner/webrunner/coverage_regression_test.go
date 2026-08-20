@@ -1,8 +1,10 @@
 package webrunner
 
 import (
+	"encoding/json"
 	"testing"
 
+	"github.com/gosom/google-maps-scraper/gmaps"
 	"github.com/gosom/google-maps-scraper/web"
 	"github.com/gosom/google-maps-scraper/web/prospect"
 )
@@ -134,5 +136,75 @@ func TestEngineExpansionsAreNotEvidenceAboutThePlan(t *testing.T) {
 
 	if !saturated {
 		t.Fatal("a full window of empty plan queries must still saturate")
+	}
+}
+
+// TestExpansionSeedMatchesTheJobSearchMode pins the defect that made every
+// expansion worthless: a fast-mode job searches through structured
+// lat/lon/radius parameters, so building a browser viewport seed for it
+// returned nothing. Measured before the fix: the identical query yielded 17
+// rows as a plan query and 0 as an expansion.
+func TestExpansionSeedMatchesTheJobSearchMode(t *testing.T) {
+	t.Parallel()
+
+	payload, err := json.Marshal(expansionTaskPayload{
+		SeedID:      "exp-seed",
+		Query:       "coffee shop in South San Francisco CA 94080",
+		Coordinates: "37.657400,-122.423500",
+		ZIP:         "94080",
+		ParentZIP:   "94110",
+		Expansion:   true,
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	task := web.JobTask{
+		Key:     "exp-seed",
+		Query:   "coffee shop in South San Francisco CA 94080",
+		Origin:  web.CoverageExpansionOriginPrefix + "94110",
+		Payload: payload,
+	}
+
+	for _, testCase := range []struct {
+		name     string
+		fastMode bool
+	}{
+		{"fast mode searches through parameters", true},
+		{"browser mode drives a viewport", false},
+	} {
+		job := &web.Job{ID: "job-seed", Data: web.JobData{
+			Lang: "en", Depth: 3, Zoom: 15, Radius: 10000, FastMode: testCase.fastMode,
+		}}
+
+		seed, buildErr := buildExpansionSeed(job, task, nil, nil, false)
+		if buildErr != nil {
+			t.Fatalf("%s: buildExpansionSeed() error = %v", testCase.name, buildErr)
+		}
+
+		if seed == nil {
+			t.Fatalf("%s: no seed built", testCase.name)
+		}
+
+		switch typed := seed.(type) {
+		case *gmaps.SearchJob:
+			if !testCase.fastMode {
+				t.Fatalf("%s: browser job got a fast-mode search seed", testCase.name)
+			}
+
+			if typed.ID != "exp-seed" {
+				t.Fatalf("%s: seed id = %q, want the durable task key", testCase.name, typed.ID)
+			}
+		case *gmaps.GmapJob:
+			if testCase.fastMode {
+				t.Fatalf("%s: fast-mode job got a browser viewport seed", testCase.name)
+			}
+
+			if typed.ID != "exp-seed" {
+				t.Fatalf("%s: seed id = %q, want the durable task key", testCase.name, typed.ID)
+			}
+		default:
+			t.Fatalf("%s: unexpected seed type %T", testCase.name, seed)
+		}
 	}
 }
