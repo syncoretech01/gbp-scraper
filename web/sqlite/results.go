@@ -1732,12 +1732,28 @@ func (repo *repo) GetBusiness(ctx context.Context, id string) (web.BusinessDetai
 	}
 
 	detail := web.BusinessDetail{Business: page.Results[0]}
+	var identityConfidence sql.NullFloat64
 	if err := repo.db.QueryRowContext(
 		ctx,
-		`SELECT raw_json, COALESCE(prospect_reasons, '[]') FROM businesses WHERE id = ?`,
+		`SELECT raw_json, COALESCE(prospect_reasons, '[]'),
+			COALESCE(identity_method, ''), identity_confidence,
+			COALESCE(identity_evidence, '[]')
+		FROM businesses WHERE id = ?`,
 		id,
-	).Scan(&detail.RawJSON, &detail.ProspectReasons); err != nil {
+	).Scan(
+		&detail.RawJSON,
+		&detail.ProspectReasons,
+		&detail.IdentityMethod,
+		&identityConfidence,
+		&detail.IdentityEvidence,
+	); err != nil {
 		return web.BusinessDetail{}, fmt.Errorf("read business raw JSON: %w", err)
+	}
+	if identityConfidence.Valid {
+		detail.IdentityConfidence = &identityConfidence.Float64
+	}
+	if detail.IdentityEvidence == "[]" {
+		detail.IdentityEvidence = ""
 	}
 
 	sourceRows, err := repo.db.QueryContext(
