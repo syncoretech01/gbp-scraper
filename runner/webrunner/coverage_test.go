@@ -3,6 +3,7 @@ package webrunner
 import (
 	"context"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -704,5 +705,463 @@ func TestBuildExpansionSeedRebuildsFromPayloadOnly(t *testing.T) {
 	// A non-expansion task yields no seed and no error.
 	if other, otherErr := buildExpansionSeed(&job, web.JobTask{Key: "plain", Origin: ""}, nil, nil, false); other != nil || otherErr != nil {
 		t.Fatalf("non-expansion seed = %#v, %v; want nil, nil", other, otherErr)
+	}
+}
+
+// coverageBool is a local helper for the tri-state StopOnEmptyWindow knob.
+func coverageBool(value bool) *bool { return &value }
+
+// silentMate is a search that genuinely returns nothing: a valid result file
+// with headers and no listings, so every task completes with zero new rows
+// and zero duplicates.
+type silentMate struct {
+	output  io.Writer
+	tracker *poolTracker
+	onStart func(ctx context.Context, seedID string) error
+}
+
+func (mate *silentMate) Start(ctx context.Context, jobs ...scrapemate.IJob) error {
+	seed := "unknown"
+	if len(jobs) > 0 {
+		seed = jobs[0].GetID()
+	}
+
+	if mate.tracker != nil {
+		mate.tracker.enter(seed)
+		defer mate.tracker.exit()
+	}
+
+	if mate.onStart != nil {
+		if err := mate.onStart(ctx, seed); err != nil {
+			return err
+		}
+	}
+
+	writer := csv.NewWriter(mate.output)
+	if err := writer.Write(resultimport.LegacyHeaders()); err != nil {
+		return err
+	}
+
+	writer.Flush()
+
+	return writer.Error()
+}
+
+func (*silentMate) Close() error { return nil }
+
+// emptyCheckpoint is what a successful but completely silent task commits.
+var emptyCheckpoint = web.JobTaskCheckpoint{RowsAdded: 0, DuplicatesSkipped: 0}
+
+func TestCoverageEngineStopsOnSustainedSuccessfulZeroYield(t *testing.T) {
+	t.Parallel()
+
+	// auto_stop alone turns the zero-yield rule on.
+	engine := newCoverageEngine("job-empty", web.CoverageOptions{
+		AutoStop:         true,
+		SaturationWindow: 3,
+		MinNewRatio:      0.5,
+	}, web.CoverageSeedState{MaxSequence: 0})
+
+	// A partial window is never evidence, however silent it is.
+	for index := range 2 {
+		decision := engine.recordCompletion(
+			web.JobTask{Key: fmt.Sprintf("t-%d", index), Query: "anything"}, emptyCheckpoint,
+		)
+
+		if !decision.recorded {
+			t.Fatalf("completion %d was not recorded as evidence", index)
+		}
+
+		if decision.saturatedNow {
+			t.Fatalf("saturated on completion %d with a partial window", index)
+		}
+
+		if decision.windowSize != index+1 {
+			t.Fatalf("window size after completion %d = %d", index, decision.windowSize)
+		}
+	}
+
+	decision := engine.recordCompletion(web.JobTask{Key: "t-2", Query: "anything"}, emptyCheckpoint)
+
+	if !decision.saturatedNow || decision.reason != web.CoverageSaturationReasonEmpty {
+		t.Fatalf("full silent window decision = %#v, want an empty-area stop", decision)
+	}
+
+	if decision.evidence.Samples != 3 || decision.evidence.Successful != 3 || decision.evidence.Empty != 3 {
+		t.Fatalf("evidence = %#v, want three clean empty samples", decision.evidence)
+	}
+
+	// The duplicate rule could never have fired here: with no rows and no
+	// duplicates the window scores a perfect ratio.
+	if decision.ratio != 1 {
+		t.Fatalf("zero-yield window ratio = %f, want 1", decision.ratio)
+	}
+
+	if again := engine.recordCompletion(
+		web.JobTask{Key: "t-late", Query: "anything"}, emptyCheckpoint,
+	); again.saturatedNow {
+		t.Fatal("zero-yield saturation triggered twice")
+	}
+}
+
+func TestCoverageEngineRejectsFailedAttemptsAsEvidence(t *testing.T) {
+	t.Parallel()
+
+	engine := newCoverageEngine("job-failures", web.CoverageOptions{
+		AutoStop:         true,
+		SaturationWindow: 3,
+		MinNewRatio:      0.5,
+	}, web.CoverageSeedState{MaxSequence: 0})
+
+	engine.recordCompletion(web.JobTask{Key: "t-0", Query: "anything"}, emptyCheckpoint)
+	engine.recordCompletion(web.JobTask{Key: "t-1", Query: "anything"}, emptyCheckpoint)
+
+	// A browser crash, proxy error or timeout says nothing about the area:
+	// it must not complete the window, however empty its checkpoint looks.
+	failed := engine.recordFailedAttempt(web.JobTask{Key: "t-2", Query: "anything"}, emptyCheckpoint)
+
+	if failed.recorded || failed.saturatedNow || failed.reason != "" {
+		t.Fatalf("failed attempt decision = %#v, want no evidence and no stop", failed)
+	}
+
+	if failed.windowSize != 2 || failed.evidence.Samples != 2 {
+		t.Fatalf("failed attempt changed the window: %#v", failed)
+	}
+
+	// The third genuine success still closes the window.
+	final := engine.recordCompletion(web.JobTask{Key: "t-3", Query: "anything"}, emptyCheckpoint)
+	if !final.saturatedNow || final.reason != web.CoverageSaturationReasonEmpty {
+		t.Fatalf("decision after the failure = %#v, want an empty-area stop", final)
+	}
+
+	// A failure must not evict older good evidence either.
+	productive := newCoverageEngine("job-productive", web.CoverageOptions{
+		AutoStop:         true,
+		SaturationWindow: 3,
+		MinNewRatio:      0.5,
+	}, web.CoverageSeedState{MaxSequence: 0})
+
+	var full coverageDecision
+
+	for index := range 3 {
+		full = productive.recordCompletion(
+			web.JobTask{Key: fmt.Sprintf("p-%d", index), Query: "anything"},
+			web.JobTaskCheckpoint{RowsAdded: 10, DuplicatesSkipped: 1},
+		)
+	}
+
+	after := productive.recordFailedAttempt(
+		web.JobTask{Key: "p-failed", Query: "anything"},
+		web.JobTaskCheckpoint{RowsAdded: 0, DuplicatesSkipped: 0},
+	)
+
+	if after.windowSize != full.windowSize || after.ratio != full.ratio {
+		t.Fatalf("failure changed the window: %#v then %#v", full, after)
+	}
+
+	if after.evidence.Successful != 3 || after.evidence.Empty != 0 {
+		t.Fatalf("failure evicted good evidence: %#v", after.evidence)
+	}
+}
+
+func TestCoverageEngineMixedWindowUsesRatioRuleOnly(t *testing.T) {
+	t.Parallel()
+
+	newEngine := func() *coverageEngine {
+		return newCoverageEngine("job-mixed", web.CoverageOptions{
+			AutoStop:         true,
+			SaturationWindow: 3,
+			MinNewRatio:      0.5,
+		}, web.CoverageSeedState{MaxSequence: 0})
+	}
+
+	// Empty, duplicate-heavy, empty: the window is not zero-yield, so the
+	// historical ratio rule decides and reports the historical reason.
+	engine := newEngine()
+	engine.recordCompletion(web.JobTask{Key: "m-0", Query: "anything"}, emptyCheckpoint)
+	engine.recordCompletion(
+		web.JobTask{Key: "m-1", Query: "anything"},
+		web.JobTaskCheckpoint{RowsAdded: 1, DuplicatesSkipped: 9},
+	)
+
+	decision := engine.recordCompletion(web.JobTask{Key: "m-2", Query: "anything"}, emptyCheckpoint)
+	if !decision.saturatedNow || decision.reason != web.CoverageSaturationReasonDuplicates {
+		t.Fatalf("mixed duplicate-heavy window = %#v, want the ratio stop", decision)
+	}
+
+	if decision.evidence.Empty != 2 || decision.evidence.Successful != 3 {
+		t.Fatalf("mixed window evidence = %#v", decision.evidence)
+	}
+
+	// Empty, productive, empty: the ratio is healthy, so nothing stops. A
+	// couple of silent cells inside a productive area are not exhaustion.
+	engine = newEngine()
+	engine.recordCompletion(web.JobTask{Key: "p-0", Query: "anything"}, emptyCheckpoint)
+	engine.recordCompletion(
+		web.JobTask{Key: "p-1", Query: "anything"},
+		web.JobTaskCheckpoint{RowsAdded: 10, DuplicatesSkipped: 0},
+	)
+
+	decision = engine.recordCompletion(web.JobTask{Key: "p-2", Query: "anything"}, emptyCheckpoint)
+	if decision.saturatedNow {
+		t.Fatalf("productive mixed window stopped the run: %#v", decision)
+	}
+
+	if decision.ratio != 1 || decision.evidence.Empty != 2 {
+		t.Fatalf("productive mixed window = %#v", decision)
+	}
+}
+
+func TestCoverageEngineZeroYieldKnobRespectsExplicitChoice(t *testing.T) {
+	t.Parallel()
+
+	feedSilence := func(options web.CoverageOptions, completions int) coverageDecision {
+		engine := newCoverageEngine("job-knob", options, web.CoverageSeedState{MaxSequence: 0})
+
+		var decision coverageDecision
+
+		for index := range completions {
+			decision = engine.recordCompletion(
+				web.JobTask{Key: fmt.Sprintf("k-%d", index), Query: "anything"}, emptyCheckpoint,
+			)
+			if decision.saturatedNow {
+				return decision
+			}
+		}
+
+		return decision
+	}
+
+	// Explicitly off keeps exactly the legacy behaviour: a silent run burns
+	// its whole plan.
+	off := feedSilence(web.CoverageOptions{
+		AutoStop:          true,
+		SaturationWindow:  3,
+		StopOnEmptyWindow: coverageBool(false),
+	}, 8)
+	if off.saturatedNow {
+		t.Fatalf("explicit opt-out still stopped the run: %#v", off)
+	}
+
+	// Without a coverage stop configured at all, silence changes nothing.
+	unset := feedSilence(web.CoverageOptions{SaturationWindow: 3}, 8)
+	if unset.saturatedNow {
+		t.Fatalf("a job without auto_stop stopped on silence: %#v", unset)
+	}
+
+	// Explicitly on works without auto_stop for operators who want the
+	// exhaustion stop but not the duplicate stop.
+	on := feedSilence(web.CoverageOptions{
+		SaturationWindow:  3,
+		StopOnEmptyWindow: coverageBool(true),
+	}, 8)
+	if !on.saturatedNow || on.reason != web.CoverageSaturationReasonEmpty {
+		t.Fatalf("explicit opt-in decision = %#v, want an empty-area stop", on)
+	}
+}
+
+func TestCoverageZeroYieldSkipsRemainderWithDistinctEvent(t *testing.T) {
+	t.Parallel()
+
+	service, dataFolder := newPoolTestService(t)
+
+	queries := make([]string, 0, 8)
+	for index := range 8 {
+		queries = append(queries, fmt.Sprintf("coffee shop %d", index+1))
+	}
+
+	job := coverageScrapeJob("55555555-5555-4555-8555-555555555561", queries)
+	job.Data.Coverage = &web.CoverageOptions{
+		AutoStop:         true,
+		SaturationWindow: 3,
+		MinNewRatio:      0.6,
+	}
+
+	if err := service.CreateWithState(context.Background(), &job, jobruntime.StateQueued); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	worker := &webrunner{
+		svc: service,
+		cfg: &runner.Config{DataFolder: dataFolder, Concurrency: 2},
+		setupMate: func(_ context.Context, output io.Writer, _ *web.Job) (mateRunner, error) {
+			return &silentMate{output: output}, nil
+		},
+		sampleResources: healthyResources,
+	}
+
+	if err := worker.scrapeJob(context.Background(), &job); err != nil {
+		t.Fatalf("scrape: %v", err)
+	}
+
+	execution, err := service.GetJobExecution(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("get execution: %v", err)
+	}
+
+	// Three silent successes fill the window; the remaining five tasks are
+	// skipped instead of burning the plan on an empty area.
+	if execution.Tasks.Completed != 3 || execution.Tasks.Skipped != 5 ||
+		execution.Tasks.Pending != 0 || execution.Tasks.Failed != 0 {
+		t.Fatalf("task summary = %#v, want 3 completed and 5 skipped", execution.Tasks)
+	}
+
+	// The legacy status contract: an adaptive stop still finishes as 'ok'.
+	if job.Status != web.StatusOK {
+		t.Fatalf("job status = %q, want %q", job.Status, web.StatusOK)
+	}
+
+	report, err := service.JobCoverage(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("read coverage: %v", err)
+	}
+
+	if !report.Saturation.Stopped || report.Saturation.Reason != web.CoverageSaturationReasonEmpty {
+		t.Fatalf("saturation = %#v, want an empty-area stop", report.Saturation)
+	}
+
+	if report.Saturation.EmptySamples != 3 || report.Saturation.SuccessfulSamples != 3 {
+		t.Fatalf("saturation evidence = %#v", report.Saturation)
+	}
+
+	// The ratio rule was structurally blind to this run: a perfect 1.0.
+	if report.Saturation.CurrentNewRatio != 1 {
+		t.Fatalf("current new ratio = %f, want 1", report.Saturation.CurrentNewRatio)
+	}
+
+	events, err := service.EventsAfter(context.Background(), job.ID, 0, 200)
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+
+	var sawExhausted, sawDuplicateSaturation bool
+
+	for _, event := range events {
+		switch event.Type {
+		case "coverage-exhausted":
+			sawExhausted = true
+
+			if !strings.Contains(event.Message, "no new and no duplicate rows") {
+				t.Fatalf("exhaustion event message = %q", event.Message)
+			}
+		case "coverage-saturated":
+			sawDuplicateSaturation = true
+		}
+	}
+
+	if !sawExhausted {
+		t.Fatal("no coverage-exhausted event was recorded")
+	}
+
+	if sawDuplicateSaturation {
+		t.Fatal("an empty area was reported as duplicate saturation")
+	}
+
+	// A restart rebuilds the engine from the durable plan: the skipped tasks
+	// are terminal, nothing is pending, and the seed state still describes
+	// the whole plan.
+	seedState, err := service.JobCoverageSeedState(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("read seed state: %v", err)
+	}
+
+	if len(seedState.Queries) != 8 || seedState.MaxSequence != 7 || seedState.ExpansionTasks != 0 {
+		t.Fatalf("seed state after the stop = %#v", seedState)
+	}
+
+	resumed := newCoverageEngine(job.ID, *job.Data.Coverage, seedState)
+	if fresh := resumed.recordCompletion(
+		web.JobTask{Key: "restart-1", Query: "coffee shop 1"}, emptyCheckpoint,
+	); fresh.saturatedNow || fresh.windowSize != 1 {
+		t.Fatalf("restarted engine decision = %#v, want a fresh, unsaturated window", fresh)
+	}
+}
+
+func TestCoverageFailedTaskIsNotExhaustionEvidence(t *testing.T) {
+	t.Parallel()
+
+	service, dataFolder := newPoolTestService(t)
+
+	job := coverageScrapeJob("55555555-5555-4555-8555-555555555562", []string{
+		"coffee shop 1", "coffee shop 2", "coffee shop 3",
+	})
+	job.Data.Coverage = &web.CoverageOptions{
+		AutoStop:         true,
+		SaturationWindow: 3,
+		MinNewRatio:      0.6,
+	}
+
+	if err := service.CreateWithState(context.Background(), &job, jobruntime.StateQueued); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	var attempts atomic.Int32
+
+	worker := &webrunner{
+		svc: service,
+		cfg: &runner.Config{DataFolder: dataFolder, Concurrency: 2},
+		setupMate: func(_ context.Context, output io.Writer, _ *web.Job) (mateRunner, error) {
+			return &silentMate{output: output, onStart: func(context.Context, string) error {
+				// The middle task fails transiently; the other two return
+				// nothing at all.
+				if attempts.Add(1) == 2 {
+					return errors.New("chromium target closed unexpectedly")
+				}
+
+				return nil
+			}}, nil
+		},
+		sampleResources: healthyResources,
+	}
+
+	if err := worker.scrapeJob(context.Background(), &job); err != nil {
+		t.Fatalf("scrape: %v", err)
+	}
+
+	execution, err := service.GetJobExecution(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("get execution: %v", err)
+	}
+
+	// Two silent successes plus one failure: the window never fills with
+	// clean evidence, so nothing is skipped and the plan runs out honestly.
+	if execution.Tasks.Completed != 2 || execution.Tasks.Failed != 1 ||
+		execution.Tasks.Skipped != 0 || execution.Tasks.Pending != 0 {
+		t.Fatalf("task summary = %#v, want 2 completed, 1 failed and nothing skipped", execution.Tasks)
+	}
+
+	report, err := service.JobCoverage(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("read coverage: %v", err)
+	}
+
+	if report.Saturation.Stopped || report.Saturation.Reason != "" {
+		t.Fatalf("a transient failure was read as exhaustion: %#v", report.Saturation)
+	}
+
+	// The failed task is not in the window: only the two clean successes are.
+	if report.Saturation.WindowSamples != 2 || report.Saturation.SuccessfulSamples != 2 ||
+		report.Saturation.EmptySamples != 2 {
+		t.Fatalf("window evidence = %#v, want only the two successes", report.Saturation)
+	}
+
+	events, err := service.EventsAfter(context.Background(), job.ID, 0, 200)
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+
+	var sawFailure bool
+
+	for _, event := range events {
+		switch event.Type {
+		case "coverage-exhausted", "coverage-saturated":
+			t.Fatalf("a failed attempt produced a %q event", event.Type)
+		case "browser-failure":
+			sawFailure = true
+		}
+	}
+
+	if !sawFailure {
+		t.Fatal("the transient failure was not reported as a browser failure")
 	}
 }
