@@ -18,11 +18,33 @@
         if (window.GMapsApp) window.GMapsApp.toast(error.message || String(error), "error");
     }
 
+    // withBusy gives every async control the same in-flight appearance: the
+    // trigger is disabled and marked busy until the request settles, so a slow
+    // local database cannot look like an inert button.
+    async function withBusy(control, work) {
+        if (control) {
+            control.setAttribute("aria-busy", "true");
+            control.disabled = true;
+        }
+        try {
+            return await work();
+        } finally {
+            if (control) {
+                control.removeAttribute("aria-busy");
+                control.disabled = false;
+            }
+        }
+    }
+
+    function submitControl(form, event) {
+        return (event && event.submitter) || form.querySelector('[type="submit"]');
+    }
+
     const keyForm = workspace.querySelector("[data-api-key-form]");
     if (keyForm) keyForm.addEventListener("submit", async (event) => {
         event.preventDefault();
         try {
-            const data = await request(keyForm.action, { method: "POST", body: new FormData(keyForm) });
+            const data = await withBusy(submitControl(keyForm, event), () => request(keyForm.action, { method: "POST", body: new FormData(keyForm) }));
             const target = workspace.querySelector("[data-api-key-token]");
             target.hidden = false;
             target.className = "notice notice-warning";
@@ -43,10 +65,10 @@
     if (rateForm) rateForm.addEventListener("submit", async (event) => {
         event.preventDefault();
         try {
-            await request("/api/v1/api/settings", {
+            await withBusy(submitControl(rateForm, event), () => request("/api/v1/api/settings", {
                 method: "PUT", headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ rate_limit_per_minute: Number(new FormData(rateForm).get("rate_limit_per_minute")) })
-            });
+            }));
             if (window.GMapsApp) window.GMapsApp.toast("API rate limit saved.", "success");
         } catch (error) { report(error); }
     });
@@ -55,7 +77,7 @@
     if (integrationForm) integrationForm.addEventListener("submit", async (event) => {
         event.preventDefault();
         try {
-            await request(integrationForm.action, { method: "POST", body: new FormData(integrationForm) });
+            await withBusy(submitControl(integrationForm, event), () => request(integrationForm.action, { method: "POST", body: new FormData(integrationForm) }));
             window.location.reload();
         } catch (error) { report(error); }
     });
@@ -65,10 +87,10 @@
         const integration = event.target.closest("[data-integration-delete]");
         try {
             if (key) {
-                await request("/api/v1/api-keys/" + encodeURIComponent(key.dataset.keyId) + "/" + key.dataset.apiKeyToggle, { method: "POST" });
+                await withBusy(key, () => request("/api/v1/api-keys/" + encodeURIComponent(key.dataset.keyId) + "/" + key.dataset.apiKeyToggle, { method: "POST" }));
                 window.location.reload();
             } else if (integration && window.confirm("Delete this local integration?")) {
-                await request("/api/v1/integrations/" + encodeURIComponent(integration.dataset.integrationId), { method: "DELETE" });
+                await withBusy(integration, () => request("/api/v1/integrations/" + encodeURIComponent(integration.dataset.integrationId), { method: "DELETE" }));
                 window.location.reload();
             }
         } catch (error) { report(error); }

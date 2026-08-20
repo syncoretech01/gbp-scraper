@@ -25,7 +25,7 @@ exactly one app/pages file. Page files define app/content and app/page/<name>.
                 {{template "app/flash" .}}
                 <header class="page-heading">
                     <div>
-                        <p class="eyebrow">Local workspace</p>
+                        <p class="eyebrow">{{template "app/nav-group" .ActiveNav}}</p>
                         <h1>{{.Title}}</h1>
                         {{if .Subtitle}}<p class="page-subtitle">{{.Subtitle}}</p>{{end}}
                     </div>
@@ -46,3 +46,17 @@ exactly one app/pages file. Page files define app/content and app/page/<name>.
 {{define "app/head"}}{{end}}
 {{define "app/page-actions"}}{{end}}
 {{define "app/scripts"}}{{end}}
+
+{{/*
+app/nav-group maps the active navigation key onto the sidebar group it sits
+in, so the page-heading eyebrow tells the operator where they are instead of
+repeating "Local workspace" on every screen. The argument is .ActiveNav.
+*/}}
+{{define "app/nav-group"}}
+{{- if or (eq . "new-scrape") (eq . "jobs") (eq . "saved-searches") (eq . "schedules") -}}Scrape
+{{- else if or (eq . "results") (eq . "map") (eq . "exports") -}}Results &amp; prospects
+{{- else if or (eq . "proxies") (eq . "api") -}}Operations
+{{- else if or (eq . "system") (eq . "settings") (eq . "onboarding") -}}System
+{{- else -}}Local workspace
+{{- end -}}
+{{end}}

@@ -4,13 +4,27 @@
         <label id="command-palette-title" for="command-query">Go to a page or run an action</label>
         <button class="icon-button" value="cancel" data-action="close-command-palette"><span aria-hidden="true">&times;</span><span class="sr-only">Close</span></button>
     </form>
-    <input id="command-query" type="search" placeholder="Type a command..." autocomplete="off" data-command-query>
+    <input id="command-query" type="search" placeholder="Type a command..." autocomplete="off" data-command-query aria-label="Filter commands">
     <nav aria-label="Commands" data-command-list>
-        <a href="/app/scrapes/new" data-command="new scrape" data-action="navigate" data-endpoint="/app/scrapes/new"><span>New scrape</span><kbd>N</kbd></a>
+        <a href="/app/scrapes/new" data-command="new scrape create start" data-action="navigate" data-endpoint="/app/scrapes/new"><span>New scrape</span><kbd>N</kbd></a>
         <a href="/app/jobs" data-command="jobs queue monitor" data-action="navigate" data-endpoint="/app/jobs"><span>Open jobs</span><kbd>J</kbd></a>
-        <a href="/app/results" data-command="results businesses" data-action="navigate" data-endpoint="/app/results"><span>Open results</span><kbd>R</kbd></a>
-        {{if .Features.Exports}}<a href="/app/exports" data-command="export data" data-action="navigate" data-endpoint="/app/exports"><span>Create export</span><kbd>Ctrl E</kbd></a>{{end}}
-        {{if .Features.System}}<a href="/app/system" data-command="system diagnostics" data-action="navigate" data-endpoint="/app/system"><span>Run system checks</span></a>{{end}}
+        <a href="/app/jobs?state=running,queued" data-command="active running jobs" data-action="navigate" data-endpoint="/app/jobs?state=running,queued"><span>Active jobs</span></a>
+        <a href="/app/results" data-command="results businesses prospects" data-action="navigate" data-endpoint="/app/results"><span>Open results</span><kbd>R</kbd></a>
+        <a href="/app/map" data-command="map explorer coverage area" data-action="navigate" data-endpoint="/app/map"><span>Open Map Explorer</span></a>
+        <a href="/app/dashboard" data-command="dashboard home overview" data-action="navigate" data-endpoint="/app/dashboard"><span>Open dashboard</span></a>
+        {{if .Features.Exports}}<a href="/app/exports" data-command="export data csv json" data-action="navigate" data-endpoint="/app/exports"><span>Create export</span><kbd>Ctrl E</kbd></a>{{end}}
+        {{if .Features.SavedSearches}}<a href="/app/saved-searches" data-command="saved searches templates views" data-action="navigate" data-endpoint="/app/saved-searches"><span>Saved searches</span></a>{{end}}
+        {{if .Features.Schedules}}<a href="/app/schedules" data-command="schedules automation recurring" data-action="navigate" data-endpoint="/app/schedules"><span>Schedules</span></a>{{end}}
+        {{if .Features.Proxies}}<a href="/app/proxies" data-command="proxies pools rotation" data-action="navigate" data-endpoint="/app/proxies"><span>Proxies</span></a>{{end}}
+        {{if .Features.API}}<a href="/app/api" data-command="api tokens rest openapi" data-action="navigate" data-endpoint="/app/api"><span>API workspace</span></a>{{end}}
+        {{if .Features.System}}<a href="/app/system" data-command="system diagnostics health checks" data-action="navigate" data-endpoint="/app/system"><span>Run system checks</span></a>{{end}}
+        {{if .Features.Settings}}<a href="/app/settings" data-command="settings preferences appearance" data-action="navigate" data-endpoint="/app/settings"><span>Settings</span></a>{{end}}
+        {{if .Features.Onboarding}}<a href="/app/onboarding" data-command="help setup onboarding guide" data-action="navigate" data-endpoint="/app/onboarding"><span>Setup &amp; help</span></a>{{end}}
+        <button type="button" data-command="search find businesses" data-action="focus-global-search"><span>Search businesses</span><kbd>/</kbd></button>
+        <button type="button" data-command="sidebar collapse expand navigation" data-action="toggle-sidebar"><span>Collapse or expand navigation</span></button>
+        <button type="button" data-command="theme appearance dark light" data-action="cycle-theme"><span>Change appearance</span></button>
     </nav>
+    <p class="palette-empty" data-command-empty hidden role="status">No command matches that text.</p>
+    <p class="palette-footer"><kbd>&uarr;</kbd><kbd>&darr;</kbd> to move &middot; <kbd>Enter</kbd> to run &middot; <kbd>Esc</kbd> to close</p>
 </dialog>
 {{end}}

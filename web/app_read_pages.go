@@ -95,44 +95,47 @@ type jobMonitorPageData struct {
 }
 
 type jobMonitorJob struct {
-	ID                   string
-	Name                 string
-	CreatedAt            string
-	ScraperVersion       string
-	State                string
-	Stage                string
-	Percent              int
-	CurrentTask          string
-	ETA                  string
-	RawRecords           int64
-	CommittedRows        int
-	UniqueRecords        int64
-	Duplicates           int
-	Emails               int64
-	Websites             int
-	PlacesPerMinute      string
-	TasksComplete        int64
-	TasksTotal           int64
-	TasksFailed          int64
-	TasksRemaining       int64
-	Runtime              string
-	MaxRuntime           string
-	CurrentKeyword       string
-	CurrentLocation      string
-	CurrentCell          string
-	WebsiteQueue         string
-	ActiveProxy          string
-	LastCheckpoint       string
-	Concurrency          int
-	CPUPercent           string
-	Memory               string
-	DiskFree             string
-	Browsers             string
-	Pages                string
-	WorkerConcurrency    string
-	DatabaseWrites       string
-	ProxySuccessRate     string
-	BlockRate            string
+	ID                string
+	Name              string
+	CreatedAt         string
+	ScraperVersion    string
+	State             string
+	Stage             string
+	Percent           int
+	CurrentTask       string
+	ETA               string
+	RawRecords        int64
+	CommittedRows     int
+	UniqueRecords     int64
+	Duplicates        int
+	Emails            int64
+	Websites          int
+	PlacesPerMinute   string
+	TasksComplete     int64
+	TasksTotal        int64
+	TasksFailed       int64
+	TasksRemaining    int64
+	Runtime           string
+	MaxRuntime        string
+	CurrentKeyword    string
+	CurrentLocation   string
+	CurrentCell       string
+	WebsiteQueue      string
+	ActiveProxy       string
+	LastCheckpoint    string
+	Concurrency       int
+	CPUPercent        string
+	Memory            string
+	DiskFree          string
+	Browsers          string
+	Pages             string
+	WorkerConcurrency string
+	DatabaseWrites    string
+	// ProxyPoolLabel names the pool this job routes through together with its
+	// stored health counts. Per-job proxy success and block rates are not
+	// recorded anywhere, so the monitor states pool health instead of
+	// printing a rate the workspace cannot substantiate.
+	ProxyPoolLabel       string
 	QuerySummary         string
 	LocationSummary      string
 	Depth                int
@@ -550,8 +553,7 @@ func (s *Server) buildJobMonitorPage(r *http.Request, id string) (jobMonitorPage
 			Browsers:          "not reported",
 			Pages:             "not reported",
 			DatabaseWrites:    "not reported",
-			ProxySuccessRate:  "not reported",
-			BlockRate:         "not reported",
+			ProxyPoolLabel:    proxySummary(job.Data.Proxies),
 			QuerySummary:      querySummary(job.Data.Keywords),
 			LocationSummary:   locationSummary(job.Data),
 			Depth:             job.Data.Depth,
@@ -613,12 +615,20 @@ func (s *Server) buildJobMonitorPage(r *http.Request, id string) (jobMonitorPage
 		page.Job.HasRuntimeControls = page.Job.CanAddRuntime || page.Job.CanChangeConcurrency ||
 			page.Job.CanChangeProxyPool || page.Job.CanRetryCurrent
 
-		if page.Job.CanChangeProxyPool {
+		if page.Job.CanChangeProxyPool || job.Data.ProxyPoolID != "" {
 			if pools, poolsErr := s.svc.ListProxyPools(r.Context()); poolsErr == nil {
 				for _, pool := range pools {
-					page.ProxyPools = append(page.ProxyPools, jobProxyPoolView{
-						ID: pool.ID, Name: pool.Name, Healthy: int(pool.HealthyCount),
-					})
+					if page.Job.CanChangeProxyPool {
+						page.ProxyPools = append(page.ProxyPools, jobProxyPoolView{
+							ID: pool.ID, Name: pool.Name, Healthy: int(pool.HealthyCount),
+						})
+					}
+					if pool.ID == job.Data.ProxyPoolID {
+						page.Job.ProxyPoolLabel = fmt.Sprintf(
+							"%s — %d of %d proxies healthy",
+							pool.Name, pool.HealthyCount, pool.TotalCount,
+						)
+					}
 				}
 			}
 		}
