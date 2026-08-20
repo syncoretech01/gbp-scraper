@@ -43,6 +43,10 @@ type coverageEngine struct {
 	// zipAreas is swappable in tests; production uses the embedded dataset.
 	zipAreas func() []prospect.ZIPArea
 	zipIndex map[string]prospect.ZIPArea
+
+	// blindspot holds the discovery blind-spot guards: truncated-cell
+	// refinement and adjacent-ZIP overlap. See coverage_refine.go.
+	blindspot coverageBlindspotState
 }
 
 // coverageDecision is what one completed task changed.
@@ -53,7 +57,10 @@ type coverageDecision struct {
 	ratio        float64
 	windowSize   int
 	expansions   []web.JobTaskDefinition
-	parentZIP    string
+	// refinements re-cover a cell whose own result set looked truncated.
+	// They draw on the same MaxExpansions budget as expansions.
+	refinements []web.JobTaskDefinition
+	parentZIP   string
 }
 
 func newCoverageEngine(jobID string, options web.CoverageOptions, seed web.CoverageSeedState) *coverageEngine {
@@ -108,6 +115,10 @@ func (engine *coverageEngine) recordCompletion(task web.JobTask, checkpoint web.
 		return decision
 	}
 
+	// A truncated cell is refined before any budget reaches its neighbours:
+	// widening the search while the current cell is still cut off would
+	// compound the blind spot rather than close it.
+	engine.refineLocked(task, checkpoint, &decision)
 	engine.expandLocked(task, checkpoint, &decision)
 
 	return decision
@@ -151,6 +162,11 @@ func (engine *coverageEngine) expandLocked(
 	// was not parsed at seed time.
 	engine.known[parentZIP] = struct{}{}
 
+	// One neighbourhood per parent ZIP, however many synonyms cross it.
+	if !engine.claimParentExpansionLocked(parentZIP) {
+		return
+	}
+
 	type candidate struct {
 		area     prospect.ZIPArea
 		distance float64
@@ -164,6 +180,12 @@ func (engine *coverageEngine) expandLocked(
 		}
 
 		if _, covered := engine.known[area.ZIP]; covered {
+			continue
+		}
+
+		// A neighbour whose centroid nearly coincides with one the plan
+		// already covers would re-find the same businesses.
+		if engine.overlapsCoveredZIPLocked(area) {
 			continue
 		}
 
@@ -196,7 +218,17 @@ func (engine *coverageEngine) expandLocked(
 
 	decision.parentZIP = parentZIP
 
-	for _, chosen := range candidates[:budget] {
+	// Candidates are re-checked as the batch fills: two neighbours can each
+	// clear the parent yet nearly coincide with each other.
+	for _, chosen := range candidates {
+		if len(decision.expansions) >= budget {
+			break
+		}
+
+		if engine.overlapsCoveredZIPLocked(chosen.area) {
+			continue
+		}
+
 		definition := expansionTaskDefinition(engine.jobID, synonym, parentZIP, chosen.area, engine.nextSequence)
 		engine.nextSequence++
 		engine.expansionsAdded++
@@ -216,6 +248,12 @@ type expansionTaskPayload struct {
 	ZIP         string `json:"zip"`
 	ParentZIP   string `json:"parent_zip"`
 	Expansion   bool   `json:"expansion"`
+	// Refinement marks a task that re-covers its own cell rather than a
+	// neighbour, and Zoom is the tighter zoom it does that at. Both are
+	// additive: a payload written before refinements existed decodes to
+	// false and zero, and then behaves exactly as it always did.
+	Refinement bool `json:"refinement,omitempty"`
+	Zoom       int  `json:"zoom,omitempty"`
 }
 
 func expansionTaskDefinition(
@@ -265,7 +303,7 @@ func buildExpansionSeed(
 	exitMonitor exiter.Exiter,
 	extraReviews bool,
 ) (scrapemate.IJob, error) {
-	if !strings.HasPrefix(task.Origin, web.CoverageExpansionOriginPrefix) {
+	if !isCoverageAppendedOrigin(task.Origin) {
 		return nil, nil
 	}
 
@@ -303,7 +341,7 @@ func buildExpansionSeed(
 		job.Data.Depth,
 		job.Data.Email,
 		payload.Coordinates,
-		job.Data.Zoom,
+		resolveSeedZoom(job.Data.Zoom, payload.Zoom),
 		options...,
 	)
 
@@ -364,6 +402,8 @@ func (w *webrunner) applyCoverage(
 
 		return
 	}
+
+	w.appendCoverageRefinements(run, checkpoint, decision, exitMonitor)
 
 	if len(decision.expansions) == 0 {
 		return

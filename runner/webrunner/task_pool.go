@@ -174,12 +174,19 @@ func (run *taskPoolRun) mergeTaskOutput(runPath string, diskFree uint64) (web.Jo
 
 	run.committedWrites.Add(1)
 
-	return web.JobTaskCheckpoint{
+	checkpoint := web.JobTaskCheckpoint{
 		RowsAdded:         summary.RunAdded,
 		RowsReplaced:      summary.ExistingReplaced,
 		DuplicatesSkipped: summary.DuplicatesSkipped,
 		DiskFreeBytes:     diskFree,
-	}, nil
+	}
+
+	// Additive coverage evidence: whether this query's own result set hit
+	// the cap its depth allows. A run without a coverage engine writes the
+	// historical payload unchanged.
+	markCoverageTruncation(run.coverage, &checkpoint, run.job.Data.Depth)
+
+	return checkpoint, nil
 }
 
 // runTaskPool executes the job's pending plan with a bounded set of workers.
