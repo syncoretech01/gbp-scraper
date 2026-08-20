@@ -76,7 +76,14 @@
                                 {{if .CanCancel}}<form action="/api/v1/jobs/{{.ID}}/cancel" method="post" data-confirm="Cancel this job after its current write completes?"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button type="submit" data-endpoint="/api/v1/jobs/{{.ID}}/cancel">Cancel safely</button></form>{{end}}
                                 {{if .CanRename}}<form action="/api/v1/jobs/{{.ID}}/rename" method="post" class="inline-form"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><label class="visually-hidden" for="rename-{{.ID}}">New name for {{.Name}}</label><input class="input input-small" id="rename-{{.ID}}" name="name" type="text" maxlength="120" placeholder="{{.Name}}" required><button type="submit" data-endpoint="/api/v1/jobs/{{.ID}}/rename">Rename</button></form>{{end}}
                                 {{if .CanArchive}}<form action="/api/v1/jobs/{{.ID}}/archive" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button type="submit" data-endpoint="/api/v1/jobs/{{.ID}}/archive">{{if .Archived}}Restore from archive{{else}}Archive{{end}}</button></form>{{end}}
-                                {{if .CanDelete}}<form action="/api/v1/jobs/{{.ID}}" method="post" data-confirm="Delete this job? Saved business records are retained unless you explicitly choose otherwise."><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><input type="hidden" name="_method" value="DELETE"><button class="danger-text" type="submit" data-endpoint="/api/v1/jobs/{{.ID}}">Delete job</button></form>{{end}}
+                                {{/*
+                                Deleting a job needs a real DELETE: the route
+                                answers 405 to a POST and the server has no
+                                _method override. The enhanced submit path in
+                                app.js issues the verb from data-method and
+                                carries the CSRF token as a header.
+                                */}}
+                                {{if .CanDelete}}<form action="/api/v1/jobs/{{.ID}}" method="post" data-enhance="json" data-reload="true" data-success="Job deleted." data-confirm="Delete this job? Saved business records are retained unless you explicitly choose otherwise."><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="danger-text" type="submit" data-method="delete" data-endpoint="/api/v1/jobs/{{.ID}}">Delete job</button></form>{{end}}
                             </div></details>{{end}}
                         </div>
                     </td>

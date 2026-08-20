@@ -115,8 +115,10 @@
         });
     }
 
-    async function enhanceForm(form) {
-        const submitter = document.activeElement;
+    async function enhanceForm(form, submitControl) {
+        // event.submitter names the button that actually submitted; only fall
+        // back to activeElement for browsers that do not provide it.
+        const submitter = submitControl || document.activeElement;
         const endpoint = (submitter && submitter.dataset.endpoint) || form.dataset.endpoint || form.action;
         if (!endpoint) return;
         const body = new FormData(form);
@@ -131,8 +133,11 @@
             const payload = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(payload.message || payload.error || "Request failed with status " + response.status);
             toast(payload.message || form.dataset.success || "Saved.", "success");
-            if (payload.redirect) window.location.assign(payload.redirect);
             document.dispatchEvent(new CustomEvent("app:form-success", { detail: { form, payload } }));
+            if (payload.redirect) window.location.assign(payload.redirect);
+            // Endpoints that answer with a bare 200 leave the page showing
+            // stale rows; data-reload asks for a refresh once the toast fires.
+            else if (form.dataset.reload === "true") window.setTimeout(() => window.location.reload(), 400);
         } catch (error) {
             toast(error.message || "The request could not be completed.", "error");
             const errors = form.querySelector("[data-form-errors]");
@@ -162,7 +167,12 @@
                     endpoint.searchParams.set("q", query);
                     endpoint.searchParams.set("limit", "8");
                     const response = await fetch(endpoint, { headers: { Accept: "application/json" }, signal: searchController.signal });
-                    if (!response.ok) return;
+                    if (!response.ok) {
+                        results.textContent = "Search is unavailable right now (HTTP " + response.status + ").";
+                        results.hidden = false;
+                        input.setAttribute("aria-expanded", "true");
+                        return;
+                    }
                     const payload = await response.json();
                     const items = payload.items || (payload.data && payload.data.items) || [];
                     results.replaceChildren();
@@ -178,7 +188,10 @@
                     results.hidden = false;
                     input.setAttribute("aria-expanded", "true");
                 } catch (error) {
-                    if (error.name !== "AbortError") results.hidden = true;
+                    if (error.name === "AbortError") return;
+                    results.textContent = "Search could not reach the local workspace.";
+                    results.hidden = false;
+                    input.setAttribute("aria-expanded", "true");
                 }
             }, 180);
         });
@@ -274,7 +287,7 @@
         const form = event.target;
         if (!(form instanceof HTMLFormElement)) return;
         if (form.dataset.confirm && !window.confirm(form.dataset.confirm)) { event.preventDefault(); return; }
-        if (form.dataset.enhance === "json") { event.preventDefault(); enhanceForm(form); return; }
+        if (form.dataset.enhance === "json") { event.preventDefault(); enhanceForm(form, event.submitter); return; }
         // Plain forms navigate away. Mark the form busy on the next tick so
         // the submitter's name/value is still serialized, giving the operator
         // in-flight feedback instead of an apparently inert button.
