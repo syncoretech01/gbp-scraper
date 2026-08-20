@@ -417,6 +417,18 @@ func TestKeylessRediscoveryDoesNotForkOnEveryRescan(t *testing.T) {
 	if got := pendingCandidateTotal(t, repository); got != 0 {
 		t.Fatalf("keyless rediscovery filed %d review pairs, want none", got)
 	}
+
+	var reviewCount int64
+	if err := repository.db.QueryRowContext(
+		context.Background(),
+		`SELECT COALESCE(review_count, 0) FROM businesses
+		WHERE deleted_at IS NULL AND merged_into_id IS NULL`,
+	).Scan(&reviewCount); err != nil {
+		t.Fatalf("read the surviving row: %v", err)
+	}
+	if reviewCount != 30 {
+		t.Fatalf("review_count = %d, want the newest observation's 30", reviewCount)
+	}
 }
 
 func TestFranchiseRescanKeepsFiveRowsWithoutCandidateSpam(t *testing.T) {
@@ -979,6 +991,184 @@ func TestSharedBuildingPhoneDoesNotMergeDistinctTenants(t *testing.T) {
 	}
 }
 
+// runSingleBatch imports one batch into a fresh database and returns the live
+// row count plus the pending review pairs.
+func runSingleBatch(t *testing.T, label string, batch []map[string]string) (int, []string) {
+	t.Helper()
+
+	repository, _, closeRepository := newLocalFeatureRepository(t)
+	defer closeRepository()
+
+	importRescanBatch(t, repository, "rescan-roworder-"+label, 0, batch)
+
+	return liveBusinessCount(t, repository), pendingCandidatePairs(t, repository)
+}
+
+// reversedBatch returns the rows in the opposite order, which is what a grid
+// scrape produces when the cells are walked from the other corner.
+func reversedBatch(rows []map[string]string) []map[string]string {
+	reversed := make([]map[string]string, 0, len(rows))
+	for index := len(rows) - 1; index >= 0; index-- {
+		reversed = append(reversed, rows[index])
+	}
+
+	return reversed
+}
+
+func TestRowOrderWithinOneBatchDoesNotChangeDecisions(t *testing.T) {
+	t.Parallel()
+
+	// Rows are resolved one at a time inside a single transaction, so every
+	// row after the first sees the rows before it. A batch walked from the
+	// other end must still reach the same decisions.
+	batch := metroMarketBatch()
+
+	forwardRows, forwardCandidates := runSingleBatch(t, "rowfwd", batch)
+	reverseRows, reverseCandidates := runSingleBatch(t, "rowrev", reversedBatch(batch))
+
+	if forwardRows != reverseRows {
+		t.Fatalf("row order changed the row count: %d vs %d", forwardRows, reverseRows)
+	}
+	if !equalStringSlices(forwardCandidates, reverseCandidates) {
+		t.Fatalf(
+			"row order changed the review queue:\n forward %v\n reverse %v",
+			forwardCandidates, reverseCandidates,
+		)
+	}
+}
+
+func TestReversedRescanOfTheSameMarketIsANoOp(t *testing.T) {
+	t.Parallel()
+
+	repository, _, closeRepository := newLocalFeatureRepository(t)
+	defer closeRepository()
+
+	batch := metroMarketBatch()
+	importRescanBatch(t, repository, "rescan-revorder-1", 0, batch)
+
+	businesses := liveBusinessCount(t, repository)
+	provenance := identityProvenanceFingerprint(t, repository)
+	candidates := pendingCandidatePairs(t, repository)
+	versions := totalBusinessVersions(t, repository)
+
+	importRescanBatch(t, repository, "rescan-revorder-2", time.Hour, reversedBatch(batch))
+
+	if got := liveBusinessCount(t, repository); got != businesses {
+		t.Fatalf("reversed rescan changed the row count: %d, want %d", got, businesses)
+	}
+	if got := identityProvenanceFingerprint(t, repository); !equalStringSlices(got, provenance) {
+		t.Fatalf("reversed rescan churned provenance:\n got %v\nwant %v", got, provenance)
+	}
+	if got := pendingCandidatePairs(t, repository); !equalStringSlices(got, candidates) {
+		t.Fatalf("reversed rescan changed the review queue:\n got %v\nwant %v", got, candidates)
+	}
+	if got := totalBusinessVersions(t, repository); got != versions {
+		t.Fatalf("reversed rescan added %d versions, want none", got-versions)
+	}
+}
+
+func TestReimportingTheSameFileUnderOneJobIsSkipped(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repository, _, closeRepository := newLocalFeatureRepository(t)
+	defer closeRepository()
+
+	job := resultImportJob("rescan-restart", entityResolutionBase)
+	if err := repository.Create(ctx, &job); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "restart.csv")
+	writeLegacyResultRows(t, path, metroMarketBatch()...)
+
+	first, err := repository.ImportLegacyCSV(ctx, job, path)
+	if err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+	if first.SkippedUnchanged {
+		t.Fatalf("the first import reported itself as already done")
+	}
+	businesses := liveBusinessCount(t, repository)
+	provenance := identityProvenanceFingerprint(t, repository)
+	candidates := pendingCandidatePairs(t, repository)
+	versions := totalBusinessVersions(t, repository)
+
+	// A restart backfill replays the same file for the same job.
+	second, err := repository.ImportLegacyCSV(ctx, job, path)
+	if err != nil {
+		t.Fatalf("replayed import: %v", err)
+	}
+	if !second.SkippedUnchanged {
+		t.Fatalf("replaying an unchanged file was not skipped")
+	}
+	if second.UniqueBusinesses != first.UniqueBusinesses || second.Rows != first.Rows {
+		t.Fatalf("replayed summary = %+v, want the recorded %+v", second, first)
+	}
+	if got := liveBusinessCount(t, repository); got != businesses {
+		t.Fatalf("replay changed the row count: %d, want %d", got, businesses)
+	}
+	if got := identityProvenanceFingerprint(t, repository); !equalStringSlices(got, provenance) {
+		t.Fatalf("replay churned provenance:\n got %v\nwant %v", got, provenance)
+	}
+	if got := pendingCandidatePairs(t, repository); !equalStringSlices(got, candidates) {
+		t.Fatalf("replay changed the review queue:\n got %v\nwant %v", got, candidates)
+	}
+	if got := totalBusinessVersions(t, repository); got != versions {
+		t.Fatalf("replay added %d versions, want none", got-versions)
+	}
+}
+
+func TestMovedListingAndItsStaleTwinConvergeInEitherOrder(t *testing.T) {
+	t.Parallel()
+
+	// The hardest ordering case the import path can hit: one batch holds the
+	// business at its new address under the original place_id and a stale
+	// listing that still carries the old address and no place_id at all. Rows
+	// are resolved one at a time against state the earlier rows just wrote, so
+	// the two orders take different routes. Both must land on one row and stay
+	// there across further rescans.
+	anchor := map[string]string{
+		"title": "Metro Gym", "category": "Gym", "place_id": "metro-1",
+		"address":  "1 Alder St, Portland, OR 97204, United States",
+		"latitude": "45.5200", "longitude": "-122.6800",
+	}
+	moved := map[string]string{
+		"title": "Metro Gym", "category": "Gym", "place_id": "metro-1",
+		"address":  "900 Burnside Ave, Portland, OR 97209, United States",
+		"latitude": "45.5380", "longitude": "-122.6800",
+	}
+	stale := map[string]string{
+		"title": "Metro Gym", "category": "Gym",
+		"address":  "1 Alder St, Portland, OR 97204, United States",
+		"latitude": "45.5200", "longitude": "-122.6800",
+	}
+
+	for _, variant := range []struct {
+		label string
+		batch []map[string]string
+	}{
+		{"movedfirst", []map[string]string{anchor, moved, stale}},
+		{"stalefirst", []map[string]string{anchor, stale, moved}},
+	} {
+		repository, _, closeRepository := newLocalFeatureRepository(t)
+		for pass := 1; pass <= 3; pass++ {
+			importRescanBatch(
+				t, repository,
+				fmt.Sprintf("rescan-stale-%s-%d", variant.label, pass),
+				time.Duration(pass)*time.Hour,
+				variant.batch,
+			)
+			if got := liveBusinessCount(t, repository); got != 1 {
+				t.Fatalf("%s pass %d produced %d rows, want 1", variant.label, pass, got)
+			}
+			if got := pendingCandidatePairs(t, repository); len(got) != 0 {
+				t.Fatalf("%s pass %d filed review pairs %v, want none", variant.label, pass, got)
+			}
+		}
+		closeRepository()
+	}
+}
+
 func equalStringSlices(left, right []string) bool {
 	if len(left) != len(right) {
 		return false
@@ -990,52 +1180,4 @@ func equalStringSlices(left, right []string) bool {
 	}
 
 	return true
-}
-
-func TestKeylessListingDoesNotForkOnEveryRescan(t *testing.T) {
-	t.Parallel()
-
-	repository, _, closeRepository := newLocalFeatureRepository(t)
-	defer closeRepository()
-
-	// A listing with no place_id, no cid, no data_id, no phone, no website and
-	// no usable address has no identity key at all, so its row id is derived
-	// from the raw CSV content. A review count that ticks up between scrapes
-	// therefore changes the row id, and nothing but name and position is left
-	// to recognise the listing by.
-	listing := func(reviewCount string) map[string]string {
-		return map[string]string{
-			"title": "Riverbend Lookout", "category": "Scenic spot",
-			"latitude": "44.0520", "longitude": "-121.3150",
-			"review_count": reviewCount,
-		}
-	}
-
-	for pass, reviews := range []string{"10", "12", "15"} {
-		importRescanBatch(
-			t, repository,
-			fmt.Sprintf("rescan-keyless-%d", pass+1),
-			time.Duration(pass)*time.Hour,
-			[]map[string]string{listing(reviews)},
-		)
-	}
-
-	if got := liveBusinessCount(t, repository); got != 1 {
-		t.Fatalf("a keyless listing forked into %d rows across three rescans, want 1", got)
-	}
-	if pairs := pendingCandidatePairs(t, repository); len(pairs) != 0 {
-		t.Fatalf("a keyless listing filed %d review pairs, want none: %v", len(pairs), pairs)
-	}
-
-	var reviewCount int64
-	if err := repository.db.QueryRowContext(
-		context.Background(),
-		`SELECT COALESCE(review_count, 0) FROM businesses
-		WHERE deleted_at IS NULL AND merged_into_id IS NULL`,
-	).Scan(&reviewCount); err != nil {
-		t.Fatalf("read the surviving row: %v", err)
-	}
-	if reviewCount != 15 {
-		t.Fatalf("review_count = %d, want the newest observation's 15", reviewCount)
-	}
 }
