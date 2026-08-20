@@ -13,21 +13,47 @@ const cursorPrefix = "ri1_"
 
 func finalizeBusiness(business *Business, rawHash string) {
 	business.IdentityKeys = exactIdentityKeys(*business)
+	business.CanonicalIdentityKey = canonicalIdentityKey(*business, rawHash)
+	business.ID = "biz_" + hashParts("business-id-v1", business.CanonicalIdentityKey)[:32]
+	business.RecordHash = businessHash(*business)
+}
+
+// canonicalIdentityKey picks the value that names a business row. Only the
+// authoritative Google identifiers (place_id, cid, data_id) are trusted as a
+// standalone identity: a phone, domain, or address is shared across a chain's
+// locations, so records carrying only those signals get a composite fallback
+// key that keeps two locations with a shared contact point distinct.
+func canonicalIdentityKey(business Business, rawHash string) string {
+	for _, key := range business.IdentityKeys {
+		switch key.Kind {
+		case IdentityPlaceID, IdentityCID, IdentityDataID:
+			return key.String()
+		}
+	}
 	if len(business.IdentityKeys) > 0 {
-		business.CanonicalIdentityKey = business.IdentityKeys[0].String()
-	} else {
-		business.CanonicalIdentityKey = "fallback:" + hashParts(
-			"fallback-v1",
+		parts := []string{
 			business.NormalizedName,
 			business.NormalizedCategory,
 			business.Address.Normalized,
 			floatValue(business.Latitude),
 			floatValue(business.Longitude),
-			rawHash,
-		)
+		}
+		for _, key := range business.IdentityKeys {
+			parts = append(parts, key.String())
+		}
+
+		return "fallback:" + hashParts("fallback-v2", parts...)
 	}
-	business.ID = "biz_" + hashParts("business-id-v1", business.CanonicalIdentityKey)[:32]
-	business.RecordHash = businessHash(*business)
+
+	return "fallback:" + hashParts(
+		"fallback-v1",
+		business.NormalizedName,
+		business.NormalizedCategory,
+		business.Address.Normalized,
+		floatValue(business.Latitude),
+		floatValue(business.Longitude),
+		rawHash,
+	)
 }
 
 func exactIdentityKeys(business Business) []IdentityKey {
