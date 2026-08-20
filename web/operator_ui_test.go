@@ -6,6 +6,47 @@ import (
 	"testing"
 )
 
+// Every app page must execute against its own page-data type. A template that
+// only parses is not enough: a renamed field surfaces as a 500 at request
+// time, and several pages (job monitor, map, jobs) have no other render
+// coverage. Zero values are used deliberately so empty states are exercised.
+func TestEveryAppPageRendersWithZeroValuePageData(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t, t.TempDir())
+
+	pages := map[string]any{
+		"api":            apiWorkspacePageData{},
+		"dashboard":      dashboardPageData{},
+		"exports":        exportsPageData{},
+		"job_monitor":    jobMonitorPageData{},
+		"jobs":           jobsPageData{},
+		"map":            mapPageData{},
+		"new_scrape":     newScrapePageData{},
+		"onboarding":     onboardingPageData{},
+		"proxies":        proxiesPageData{},
+		"result_detail":  appBusinessDetail{},
+		"results":        resultsPageData{},
+		"saved_searches": reusablePageData{},
+		"schedules":      schedulesPageData{},
+		"settings":       settingsPageData{},
+		"system":         systemPageData{},
+	}
+
+	for key, page := range pages {
+		recorder := httptest.NewRecorder()
+		server.renderAppPage(recorder, key, appPageData{
+			Title: "Smoke", ActiveNav: key, Theme: "system", Page: page,
+		})
+		if recorder.Code != 200 {
+			t.Fatalf("page %q rendered %d: %s", key, recorder.Code, recorder.Body.String())
+		}
+		if !strings.Contains(recorder.Body.String(), `<main class="app-main"`) {
+			t.Fatalf("page %q did not render the app shell", key)
+		}
+	}
+}
+
 // The adaptive-coverage fieldset ships with the create form and uses the exact
 // field names the server-side mapping reads. Renaming any of them silently
 // drops an operator's saturation or expansion choice, so the contract is
