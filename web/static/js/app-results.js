@@ -510,7 +510,6 @@
     const selectionCheckboxes = checkboxes();
     const selectAllBox = explorer.querySelector("[data-select-all]");
     const requiresSelection = Array.from(explorer.querySelectorAll("[data-requires-selection]"));
-    let selectionCount = 0;
 
     function markRowSelected(checkbox) {
         const row = checkbox.closest("[data-result-row]");
@@ -522,7 +521,7 @@
     function updateSelection(changed) {
         if (changed) markRowSelected(changed);
         else selectionCheckboxes.forEach(markRowSelected);
-        selectionCount = 0;
+        let selectionCount = 0;
         selectionCheckboxes.forEach((item) => { if (item.checked) selectionCount += 1; });
         if (count) count.textContent = String(selectionCount);
         if (bar) bar.hidden = selectionCount === 0;
