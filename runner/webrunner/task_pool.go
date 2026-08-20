@@ -566,6 +566,12 @@ func (w *webrunner) executeLeasedTask(
 	}
 
 	failureKind := classifyTaskFailure(taskErr)
+
+	// A failed attempt is not evidence about the area: the coverage engine
+	// rejects it, so it neither enters the saturation window nor evicts the
+	// good evidence already there.
+	w.applyCoverageFailure(run, task, checkpoint)
+
 	w.recordProxyTaskOutcome(run, assignment, false, taskDuration, taskErr)
 	_ = w.svc.RecordJobWorkerEvent(
 		context.Background(), job.ID, failureKind, "warning",

@@ -19,6 +19,24 @@ var ErrCoverageUnsupported = errors.New("coverage storage is unavailable")
 // any other skipped work.
 const CoverageSkipReason = "coverage-saturated"
 
+// CoverageEmptySkipReason marks tasks the coverage engine skipped because a
+// full window of successful tasks returned nothing at all — neither new rows
+// nor duplicates. It is deliberately distinct from CoverageSkipReason so an
+// operator can tell "this area is empty" apart from "we keep re-finding the
+// same businesses" long after the run finished.
+const CoverageEmptySkipReason = "coverage-exhausted"
+
+// Saturation reasons reported by GET /api/v1/jobs/{id}/coverage. The empty
+// string means the adaptive engine did not stop the plan.
+const (
+	// CoverageSaturationReasonDuplicates is the historical stop: a full
+	// window whose new-row ratio fell below MinNewRatio.
+	CoverageSaturationReasonDuplicates = "duplicate-saturation"
+	// CoverageSaturationReasonEmpty is a full window of successful tasks
+	// that all returned zero new and zero duplicate rows.
+	CoverageSaturationReasonEmpty = "empty-area"
+)
+
 // CoverageExpansionOriginPrefix prefixes the origin of every task the
 // coverage engine appended mid-run; the suffix is the parent ZIP whose
 // results justified the expansion.
@@ -63,6 +81,16 @@ type CoverageOptions struct {
 	// ExpansionMinNew is how many new rows a finished GBP-shaped task needs
 	// before its neighbourhood is worth expanding into (default 10).
 	ExpansionMinNew int `json:"expansion_min_new"`
+	// StopOnEmptyWindow stops the remaining plan once a FULL saturation
+	// window is made entirely of successful tasks that returned nothing at
+	// all. A nil pointer — which is what every configuration persisted
+	// before this knob existed decodes to — follows AutoStop: an operator
+	// who asked for an adaptive stop wants the run to stop on genuine
+	// exhaustion too, and the duplicate-ratio rule can never detect it
+	// (a window with no rows and no duplicates scores a perfect 1.0).
+	// A nil CoverageOptions keeps exactly the historical behaviour and
+	// never stops on an empty window.
+	StopOnEmptyWindow *bool `json:"stop_on_empty_window,omitempty"`
 }
 
 // Validate bounds every configured knob; zero values mean "use the default"
@@ -110,6 +138,26 @@ func (c *CoverageOptions) MinNewRatioOrDefault() float64 {
 	}
 
 	return c.MinNewRatio
+}
+
+// StopOnEmptyWindowOrDefault reports whether a full window of successful,
+// completely empty tasks may stop the remaining plan.
+//
+// A nil CoverageOptions reports false: without a coverage block the engine
+// does not run at all, which is exactly today's behaviour. With a coverage
+// block and no explicit choice the knob follows AutoStop, because sustained
+// zero yield is the one form of exhaustion the duplicate-ratio rule is
+// structurally blind to. An explicit value always wins in both directions.
+func (c *CoverageOptions) StopOnEmptyWindowOrDefault() bool {
+	if c == nil {
+		return false
+	}
+
+	if c.StopOnEmptyWindow == nil {
+		return c.AutoStop
+	}
+
+	return *c.StopOnEmptyWindow
 }
 
 // ExpansionMinNewOrDefault returns the configured expansion threshold or its
@@ -165,13 +213,30 @@ type CoverageTotals struct {
 }
 
 // CoverageSaturation reports the adaptive-stop configuration and the current
-// window evidence.
+// window evidence. Every field below "stopped" is additive; the five original
+// keys keep their exact names and meanings for the existing UI.
 type CoverageSaturation struct {
 	Enabled         bool    `json:"enabled"`
 	Window          int     `json:"window"`
 	MinNewRatio     float64 `json:"min_new_ratio"`
 	CurrentNewRatio float64 `json:"current_new_ratio"`
 	Stopped         bool    `json:"stopped"`
+	// Reason names why the adaptive engine stopped the plan:
+	// CoverageSaturationReasonDuplicates, CoverageSaturationReasonEmpty, or
+	// the empty string when the plan was not stopped.
+	Reason string `json:"reason"`
+	// StopOnEmptyWindow echoes the effective zero-yield knob.
+	StopOnEmptyWindow bool `json:"stop_on_empty_window"`
+	// WindowSamples is how many finished tasks the window currently holds;
+	// it is below Window until enough tasks have finished.
+	WindowSamples int `json:"window_samples"`
+	// SuccessfulSamples counts window entries that completed without error.
+	// Only successful tasks ever enter the window, so this equals
+	// WindowSamples for any window the engine built.
+	SuccessfulSamples int `json:"successful_samples"`
+	// EmptySamples counts window entries that succeeded with neither new
+	// rows nor duplicates.
+	EmptySamples int `json:"empty_samples"`
 }
 
 // CoverageQueryRow is one task of the plan as the coverage UI renders it.
@@ -483,8 +548,17 @@ func buildCoverageReport(options *CoverageOptions, rows []CoverageTaskRow) Cover
 			report.Totals.ExpansionsAdded++
 		}
 
-		if row.State == "skipped" && row.LastError == CoverageSkipReason {
-			report.Saturation.Stopped = true
+		// The skip reason is durable, so a restarted process still reports
+		// which of the two adaptive stops ended the plan.
+		if row.State == "skipped" {
+			switch row.LastError {
+			case CoverageSkipReason:
+				report.Saturation.Stopped = true
+				report.Saturation.Reason = CoverageSaturationReasonDuplicates
+			case CoverageEmptySkipReason:
+				report.Saturation.Stopped = true
+				report.Saturation.Reason = CoverageSaturationReasonEmpty
+			}
 		}
 
 		zip, _ := ParseGBPQueryZIP(row.Query)
@@ -531,9 +605,15 @@ func buildCoverageReport(options *CoverageOptions, rows []CoverageTaskRow) Cover
 	report.Saturation.Enabled = options != nil && options.AutoStop
 	report.Saturation.Window = options.WindowOrDefault()
 	report.Saturation.MinNewRatio = options.MinNewRatioOrDefault()
-	report.Saturation.CurrentNewRatio = CoverageWindowRatio(
-		coverageWindowSamples(completed, report.Saturation.Window),
-	)
+	report.Saturation.StopOnEmptyWindow = options.StopOnEmptyWindowOrDefault()
+
+	samples := coverageWindowSamples(completed, report.Saturation.Window)
+	report.Saturation.CurrentNewRatio = CoverageWindowRatio(samples)
+
+	evidence := CoverageWindowEvidenceOf(samples)
+	report.Saturation.WindowSamples = evidence.Samples
+	report.Saturation.SuccessfulSamples = evidence.Successful
+	report.Saturation.EmptySamples = evidence.Empty
 
 	return report
 }
@@ -549,26 +629,50 @@ func coverageWindowSamples(completed []CoverageTaskRow, window int) []CoverageSa
 	}
 
 	samples := make([]CoverageSample, 0, len(completed)-start)
+	// Only rows in the 'completed' state reach here, so every sample the
+	// report rebuilds is by definition a successful task.
 	for _, row := range completed[start:] {
-		samples = append(samples, CoverageSample{
-			RowsAdded:         row.RowsAdded,
-			DuplicatesSkipped: row.DuplicatesSkipped,
-		})
+		samples = append(samples, NewCoverageSample(row.RowsAdded, row.DuplicatesSkipped, true))
 	}
 
 	return samples
 }
 
 // CoverageSample is one finished task's contribution to the saturation
-// window.
+// window. The two counter fields are the historical payload; Succeeded and
+// Empty are additive evidence-quality flags whose zero values mean "quality
+// unknown", which every rule below treats as the conservative case.
 type CoverageSample struct {
-	RowsAdded         int64
-	DuplicatesSkipped int64
+	RowsAdded         int64 `json:"rows_added"`
+	DuplicatesSkipped int64 `json:"duplicates_skipped"`
+	// Succeeded reports that the task attempt completed without error. A
+	// failed, timed-out or proxy-broken attempt is not evidence about the
+	// area, so it must never be recorded as a successful sample.
+	Succeeded bool `json:"succeeded,omitempty"`
+	// Empty reports that the task succeeded and returned nothing at all:
+	// zero new rows and zero duplicates. Build samples with
+	// NewCoverageSample so this stays consistent with the counters.
+	Empty bool `json:"empty,omitempty"`
+}
+
+// NewCoverageSample builds one window sample from a finished task attempt,
+// deriving Empty from the counters so the flag can never disagree with them.
+// A failed attempt is never empty evidence, however few rows it produced.
+func NewCoverageSample(rowsAdded, duplicatesSkipped int64, succeeded bool) CoverageSample {
+	return CoverageSample{
+		RowsAdded:         rowsAdded,
+		DuplicatesSkipped: duplicatesSkipped,
+		Succeeded:         succeeded,
+		Empty:             succeeded && rowsAdded <= 0 && duplicatesSkipped <= 0,
+	}
 }
 
 // CoverageWindowRatio computes sum(new)/sum(new+dup) over a window. An
 // empty window, or one with neither new rows nor duplicates, reports 1 so
 // that "no evidence" never looks like saturation.
+//
+// The zero-yield rule (see CoverageWindowEvidence.ZeroYield) is what handles
+// the genuinely empty case; this ratio deliberately stays blind to it.
 func CoverageWindowRatio(samples []CoverageSample) float64 {
 	var added, duplicates int64
 
@@ -583,4 +687,51 @@ func CoverageWindowRatio(samples []CoverageSample) float64 {
 	}
 
 	return float64(added) / float64(total)
+}
+
+// CoverageWindowEvidence summarises the outcome quality of one saturation
+// window: how many entries it holds, how many were clean successes, and how
+// many of those returned nothing at all.
+type CoverageWindowEvidence struct {
+	Samples    int `json:"samples"`
+	Successful int `json:"successful"`
+	Empty      int `json:"empty"`
+}
+
+// CoverageWindowEvidenceOf counts the outcome quality of a window.
+func CoverageWindowEvidenceOf(samples []CoverageSample) CoverageWindowEvidence {
+	evidence := CoverageWindowEvidence{Samples: len(samples)}
+
+	for _, sample := range samples {
+		if !sample.Succeeded {
+			continue
+		}
+
+		evidence.Successful++
+
+		if sample.Empty {
+			evidence.Empty++
+		}
+	}
+
+	return evidence
+}
+
+// ZeroYield reports whether the window is genuine exhaustion evidence: it is
+// full (window entries, no fewer), every entry is a clean success, and every
+// entry returned neither new rows nor duplicates.
+//
+// The rules are deliberately conservative:
+//   - a window that is not yet full never qualifies, so one or two empty
+//     tasks can never stop a run;
+//   - a single non-successful entry disqualifies the whole window, because a
+//     transient failure is not evidence that an area is empty;
+//   - a single productive entry disqualifies it too — a mixed window is left
+//     to the ratio rule.
+func (e CoverageWindowEvidence) ZeroYield(window int) bool {
+	if window <= 0 || e.Samples < window {
+		return false
+	}
+
+	return e.Successful == e.Samples && e.Empty == e.Samples
 }

@@ -1,7 +1,9 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -243,5 +245,370 @@ func TestWizardCoverageOptionsMapping(t *testing.T) {
 		if _, err := coverageForm(t, invalid); err == nil {
 			t.Errorf("%s: invalid values %v were accepted", name, invalid)
 		}
+	}
+}
+
+// boolPointer is a local helper for the tri-state StopOnEmptyWindow knob.
+func boolPointer(value bool) *bool { return &value }
+
+func TestNewCoverageSampleDerivesEvidenceFlags(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name              string
+		rowsAdded         int64
+		duplicatesSkipped int64
+		succeeded         bool
+		wantEmpty         bool
+	}{
+		{"successful and silent", 0, 0, true, true},
+		{"successful with new rows", 3, 0, true, false},
+		{"successful with duplicates only", 0, 4, true, false},
+		{"failed and silent is never empty evidence", 0, 0, false, false},
+		{"failed with partial rows is never empty evidence", 2, 1, false, false},
+	}
+
+	for _, testCase := range cases {
+		sample := NewCoverageSample(testCase.rowsAdded, testCase.duplicatesSkipped, testCase.succeeded)
+
+		if sample.Succeeded != testCase.succeeded || sample.Empty != testCase.wantEmpty {
+			t.Errorf("%s: sample = %#v, want succeeded=%v empty=%v",
+				testCase.name, sample, testCase.succeeded, testCase.wantEmpty)
+		}
+
+		if sample.RowsAdded != testCase.rowsAdded || sample.DuplicatesSkipped != testCase.duplicatesSkipped {
+			t.Errorf("%s: counters were altered: %#v", testCase.name, sample)
+		}
+	}
+
+	// The historical zero value keeps meaning "quality unknown", which is
+	// the conservative case everywhere.
+	var legacy CoverageSample
+	if legacy.Succeeded || legacy.Empty {
+		t.Fatalf("zero-value sample = %#v, want no evidence claims", legacy)
+	}
+}
+
+func TestCoverageWindowEvidenceZeroYieldRules(t *testing.T) {
+	t.Parallel()
+
+	empty := NewCoverageSample(0, 0, true)
+	productive := NewCoverageSample(5, 1, true)
+	failed := NewCoverageSample(0, 0, false)
+
+	cases := []struct {
+		name    string
+		samples []CoverageSample
+		window  int
+		want    bool
+	}{
+		{"full window of successful empties", []CoverageSample{empty, empty, empty}, 3, true},
+		{"partial window never saturates", []CoverageSample{empty, empty}, 3, false},
+		{"one failed entry disqualifies the window", []CoverageSample{empty, failed, empty}, 3, false},
+		{"one productive entry disqualifies the window", []CoverageSample{empty, productive, empty}, 3, false},
+		{"empty window", nil, 3, false},
+		{"zero window size", []CoverageSample{empty, empty, empty}, 0, false},
+		{"legacy zero-value samples are not evidence", make([]CoverageSample, 3), 3, false},
+	}
+
+	for _, testCase := range cases {
+		evidence := CoverageWindowEvidenceOf(testCase.samples)
+
+		if got := evidence.ZeroYield(testCase.window); got != testCase.want {
+			t.Errorf("%s: ZeroYield(%d) = %v with evidence %#v, want %v",
+				testCase.name, testCase.window, got, evidence, testCase.want)
+		}
+	}
+
+	// The counts themselves are what the API reports.
+	evidence := CoverageWindowEvidenceOf([]CoverageSample{empty, productive, failed})
+	if evidence.Samples != 3 || evidence.Successful != 2 || evidence.Empty != 1 {
+		t.Fatalf("evidence = %#v, want 3 samples, 2 successful, 1 empty", evidence)
+	}
+
+	// A zero-yield window scores a perfect ratio, which is exactly why the
+	// duplicate rule can never detect it.
+	if ratio := CoverageWindowRatio([]CoverageSample{empty, empty, empty}); ratio != 1 {
+		t.Fatalf("zero-yield window ratio = %f, want 1", ratio)
+	}
+}
+
+func TestStopOnEmptyWindowDefaultsAndJSONBackCompat(t *testing.T) {
+	t.Parallel()
+
+	var nilOptions *CoverageOptions
+	if nilOptions.StopOnEmptyWindowOrDefault() {
+		t.Fatal("a nil coverage block must keep exactly the historical behaviour")
+	}
+
+	cases := []struct {
+		name    string
+		options CoverageOptions
+		want    bool
+	}{
+		{"absent knob follows auto_stop", CoverageOptions{AutoStop: true}, true},
+		{"absent knob without auto_stop stays off", CoverageOptions{}, false},
+		{
+			"explicit off wins over auto_stop",
+			CoverageOptions{AutoStop: true, StopOnEmptyWindow: boolPointer(false)},
+			false,
+		},
+		{"explicit on wins without auto_stop", CoverageOptions{StopOnEmptyWindow: boolPointer(true)}, true},
+	}
+
+	for _, testCase := range cases {
+		options := testCase.options
+		if got := options.StopOnEmptyWindowOrDefault(); got != testCase.want {
+			t.Errorf("%s: StopOnEmptyWindowOrDefault() = %v, want %v", testCase.name, got, testCase.want)
+		}
+
+		if err := options.Validate(); err != nil {
+			t.Errorf("%s: Validate() = %v", testCase.name, err)
+		}
+	}
+
+	// A configuration persisted before the knob existed decodes to the
+	// absent state, not to an explicit false.
+	var legacy CoverageOptions
+	if err := json.Unmarshal(
+		[]byte(`{"auto_stop":true,"saturation_window":6,"min_new_ratio":0.2,"max_expansions":3,"expansion_min_new":4}`),
+		&legacy,
+	); err != nil {
+		t.Fatalf("decode legacy options: %v", err)
+	}
+
+	if legacy.StopOnEmptyWindow != nil {
+		t.Fatalf("legacy options decoded an explicit knob: %#v", legacy.StopOnEmptyWindow)
+	}
+
+	if !legacy.StopOnEmptyWindowOrDefault() || legacy.SaturationWindow != 6 || legacy.MaxExpansions != 3 {
+		t.Fatalf("legacy options = %#v", legacy)
+	}
+
+	// An absent knob does not appear in the serialized form either, so
+	// re-persisting an untouched configuration is byte-stable.
+	encoded, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("encode options: %v", err)
+	}
+
+	if strings.Contains(string(encoded), "stop_on_empty_window") {
+		t.Fatalf("absent knob was serialized: %s", encoded)
+	}
+
+	explicit, err := json.Marshal(CoverageOptions{AutoStop: true, StopOnEmptyWindow: boolPointer(false)})
+	if err != nil {
+		t.Fatalf("encode explicit options: %v", err)
+	}
+
+	if !strings.Contains(string(explicit), `"stop_on_empty_window":false`) {
+		t.Fatalf("explicit knob was not serialized: %s", explicit)
+	}
+}
+
+// coverageCompletedRow is one finished plan task with the given counters.
+func coverageCompletedRow(key string, sequence int, rowsAdded, duplicates int64) CoverageTaskRow {
+	started := time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC)
+	finished := started.Add(time.Duration(sequence+1) * time.Minute)
+
+	return CoverageTaskRow{
+		TaskKey: key, Query: "dentist in Springfield IL 62701", State: "completed",
+		Attempts: 1, Sequence: sequence, RowsAdded: rowsAdded, DuplicatesSkipped: duplicates,
+		StartedAt: &started, FinishedAt: &finished,
+	}
+}
+
+// coverageStoppedRows appends one skipped task carrying the given adaptive
+// skip reason to a completed plan.
+func coverageStoppedRows(skipReason string, completed []CoverageTaskRow) []CoverageTaskRow {
+	rows := append([]CoverageTaskRow{}, completed...)
+
+	return append(rows, CoverageTaskRow{
+		TaskKey: "t-skipped", Query: "dentist in Rochester IL 62563", State: "skipped",
+		LastError: skipReason, Sequence: len(rows),
+	})
+}
+
+func TestCoverageReportDistinguishesSaturationReasons(t *testing.T) {
+	t.Parallel()
+
+	silent := []CoverageTaskRow{
+		coverageCompletedRow("t-1", 0, 0, 0),
+		coverageCompletedRow("t-2", 1, 0, 0),
+		coverageCompletedRow("t-3", 2, 0, 0),
+	}
+
+	options := &CoverageOptions{AutoStop: true, SaturationWindow: 3, MinNewRatio: 0.2}
+
+	report := buildCoverageReport(options, coverageStoppedRows(CoverageEmptySkipReason, silent))
+	if !report.Saturation.Stopped || report.Saturation.Reason != CoverageSaturationReasonEmpty {
+		t.Fatalf("empty stop saturation = %#v", report.Saturation)
+	}
+
+	if report.Saturation.WindowSamples != 3 || report.Saturation.SuccessfulSamples != 3 ||
+		report.Saturation.EmptySamples != 3 {
+		t.Fatalf("empty stop evidence = %#v", report.Saturation)
+	}
+
+	if !report.Saturation.StopOnEmptyWindow {
+		t.Fatal("auto_stop must enable the zero-yield rule by default")
+	}
+
+	// The historical stop keeps its historical reason and its ratio.
+	duplicateHeavy := []CoverageTaskRow{
+		coverageCompletedRow("t-1", 0, 1, 9),
+		coverageCompletedRow("t-2", 1, 1, 9),
+		coverageCompletedRow("t-3", 2, 1, 9),
+	}
+
+	report = buildCoverageReport(options, coverageStoppedRows(CoverageSkipReason, duplicateHeavy))
+	if !report.Saturation.Stopped || report.Saturation.Reason != CoverageSaturationReasonDuplicates {
+		t.Fatalf("duplicate stop saturation = %#v", report.Saturation)
+	}
+
+	if report.Saturation.CurrentNewRatio != 0.1 || report.Saturation.EmptySamples != 0 ||
+		report.Saturation.SuccessfulSamples != 3 {
+		t.Fatalf("duplicate stop evidence = %#v", report.Saturation)
+	}
+
+	// A skip that is not an adaptive stop keeps the report unstopped and
+	// reasonless.
+	report = buildCoverageReport(options, coverageStoppedRows("operator-cancelled", duplicateHeavy))
+	if report.Saturation.Stopped || report.Saturation.Reason != "" {
+		t.Fatalf("unrelated skip = %#v", report.Saturation)
+	}
+
+	// A nil coverage block reports the legacy defaults and never claims the
+	// zero-yield rule is on.
+	report = buildCoverageReport(nil, silent)
+	if report.Saturation.Enabled || report.Saturation.StopOnEmptyWindow || report.Saturation.Reason != "" {
+		t.Fatalf("nil options saturation = %#v", report.Saturation)
+	}
+
+	if report.Saturation.Window != DefaultCoverageSaturationWindow ||
+		report.Saturation.MinNewRatio != DefaultCoverageMinNewRatio {
+		t.Fatalf("nil options defaults = %#v", report.Saturation)
+	}
+}
+
+// coverageAPIRepository serves one job and one fixed plan to the coverage
+// route. The real SQLite implementation cannot be imported from a
+// package-internal web test (import cycle through web/sqlite); its queries
+// are proven by the repository tests in web/sqlite.
+type coverageAPIRepository struct {
+	*fixedJobRepository
+
+	rows []CoverageTaskRow
+}
+
+func (r *coverageAPIRepository) JobCoverageTasks(context.Context, string) ([]CoverageTaskRow, error) {
+	return r.rows, nil
+}
+
+func (r *coverageAPIRepository) JobCoverageSeedState(context.Context, string) (CoverageSeedState, error) {
+	return CoverageSeedState{MaxSequence: -1}, nil
+}
+
+func (r *coverageAPIRepository) SkipPendingJobTasks(context.Context, string, string) (int, error) {
+	return 0, nil
+}
+
+func (r *coverageAPIRepository) AppendJobTasks(
+	context.Context, string, []JobTaskDefinition, int,
+) ([]JobTask, error) {
+	return nil, nil
+}
+
+func (r *coverageAPIRepository) DeferJobTask(context.Context, string, string, time.Time) error {
+	return nil
+}
+
+func (r *coverageAPIRepository) UpsertProxyTaskStat(context.Context, ProxyTaskStatInput) error {
+	return nil
+}
+
+func (r *coverageAPIRepository) ProxyTaskHealthByURL(
+	context.Context, string,
+) (map[string]ProxyTaskHealth, error) {
+	return nil, nil
+}
+
+func TestCoverageAPIReportsEvidenceAdditively(t *testing.T) {
+	t.Parallel()
+
+	const jobID = "44444444-4444-4444-8444-444444444444"
+
+	silent := []CoverageTaskRow{
+		coverageCompletedRow("t-1", 0, 0, 0),
+		coverageCompletedRow("t-2", 1, 0, 0),
+		coverageCompletedRow("t-3", 2, 0, 0),
+	}
+
+	job := Job{ID: jobID, Name: "coverage", Status: StatusOK}
+	job.Data.Coverage = &CoverageOptions{AutoStop: true, SaturationWindow: 3, MinNewRatio: 0.2}
+
+	repository := &coverageAPIRepository{
+		fixedJobRepository: &fixedJobRepository{job: job},
+		rows:               coverageStoppedRows(CoverageEmptySkipReason, silent),
+	}
+
+	server, err := New(NewService(repository, t.TempDir()), "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	server.registerCoverageRoutes(mux)
+
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/jobs/"+jobID+"/coverage", http.NoBody))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("coverage = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	body := recorder.Body.String()
+
+	// Every historical key the UI reads keeps its exact name.
+	for _, key := range []string{
+		`"totals"`, `"tasks_total"`, `"tasks_done"`, `"tasks_failed"`, `"tasks_skipped"`,
+		`"rows_added"`, `"rows_replaced"`, `"duplicates_skipped"`, `"expansions_added"`,
+		`"saturation"`, `"enabled"`, `"window"`, `"min_new_ratio"`, `"current_new_ratio"`, `"stopped"`,
+		`"by_query"`, `"trend"`,
+	} {
+		if !strings.Contains(body, key) {
+			t.Fatalf("coverage payload lacks the existing key %s: %s", key, body)
+		}
+	}
+
+	// The additive evidence sits inside the same "saturation" object.
+	for _, key := range []string{
+		`"reason":"` + CoverageSaturationReasonEmpty + `"`,
+		`"stop_on_empty_window":true`,
+		`"window_samples":3`, `"successful_samples":3`, `"empty_samples":3`,
+	} {
+		if !strings.Contains(body, key) {
+			t.Fatalf("coverage payload lacks %s: %s", key, body)
+		}
+	}
+
+	// The duplicate stop reports the other reason through the same route.
+	repository.rows = coverageStoppedRows(CoverageSkipReason, []CoverageTaskRow{
+		coverageCompletedRow("t-1", 0, 1, 9),
+		coverageCompletedRow("t-2", 1, 1, 9),
+		coverageCompletedRow("t-3", 2, 1, 9),
+	})
+
+	recorder = httptest.NewRecorder()
+	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/jobs/"+jobID+"/coverage", http.NoBody))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("coverage = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	body = recorder.Body.String()
+	if !strings.Contains(body, `"reason":"`+CoverageSaturationReasonDuplicates+`"`) ||
+		!strings.Contains(body, `"empty_samples":0`) {
+		t.Fatalf("duplicate stop payload = %s", body)
 	}
 }
