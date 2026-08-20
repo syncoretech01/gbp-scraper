@@ -102,6 +102,11 @@ func New(svc *Service, addr string) (*Server, error) {
 
 		ans.jobMonitorPage(w, r)
 	})
+	mux.HandleFunc("GET /app/jobs/{id}/benchmark", func(w http.ResponseWriter, r *http.Request) {
+		r = requestWithID(r)
+
+		ans.jobBenchmarkPage(w, r)
+	})
 	mux.HandleFunc("GET /app/map", ans.mapPage)
 	mux.HandleFunc("GET /app/results", ans.resultsPage)
 	mux.HandleFunc("GET /app/results/{id}", ans.businessDetailPage)
@@ -198,6 +203,7 @@ func New(svc *Service, addr string) (*Server, error) {
 	ans.registerTemplateRenameRoutes(mux)
 	ans.registerProspectRoutes(mux)
 	ans.registerCheckpointRoutes(mux)
+	ans.registerBenchmarkRoutes(mux)
 	ans.registerResultRoutes(mux)
 	ans.registerDuplicateRoutes(mux)
 	ans.registerEnrichmentRoutes(mux)
