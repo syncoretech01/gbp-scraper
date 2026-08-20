@@ -45,15 +45,23 @@ type coverageEngine struct {
 	zipIndex map[string]prospect.ZIPArea
 }
 
-// coverageDecision is what one completed task changed.
+// coverageDecision is what one finished task attempt changed.
 type coverageDecision struct {
+	// recorded reports whether the attempt contributed evidence to the
+	// saturation window. Only attempts that completed without error do.
+	recorded bool
 	// saturatedNow is true exactly once: on the completion whose window
-	// crossed the threshold.
+	// crossed a stop threshold.
 	saturatedNow bool
-	ratio        float64
-	windowSize   int
-	expansions   []web.JobTaskDefinition
-	parentZIP    string
+	// reason names which rule fired: web.CoverageSaturationReasonDuplicates
+	// or web.CoverageSaturationReasonEmpty. It is empty unless
+	// saturatedNow is set.
+	reason     string
+	ratio      float64
+	windowSize int
+	evidence   web.CoverageWindowEvidence
+	expansions []web.JobTaskDefinition
+	parentZIP  string
 }
 
 func newCoverageEngine(jobID string, options web.CoverageOptions, seed web.CoverageSeedState) *coverageEngine {
@@ -75,35 +83,81 @@ func newCoverageEngine(jobID string, options web.CoverageOptions, seed web.Cover
 	return engine
 }
 
-// recordCompletion folds one completed task into the saturation window and
-// decides whether the run just saturated or earned an expansion.
+// recordCompletion folds one SUCCESSFUL task into the saturation window and
+// decides whether the run just saturated or earned an expansion. Only tasks
+// that completed without error may be recorded here; route every failed
+// attempt through recordFailedAttempt instead.
 func (engine *coverageEngine) recordCompletion(task web.JobTask, checkpoint web.JobTaskCheckpoint) coverageDecision {
+	return engine.record(task, checkpoint, true)
+}
+
+// recordFailedAttempt folds one FAILED task attempt into the engine. A
+// browser crash, proxy error, timeout or parsing failure says nothing about
+// whether an area still holds businesses, so the attempt never enters the
+// saturation window, never evicts the good evidence already in it, never
+// stops the plan and never earns an expansion. Routing failures through the
+// engine makes that an enforced invariant rather than a property of the call
+// site.
+func (engine *coverageEngine) recordFailedAttempt(
+	task web.JobTask,
+	checkpoint web.JobTaskCheckpoint,
+) coverageDecision {
+	return engine.record(task, checkpoint, false)
+}
+
+// record is the single door into the saturation window; succeeded decides
+// whether the attempt is evidence at all.
+func (engine *coverageEngine) record(
+	task web.JobTask,
+	checkpoint web.JobTaskCheckpoint,
+	succeeded bool,
+) coverageDecision {
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
 
 	windowSize := engine.options.WindowOrDefault()
 
-	engine.window = append(engine.window, web.CoverageSample{
-		RowsAdded:         checkpoint.RowsAdded,
-		DuplicatesSkipped: checkpoint.DuplicatesSkipped,
-	})
-	if len(engine.window) > windowSize {
-		engine.window = engine.window[len(engine.window)-windowSize:]
+	if succeeded {
+		engine.window = append(engine.window, web.NewCoverageSample(
+			checkpoint.RowsAdded, checkpoint.DuplicatesSkipped, true,
+		))
+
+		if len(engine.window) > windowSize {
+			engine.window = engine.window[len(engine.window)-windowSize:]
+		}
 	}
 
 	decision := coverageDecision{
+		recorded:   succeeded,
 		ratio:      web.CoverageWindowRatio(engine.window),
 		windowSize: len(engine.window),
+		evidence:   web.CoverageWindowEvidenceOf(engine.window),
 	}
 
-	if engine.saturated {
+	if !succeeded || engine.saturated {
 		return decision
 	}
 
+	// Sustained successful zero yield: a full window of clean successes that
+	// returned neither new rows nor duplicates is genuine exhaustion. The
+	// ratio rule cannot see this case at all — a window with no rows and no
+	// duplicates scores a perfect 1.0 — so it is checked first. A partial
+	// window, any failed entry, or any productive entry disqualifies it.
+	if engine.options.StopOnEmptyWindowOrDefault() && decision.evidence.ZeroYield(windowSize) {
+		engine.saturated = true
+		decision.saturatedNow = true
+		decision.reason = web.CoverageSaturationReasonEmpty
+
+		return decision
+	}
+
+	// Duplicate saturation: unchanged historical rule. A mixed window of
+	// empty and productive tasks is judged by this ratio alone.
 	if engine.options.AutoStop && len(engine.window) >= windowSize &&
 		decision.ratio < engine.options.MinNewRatioOrDefault() {
 		engine.saturated = true
 		decision.saturatedNow = true
+		decision.reason = web.CoverageSaturationReasonDuplicates
 
 		return decision
 	}
@@ -319,9 +373,84 @@ func buildExpansionSeed(
 	return seed, nil
 }
 
+// applyCoverageFailure hands one failed task attempt to the coverage engine,
+// which rejects it as evidence. It has no durable effect by construction:
+// the attempt is not added to the saturation window, so it can neither stop
+// the plan nor push older, good evidence out of the window.
+func (w *webrunner) applyCoverageFailure(
+	run *taskPoolRun,
+	task web.JobTask,
+	checkpoint web.JobTaskCheckpoint,
+) {
+	engine := run.coverage
+	if engine == nil {
+		return
+	}
+
+	_ = engine.recordFailedAttempt(task, checkpoint)
+}
+
+// coverageStopEvent maps a saturation reason to the durable skip reason
+// written on every skipped task and to the worker event type operators see.
+// The two stops are reported separately so "this area is empty" is never
+// confused with "we keep re-finding the same businesses".
+func coverageStopEvent(reason string) (skipReason, eventType string) {
+	if reason == web.CoverageSaturationReasonEmpty {
+		return web.CoverageEmptySkipReason, "coverage-exhausted"
+	}
+
+	return web.CoverageSkipReason, "coverage-saturated"
+}
+
+// applySaturationStop skips the remaining plan and records the worker event
+// for whichever saturation rule fired.
+func (w *webrunner) applySaturationStop(jobID string, engine *coverageEngine, decision coverageDecision) {
+	skipReason, eventType := coverageStopEvent(decision.reason)
+
+	skipped, skipErr := w.svc.SkipPendingJobTasks(context.Background(), jobID, skipReason)
+	if skipErr != nil {
+		_ = w.svc.RecordJobWorkerEvent(
+			context.Background(), jobID, eventType, "warning",
+			"Coverage saturation was detected but the remaining plan could not be skipped",
+			map[string]any{"error": skipErr.Error()},
+		)
+
+		return
+	}
+
+	fields := map[string]any{
+		"window":             decision.windowSize,
+		"current_new_ratio":  decision.ratio,
+		"min_new_ratio":      engine.options.MinNewRatioOrDefault(),
+		"skipped_tasks":      skipped,
+		"reason":             decision.reason,
+		"successful_samples": decision.evidence.Successful,
+		"empty_samples":      decision.evidence.Empty,
+	}
+
+	message := fmt.Sprintf(
+		"Coverage saturated: only %.0f%% of the last %d task(s) produced new rows; %d remaining task(s) were skipped",
+		decision.ratio*100, decision.windowSize, skipped,
+	)
+
+	if decision.reason == web.CoverageSaturationReasonEmpty {
+		message = fmt.Sprintf(
+			"Coverage exhausted: the last %d task(s) all succeeded with no new and no duplicate rows; "+
+				"%d remaining task(s) were skipped",
+			decision.windowSize, skipped,
+		)
+	}
+
+	_ = w.svc.RecordJobWorkerEvent(context.Background(), jobID, eventType, "information", message, fields)
+}
+
 // applyCoverage performs the durable side of one coverage decision: it skips
 // the remaining plan on saturation, or appends expansion tasks, and records
 // the corresponding worker events.
+//
+// It is called for tasks that completed without error only, which is what
+// keeps the saturation window made of clean evidence. Failed attempts go to
+// applyCoverageFailure.
 func (w *webrunner) applyCoverage(
 	run *taskPoolRun,
 	task web.JobTask,
@@ -337,30 +466,7 @@ func (w *webrunner) applyCoverage(
 	decision := engine.recordCompletion(task, checkpoint)
 
 	if decision.saturatedNow {
-		skipped, skipErr := w.svc.SkipPendingJobTasks(context.Background(), job.ID, web.CoverageSkipReason)
-		if skipErr != nil {
-			_ = w.svc.RecordJobWorkerEvent(
-				context.Background(), job.ID, "coverage-saturated", "warning",
-				"Coverage saturation was detected but the remaining plan could not be skipped",
-				map[string]any{"error": skipErr.Error()},
-			)
-
-			return
-		}
-
-		_ = w.svc.RecordJobWorkerEvent(
-			context.Background(), job.ID, "coverage-saturated", "information",
-			fmt.Sprintf(
-				"Coverage saturated: only %.0f%% of the last %d task(s) produced new rows; %d remaining task(s) were skipped",
-				decision.ratio*100, decision.windowSize, skipped,
-			),
-			map[string]any{
-				"window":            decision.windowSize,
-				"current_new_ratio": decision.ratio,
-				"min_new_ratio":     engine.options.MinNewRatioOrDefault(),
-				"skipped_tasks":     skipped,
-			},
-		)
+		w.applySaturationStop(job.ID, engine, decision)
 
 		return
 	}
