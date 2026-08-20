@@ -7,6 +7,30 @@ repo. Its product behaviour is authoritative; its repo topology is not. Every
 capability it describes is implemented **inside** the local application,
 reusing the systems that already exist rather than wrapping them.
 
+## Standalone mode is the primary mode
+
+The application is fully standalone: no step of the GBP workflow calls the
+Lead Engine, a CRM, site-whisper, or an external email verifier.
+
+- **The complete local pipeline**: ZIP/category coverage (embedded US ZIP
+  dataset, `web/prospect/uszips.csv.gz`, ~41k ZIPs with city/state/population;
+  provenance and licenses in `web/prospect/ZIPDATA.md`; CSV upload still
+  overrides) -> scrape -> dedupe -> **website pre-classification**
+  (`web/enrichment/preclassify.go`, a bounded single-page DNS/TLS/HTTP probe
+  queued through the normal enrichment queue with `"preclassify": true`) ->
+  email discovery (existing enrichment) -> scoring/tier -> call opener ->
+  Results filters/views -> export. The wizard's GBP coverage block carries a
+  "Prospecting pipeline" preset that switches the enrichment step on; Results
+  has a "Pre-classify websites" bulk action for existing rows.
+- **Dormant future-integration surfaces**: `GET /api/v1/prospects/discovered`
+  and the `discovered_companies` export exist for a future Lead-Engine
+  integration but are disabled by default behind the
+  `prospect.future_integrations` setting (Settings -> "Future integrations
+  (dormant)"). While off, the endpoint answers 403
+  `future_integrations_disabled` and the export format is neither offered nor
+  accepted. The stored boundary URLs (email verifier, audit service) remain
+  stored-only configuration; nothing is ever called.
+
 ## Where each spec section landed
 
 | Spec section | Implementation here |
