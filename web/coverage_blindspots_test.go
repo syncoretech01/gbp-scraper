@@ -27,7 +27,7 @@ func TestCoverageReportSurfacesTruncationAndRefinementsAdditively(t *testing.T) 
 		},
 		{
 			TaskKey: "t-3", Query: "dentist in Chatham IL 62629", State: "completed",
-			Attempts: 1, Sequence: 2, RowsAdded: 5,
+			Attempts: 1, Sequence: 2, RowsAdded: 5, RowsReplaced: 5,
 			Origin:    CoverageExpansionOriginPrefix + "62701",
 			StartedAt: &started, FinishedAt: &finished,
 		},
@@ -56,6 +56,12 @@ func TestCoverageReportSurfacesTruncationAndRefinementsAdditively(t *testing.T) 
 		t.Fatalf("by_query ZIPs = %q and %q", report.ByQuery[1].ZIP, report.ByQuery[2].ZIP)
 	}
 
+	// Overlap is only visible per query through rows_replaced: the
+	// neighbour expansion re-found every business it returned.
+	if report.ByQuery[2].RowsReplaced != 5 || report.ByQuery[2].DuplicatesSkipped != 0 {
+		t.Fatalf("neighbour row = %#v, want the overlap under rows_replaced", report.ByQuery[2])
+	}
+
 	payload, err := json.Marshal(report)
 	if err != nil {
 		t.Fatalf("marshal report: %v", err)
@@ -69,6 +75,7 @@ func TestCoverageReportSurfacesTruncationAndRefinementsAdditively(t *testing.T) 
 		`"refinements_added"`, `"tasks_truncated"`,
 		`"saturation"`, `"by_query"`, `"task_key"`, `"query"`, `"zip"`, `"origin"`, `"state"`,
 		`"attempts"`, `"seconds"`, `"truncated"`, `"trend"`, `"seq"`, `"finished_at"`,
+		`"rows_replaced"`,
 	} {
 		if !strings.Contains(string(payload), key) {
 			t.Errorf("serialized report lacks %s: %s", key, payload)

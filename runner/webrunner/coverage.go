@@ -135,7 +135,7 @@ func (engine *coverageEngine) expandLocked(
 		return
 	}
 
-	if checkpoint.RowsAdded < int64(engine.options.ExpansionMinNewOrDefault()) {
+	if coverageNetNewRows(checkpoint) < int64(engine.options.ExpansionMinNewOrDefault()) {
 		return
 	}
 

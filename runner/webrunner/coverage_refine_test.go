@@ -527,6 +527,89 @@ func TestCoverageExpandsOneNeighbourhoodPerParentZIP(t *testing.T) {
 	}
 }
 
+func TestCoverageNetNewRows(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name       string
+		checkpoint web.JobTaskCheckpoint
+		want       int64
+	}{
+		{
+			name:       "a wholly fresh task is all new",
+			checkpoint: web.JobTaskCheckpoint{RowsAdded: 12},
+			want:       12,
+		},
+		{
+			name:       "a task that re-found everything is all overlap",
+			checkpoint: web.JobTaskCheckpoint{RowsAdded: 12, RowsReplaced: 12},
+			want:       0,
+		},
+		{
+			name:       "partial overlap leaves the remainder",
+			checkpoint: web.JobTaskCheckpoint{RowsAdded: 12, RowsReplaced: 5},
+			want:       7,
+		},
+		{
+			name:       "one row may supersede several stored rows",
+			checkpoint: web.JobTaskCheckpoint{RowsAdded: 2, RowsReplaced: 5},
+			want:       0,
+		},
+		{
+			name:       "in-run duplicates are not overlap with other queries",
+			checkpoint: web.JobTaskCheckpoint{RowsAdded: 12, DuplicatesSkipped: 30},
+			want:       12,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := coverageNetNewRows(testCase.checkpoint); got != testCase.want {
+				t.Fatalf("coverageNetNewRows(%#v) = %d, want %d", testCase.checkpoint, got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestCoverageExpansionIgnoresRowsAnotherQueryAlreadyFound(t *testing.T) {
+	t.Parallel()
+
+	engine := refineTestEngine(t,
+		web.CoverageOptions{MaxExpansions: 4, ExpansionMinNew: 3},
+		web.CoverageSeedState{Queries: []string{"dentist in Alpha IL 60001"}, MaxSequence: 0},
+		15,
+	)
+
+	// Every one of this task's rows was already collected by an earlier
+	// query: it broke no new ground and must not buy neighbour tasks out of
+	// the shared budget. The saturation window cannot see this at all -
+	// duplicates_skipped only counts collisions inside one result file, so
+	// the ratio reads a perfect 1.0.
+	overlapping := web.JobTaskCheckpoint{RowsAdded: 20, RowsReplaced: 20}
+
+	if ratio := web.CoverageWindowRatio([]web.CoverageSample{{
+		RowsAdded: overlapping.RowsAdded, DuplicatesSkipped: overlapping.DuplicatesSkipped,
+	}}); ratio != 1 {
+		t.Fatalf("window ratio = %f, want the 1.0 the engine actually sees", ratio)
+	}
+
+	decision := engine.recordCompletion(
+		web.JobTask{Key: "t-overlap", Query: "dentist in Alpha IL 60001"}, overlapping,
+	)
+	if len(decision.expansions) != 0 {
+		t.Fatalf("expansions = %d, want 0 for a query that found nothing new", len(decision.expansions))
+	}
+
+	// The same rows count, with genuinely new ground, still expands.
+	productive := engine.recordCompletion(
+		web.JobTask{Key: "t-productive", Query: "dentist in Gamma IL 60003"},
+		web.JobTaskCheckpoint{RowsAdded: 20, RowsReplaced: 17},
+	)
+	if len(productive.expansions) == 0 {
+		t.Fatal("a query with three genuinely new rows earned no expansion")
+	}
+}
+
 func TestCoverageRefinementAppendsOnceAndResumesAfterRestart(t *testing.T) {
 	t.Parallel()
 

@@ -202,6 +202,11 @@ type CoverageQueryRow struct {
 	RowsAdded         int64   `json:"rows_added"`
 	DuplicatesSkipped int64   `json:"duplicates_skipped"`
 	Seconds           float64 `json:"seconds"`
+	// RowsReplaced is how many of this query's rows the job had already
+	// collected from an earlier query. It is the overlap measure:
+	// DuplicatesSkipped only counts collisions inside one result file, so
+	// two queries covering the same ground show up here and nowhere else.
+	RowsReplaced int64 `json:"rows_replaced"`
 	// Truncated marks a query whose result set reached its depth's cap, so
 	// the operator can see which cells are probably under-covered.
 	Truncated bool `json:"truncated"`
@@ -532,6 +537,7 @@ func buildCoverageReport(options *CoverageOptions, rows []CoverageTaskRow) Cover
 			RowsAdded:         row.RowsAdded,
 			DuplicatesSkipped: row.DuplicatesSkipped,
 			Seconds:           seconds,
+			RowsReplaced:      row.RowsReplaced,
 			Truncated:         row.Truncated,
 		})
 

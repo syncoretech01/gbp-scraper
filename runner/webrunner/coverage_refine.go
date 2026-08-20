@@ -114,6 +114,26 @@ func coverageTaskYield(checkpoint web.JobTaskCheckpoint) int64 {
 	return checkpoint.RowsAdded + checkpoint.DuplicatesSkipped
 }
 
+// coverageNetNewRows is how many businesses a finished task contributed that
+// the job had not already collected.
+//
+// RowsAdded on its own cannot answer that: when a task re-finds a business an
+// earlier task already committed, the merge drops the older copy (counting it
+// under RowsReplaced) and writes the fresh one, which lands in RowsAdded. A
+// query that found nothing new therefore still reports a full RowsAdded, and
+// DuplicatesSkipped stays at zero because it only counts collisions inside
+// one result file. Expansion budget must follow genuinely new ground, so the
+// gate reads the difference.
+func coverageNetNewRows(checkpoint web.JobTaskCheckpoint) int64 {
+	// One run row can supersede several stored rows, because a business is
+	// matched on any of its identities.
+	if checkpoint.RowsReplaced >= checkpoint.RowsAdded {
+		return 0
+	}
+
+	return checkpoint.RowsAdded - checkpoint.RowsReplaced
+}
+
 // markCoverageTruncation records on the checkpoint whether the task's own
 // result set reached the effective per-query cap for the configured depth,
 // which means real businesses in that cell were very likely never rendered.
