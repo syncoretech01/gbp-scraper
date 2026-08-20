@@ -1323,6 +1323,15 @@ func storeDuplicateCandidates(
 		if otherID == targetID {
 			continue
 		}
+		suppressed, err := keepSeparatePairExists(ctx, tx, targetID, otherID)
+		if err != nil {
+			return err
+		}
+		if suppressed {
+			// A human already ruled this pair as distinct businesses, even
+			// though Google hands both rows the same identifier.
+			continue
+		}
 		left, right := targetID, otherID
 		if left > right {
 			left, right = right, left
@@ -1505,6 +1514,15 @@ func fuzzyDuplicateScore(left, right fuzzyBusinessCandidate) (float64, map[strin
 	if nameSimilarity < 0.55 && !samePhone && !sameDomain {
 		return 0, signals
 	}
+	// A chain's locations share a call centre number and one website by
+	// design. Entity resolution already refuses to merge them; without the
+	// same veto here every pair of the chain would still be filed for review,
+	// which is what floods the queue on a rescan of a franchise-heavy market.
+	if multiLocationBusinessPair(left, right, samePhone, sameDomain) {
+		signals["multi_location_pattern"] = true
+
+		return 0, signals
+	}
 
 	score := nameSimilarity*0.45 + addressSimilarity*0.25
 	if left.city != "" && strings.EqualFold(left.city, right.city) {
@@ -1541,6 +1559,37 @@ func fuzzyDuplicateScore(left, right fuzzyBusinessCandidate) (float64, map[strin
 		}
 	}
 	return min(1.0, roundedScore(score)), signals
+}
+
+// multiLocationBusinessPair applies the entity-resolution chain guard to two
+// stored rows: a shared contact point plus different street addresses at
+// demonstrably separate locations is a franchise, not a duplicate.
+func multiLocationBusinessPair(left, right fuzzyBusinessCandidate, samePhone, sameDomain bool) bool {
+	if !samePhone && !sameDomain {
+		return false
+	}
+	if left.normalizedAddress == "" || right.normalizedAddress == "" ||
+		left.normalizedAddress == right.normalizedAddress {
+		return false
+	}
+
+	distance, hasDistance := 0.0, false
+	if left.latitude.Valid && left.longitude.Valid &&
+		right.latitude.Valid && right.longitude.Valid {
+		distance = geographicDistanceMeters(
+			left.latitude.Float64,
+			left.longitude.Float64,
+			right.latitude.Float64,
+			right.longitude.Float64,
+		)
+		hasDistance = true
+	}
+
+	return separateLocations(
+		distance, hasDistance,
+		left.city, right.city,
+		left.postalCode, right.postalCode,
+	)
 }
 
 func textDiceSimilarity(left, right string) float64 {

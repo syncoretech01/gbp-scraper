@@ -57,6 +57,19 @@ const (
 	identityChainDistanceMetres  = 1000.0
 	identityChainNameSimilarity  = 0.9
 	identityMergeRedirectMaxHops = 5
+
+	// identityPhoneUnrelatedNameFloor is the weakest name agreement the
+	// proximity-only phone tier tolerates. A shared switchboard number puts
+	// every tenant of one building at the same coordinates, so proximity on
+	// its own would fold unrelated neighbours together. A rebrand ("Joe's
+	// Pizza" -> "Tony's Pizza") still clears this floor through the shared
+	// trade word, while two unrelated practices share no name token at all.
+	identityPhoneUnrelatedNameFloor = 0.3
+
+	// identityDriftNameSimilarity is the name agreement required before a
+	// corroborated attach may overrule a disagreeing Google identifier. A
+	// reassigned place_id does not rename or move the business.
+	identityDriftNameSimilarity = 0.9
 )
 
 // identityEvidence is one persisted piece of resolution evidence. It is
@@ -100,6 +113,8 @@ type fallbackRow struct {
 	name              string
 	normalizedName    string
 	normalizedAddress string
+	city              string
+	postalCode        string
 	placeID           string
 	cid               string
 	dataID            string
@@ -358,7 +373,8 @@ func collectFallbackRows(
 }
 
 const fallbackRowColumns = `businesses.id, businesses.name, businesses.normalized_name,
-	COALESCE(businesses.normalized_address, ''), COALESCE(businesses.place_id, ''),
+	COALESCE(businesses.normalized_address, ''), COALESCE(businesses.city, ''),
+	COALESCE(businesses.postal_code, ''), COALESCE(businesses.place_id, ''),
 	COALESCE(businesses.cid, ''), COALESCE(businesses.data_id, ''),
 	businesses.latitude, businesses.longitude, COALESCE(businesses.merged_into_id, '')`
 
@@ -382,6 +398,8 @@ func queryFallbackRows(
 			&row.name,
 			&row.normalizedName,
 			&row.normalizedAddress,
+			&row.city,
+			&row.postalCode,
 			&row.placeID,
 			&row.cid,
 			&row.dataID,
@@ -427,6 +445,8 @@ func redirectMergedRow(ctx context.Context, tx *sql.Tx, row *fallbackRow) (*fall
 			&reloaded.name,
 			&reloaded.normalizedName,
 			&reloaded.normalizedAddress,
+			&reloaded.city,
+			&reloaded.postalCode,
 			&reloaded.placeID,
 			&reloaded.cid,
 			&reloaded.dataID,
@@ -493,7 +513,12 @@ func scoreFallbackRows(
 				continue
 			}
 		case confidence >= identityDriftConfidence:
-			attachable = true
+			// The drift tier may absorb a reassigned or first-seen Google
+			// identifier, but a disagreement between two identifiers of the
+			// same kind still needs the pair to describe one location under
+			// one name; otherwise these are two listings, not one drift.
+			attachable = !authoritativeConflict(business, row) ||
+				identityDriftPlausible(business, row)
 		case confidence >= identityAttachConfidence:
 			attachable = !authoritativeConflict(business, row)
 		}
@@ -575,8 +600,12 @@ func scoreFallbackRow(
 
 	differentAddresses := business.Address.Normalized != "" && row.normalizedAddress != "" &&
 		business.Address.Normalized != row.normalizedAddress
-	chain := (row.phoneMatch || row.domainMatch) && hasDistance &&
-		distance > identityChainDistanceMetres && differentAddresses
+	chain := (row.phoneMatch || row.domainMatch) && differentAddresses &&
+		separateLocations(
+			distance, hasDistance,
+			business.Address.City, row.city,
+			business.Address.PostalCode, row.postalCode,
+		)
 	if chain {
 		appendSignal("multi_location_pattern", "",
 			"shared contact point with distant, different addresses")
@@ -592,7 +621,8 @@ func scoreFallbackRow(
 	}
 	if row.phoneMatch &&
 		(nameSimilarity >= identityPhoneNameSimilarity ||
-			(hasDistance && distance <= identityPhoneDistanceMetres)) {
+			(hasDistance && distance <= identityPhoneDistanceMetres &&
+				nameSimilarity >= identityPhoneUnrelatedNameFloor)) {
 		consider(identityMethodPhone, identityPhoneConfidence)
 	}
 	if row.domainMatch && hasDistance && distance <= identityDomainDistanceMetres &&
@@ -628,6 +658,54 @@ func fallbackDistanceMetres(business resultimport.Business, row *fallbackRow) (f
 		row.latitude.Float64,
 		row.longitude.Float64,
 	), true
+}
+
+// separateLocations reports that two records sit at demonstrably different
+// places. Coordinates decide it when both sides have them; otherwise a
+// disagreeing city or postal code is the only remaining evidence, and it is
+// enough, because a business that merely moved keeps its locality far more
+// often than a chain shares one. Missing data is never treated as distance,
+// so a rediscovery with no geography still attaches.
+func separateLocations(
+	distance float64,
+	hasDistance bool,
+	incomingCity, storedCity string,
+	incomingPostalCode, storedPostalCode string,
+) bool {
+	if hasDistance {
+		return distance > identityChainDistanceMetres
+	}
+	if differentLocalityValue(incomingCity, storedCity) {
+		return true
+	}
+
+	return differentLocalityValue(incomingPostalCode, storedPostalCode)
+}
+
+// differentLocalityValue compares one locality field, treating a missing value
+// on either side as "unknown" rather than "different".
+func differentLocalityValue(incoming, stored string) bool {
+	incoming = resultimport.NormalizeAddress(incoming)
+	stored = resultimport.NormalizeAddress(stored)
+	if incoming == "" || stored == "" {
+		return false
+	}
+
+	return incoming != stored
+}
+
+// identityDriftPlausible reports whether a corroborated match may still attach
+// despite disagreeing Google identifiers. Google reassigning a place_id does
+// not rename or relocate the business, so the two records must agree on the
+// street address (or one of them must not state one) and carry near-identical
+// names. Anything looser folds a neighbouring listing into its neighbour.
+func identityDriftPlausible(business resultimport.Business, row *fallbackRow) bool {
+	if business.Address.Normalized != "" && row.normalizedAddress != "" &&
+		business.Address.Normalized != row.normalizedAddress {
+		return false
+	}
+
+	return resultimport.NameSimilarity(business.Name, row.name) >= identityDriftNameSimilarity
 }
 
 // authoritativeConflict reports whether both sides carry the same kind of
