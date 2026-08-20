@@ -330,6 +330,9 @@ func TestDiscoveredCompaniesMatchesEngineContract(t *testing.T) {
 
 	repository := newProspectStubRepository()
 	repository.businesses = prospectTestBusinesses()
+	// The boundary is dormant by default; this test verifies the awake
+	// contract, so it stores the explicit opt-in first.
+	repository.settings[settingProspectFutureIntegrations] = futureIntegrationsEnabledValue
 	_, mux := newProspectTestServer(t, repository)
 
 	// The Engine boundary requires a job scope.
@@ -387,11 +390,12 @@ func TestDiscoveredCompaniesMatchesEngineContract(t *testing.T) {
 		t.Fatalf("oversized limit = %d", recorder.Code)
 	}
 
-	// Without normalized result storage the boundary reports the capability.
+	// Without settings storage the opt-in cannot exist, so the dormant gate
+	// answers before the result-store capability is even consulted.
 	_, bareMux := newProspectTestServer(t, &fixedJobRepository{})
 	recorder = httptest.NewRecorder()
 	bareMux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/prospects/discovered?job_id=job-1", http.NoBody))
-	if recorder.Code != http.StatusNotImplemented {
+	if recorder.Code != http.StatusForbidden || !strings.Contains(recorder.Body.String(), futureIntegrationsDisabledCode) {
 		t.Fatalf("discovered without result store = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 }

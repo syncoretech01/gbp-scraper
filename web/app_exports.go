@@ -39,6 +39,9 @@ type exportsPageData struct {
 	Presets           []exportPresetView
 	Exports           []exportHistoryView
 	Notice            string
+	// FutureIntegrations reveals the dormant Lead-Engine export format only
+	// after the operator explicitly enabled future integrations in Settings.
+	FutureIntegrations bool
 }
 
 type exportPresetView struct {
@@ -99,17 +102,18 @@ func (s *Server) exportsPage(w http.ResponseWriter, r *http.Request) {
 		selectedIDs = strings.Join(ids, ",")
 	}
 	page := exportsPageData{
-		Query:             strings.TrimSpace(r.URL.Query().Get("q")),
-		JobID:             strings.TrimSpace(r.URL.Query().Get("job_id")),
-		SourceScope:       sourceScope,
-		SelectedIDs:       selectedIDs,
-		Filters:           search.Filters,
-		FilterJSON:        resultFilterGroupJSON(search.FilterGroup),
-		Sort:              search.Sort,
-		IncludeDuplicates: search.IncludeDuplicates,
-		ColumnSpec:        defaultExportColumnSpec(),
-		AvailableColumns:  availableExportColumnOptions(),
-		Notice:            strings.TrimSpace(r.URL.Query().Get("notice")),
+		Query:              strings.TrimSpace(r.URL.Query().Get("q")),
+		JobID:              strings.TrimSpace(r.URL.Query().Get("job_id")),
+		SourceScope:        sourceScope,
+		SelectedIDs:        selectedIDs,
+		Filters:            search.Filters,
+		FilterJSON:         resultFilterGroupJSON(search.FilterGroup),
+		Sort:               search.Sort,
+		IncludeDuplicates:  search.IncludeDuplicates,
+		ColumnSpec:         defaultExportColumnSpec(),
+		AvailableColumns:   availableExportColumnOptions(),
+		Notice:             strings.TrimSpace(r.URL.Query().Get("notice")),
+		FutureIntegrations: s.svc.FutureIntegrationsEnabled(r.Context()),
 	}
 	if views, viewErr := s.svc.ListSavedResultViews(r.Context(), ""); viewErr == nil {
 		for _, view := range views {
@@ -177,6 +181,9 @@ func (s *Server) createResultsExport(w http.ResponseWriter, r *http.Request) {
 	request, err := s.resolveExportCreation(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	if !s.allowExportFormat(w, r, request.Format) {
 		return
 	}
 	filterJSON, err := json.Marshal(request.Search)
