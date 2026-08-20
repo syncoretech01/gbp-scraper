@@ -24,6 +24,12 @@ const CoverageSkipReason = "coverage-saturated"
 // results justified the expansion.
 const CoverageExpansionOriginPrefix = "expansion:"
 
+// CoverageRefinementOriginPrefix prefixes the origin of every task the
+// coverage engine appended to re-cover a cell whose own result set looked
+// truncated; the suffix is that cell's ZIP. Refinements are tagged apart
+// from neighbour expansions so their yield can be measured separately.
+const CoverageRefinementOriginPrefix = "refine:"
+
 // Coverage option defaults and bounds. Zero values fall back to the default
 // so a stored configuration stays valid when new knobs appear.
 const (
@@ -136,8 +142,11 @@ type CoverageTaskRow struct {
 	RowsAdded         int64
 	RowsReplaced      int64
 	DuplicatesSkipped int64
-	StartedAt         *time.Time
-	FinishedAt        *time.Time
+	// Truncated mirrors the task checkpoint's truncation signal: the query
+	// returned as many listings as its depth could ever render.
+	Truncated  bool
+	StartedAt  *time.Time
+	FinishedAt *time.Time
 }
 
 // CoverageSeedState is what the mid-run coverage engine needs to know about
@@ -147,8 +156,9 @@ type CoverageSeedState struct {
 	Queries []string
 	// MaxSequence is the highest sequence in the plan, -1 for an empty plan.
 	MaxSequence int
-	// ExpansionTasks counts tasks the engine already appended, so the
-	// expansion budget survives a process restart.
+	// ExpansionTasks counts tasks the engine already appended — neighbour
+	// expansions and cell refinements alike, since both draw on the same
+	// budget — so that budget survives a process restart.
 	ExpansionTasks int
 }
 
@@ -162,6 +172,13 @@ type CoverageTotals struct {
 	RowsReplaced      int64 `json:"rows_replaced"`
 	DuplicatesSkipped int64 `json:"duplicates_skipped"`
 	ExpansionsAdded   int64 `json:"expansions_added"`
+	// RefinementsAdded counts tasks the engine appended to re-cover a
+	// truncated cell, kept apart from ExpansionsAdded so a benchmark can
+	// value refinements and neighbour expansions separately.
+	RefinementsAdded int64 `json:"refinements_added"`
+	// TasksTruncated counts tasks whose own result set reached the
+	// effective per-query cap, which is the plan's discovery blind spot.
+	TasksTruncated int64 `json:"tasks_truncated"`
 }
 
 // CoverageSaturation reports the adaptive-stop configuration and the current
@@ -185,6 +202,9 @@ type CoverageQueryRow struct {
 	RowsAdded         int64   `json:"rows_added"`
 	DuplicatesSkipped int64   `json:"duplicates_skipped"`
 	Seconds           float64 `json:"seconds"`
+	// Truncated marks a query whose result set reached its depth's cap, so
+	// the operator can see which cells are probably under-covered.
+	Truncated bool `json:"truncated"`
 }
 
 // CoverageTrendPoint is one finished task in completion order.
@@ -483,6 +503,14 @@ func buildCoverageReport(options *CoverageOptions, rows []CoverageTaskRow) Cover
 			report.Totals.ExpansionsAdded++
 		}
 
+		if strings.HasPrefix(row.Origin, CoverageRefinementOriginPrefix) {
+			report.Totals.RefinementsAdded++
+		}
+
+		if row.Truncated {
+			report.Totals.TasksTruncated++
+		}
+
 		if row.State == "skipped" && row.LastError == CoverageSkipReason {
 			report.Saturation.Stopped = true
 		}
@@ -504,6 +532,7 @@ func buildCoverageReport(options *CoverageOptions, rows []CoverageTaskRow) Cover
 			RowsAdded:         row.RowsAdded,
 			DuplicatesSkipped: row.DuplicatesSkipped,
 			Seconds:           seconds,
+			Truncated:         row.Truncated,
 		})
 
 		if row.State == "completed" && row.FinishedAt != nil {
