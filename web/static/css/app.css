@@ -424,6 +424,9 @@ html[data-theme="dark"] .map-canvas { background-color: #1e322d; }
 .command-palette nav { display: grid; gap: .2rem; margin-top: .5rem; max-height: 20rem; overflow-y: auto; }
 .command-palette nav a, .command-palette nav button { display: flex; justify-content: space-between; gap: 1rem; padding: .65rem; border: 0; border-radius: .45rem; background: transparent; color: var(--text); font: inherit; text-align: left; text-decoration: none; cursor: pointer; }
 .command-palette nav a:hover, .command-palette nav button:hover, .command-palette nav [data-active="true"] { background: var(--surface-hover); }
+.command-palette nav [data-active="true"] { box-shadow: inset 2px 0 0 var(--primary); }
+.palette-empty { margin: .55rem .2rem .2rem; color: var(--text-muted); font-size: var(--text-base); }
+.palette-footer { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem; margin: .55rem .2rem .1rem; padding-top: .5rem; border-top: 1px solid var(--border); color: var(--text-muted); font-size: var(--text-xs); }
 
 .app-shell[data-sidebar="collapsed"] { --sidebar-width: 4.5rem; }
 .app-shell[data-sidebar="collapsed"] .brand-copy,

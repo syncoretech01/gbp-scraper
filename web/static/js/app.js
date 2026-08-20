@@ -54,9 +54,17 @@
         if (!region || !message) return;
         const item = document.createElement("div");
         item.className = "toast" + (level ? " notice-" + level : "");
+        // Failures interrupt; successes do not. The region itself is polite,
+        // so an error carries its own assertive role.
+        if (level === "error") item.setAttribute("role", "alert");
         item.textContent = message;
         region.appendChild(item);
         window.setTimeout(() => item.remove(), motionIsReduced() ? 1000 : 5000);
+    }
+
+    function focusGlobalSearch() {
+        const search = document.getElementById("global-search");
+        if (search) { search.focus(); search.select(); }
     }
 
     function openPalette() {
@@ -64,7 +72,7 @@
         if (typeof palette.showModal === "function") palette.showModal();
         else palette.setAttribute("open", "");
         const input = palette.querySelector("[data-command-query]");
-        if (input) window.setTimeout(() => input.focus(), 0);
+        if (input) window.setTimeout(() => { input.value = ""; input.dispatchEvent(new Event("input")); input.focus(); }, 0);
     }
 
     function closePalette() {
@@ -193,13 +201,16 @@
     function setupCommandFilter() {
         const input = palette && palette.querySelector("[data-command-query]");
         if (!input) return;
+        const empty = palette.querySelector("[data-command-empty]");
         input.addEventListener("input", () => {
             const query = input.value.trim().toLowerCase();
             palette.querySelectorAll("[data-command]").forEach((item) => {
                 item.hidden = Boolean(query) && !item.dataset.command.includes(query) && !item.textContent.toLowerCase().includes(query);
                 delete item.dataset.active;
             });
-            highlightPaletteItem(paletteItems(), 0);
+            const items = paletteItems();
+            if (empty) empty.hidden = items.length > 0;
+            highlightPaletteItem(items, 0);
         });
         input.addEventListener("keydown", (event) => {
             const items = paletteItems();
@@ -247,8 +258,10 @@
         const trigger = event.target.closest("[data-action]");
         if (!trigger) return;
         const action = trigger.dataset.action;
-        if (action === "toggle-sidebar") { event.preventDefault(); toggleSidebar(); }
-        else if (action === "cycle-theme") { event.preventDefault(); cycleTheme(); if (palette && palette.open && palette.contains(trigger)) closePalette(); }
+        const inPalette = Boolean(palette && palette.open && palette.contains(trigger));
+        if (action === "toggle-sidebar") { event.preventDefault(); toggleSidebar(); if (inPalette) closePalette(); }
+        else if (action === "cycle-theme") { event.preventDefault(); cycleTheme(); if (inPalette) closePalette(); }
+        else if (action === "focus-global-search") { event.preventDefault(); closePalette(); window.setTimeout(focusGlobalSearch, 0); }
         else if (action === "open-command-palette") { event.preventDefault(); openPalette(); }
         else if (action === "close-command-palette") { closePalette(); }
         else if (action === "open-dialog") { event.preventDefault(); openDialog(trigger.dataset.target); }
@@ -261,29 +274,41 @@
         const form = event.target;
         if (!(form instanceof HTMLFormElement)) return;
         if (form.dataset.confirm && !window.confirm(form.dataset.confirm)) { event.preventDefault(); return; }
-        if (form.dataset.enhance === "json") { event.preventDefault(); enhanceForm(form); }
+        if (form.dataset.enhance === "json") { event.preventDefault(); enhanceForm(form); return; }
+        // Plain forms navigate away. Mark the form busy on the next tick so
+        // the submitter's name/value is still serialized, giving the operator
+        // in-flight feedback instead of an apparently inert button.
+        if (form.method && form.method.toLowerCase() === "post" && !form.target) {
+            window.setTimeout(() => form.setAttribute("aria-busy", "true"), 0);
+        }
     });
 
     document.addEventListener("keydown", (event) => {
         const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement && document.activeElement.tagName);
         if (event.key === "Escape") {
             if (palette && palette.open) closePalette();
+            // Native modal dialogs close themselves; the attribute fallback
+            // used when showModal is unavailable needs an explicit close.
+            document.querySelectorAll("dialog[open]").forEach((dialog) => {
+                if (typeof dialog.close === "function") dialog.close();
+                else dialog.removeAttribute("open");
+            });
             if (shell) shell.dataset.mobileNav = "closed";
             return;
         }
-		if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "k") {
-			event.preventDefault();
-			if (palette && palette.open) closePalette();
-			else openPalette();
-			return;
-		}
-		if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "e") {
-			event.preventDefault();
-			window.location.assign("/app/exports");
-			return;
-		}
+        if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "k") {
+            event.preventDefault();
+            if (palette && palette.open) closePalette();
+            else openPalette();
+            return;
+        }
+        if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "e") {
+            event.preventDefault();
+            window.location.assign("/app/exports");
+            return;
+        }
         if (typing || event.ctrlKey || event.metaKey || event.altKey) return;
-        if (event.key === "/") { event.preventDefault(); const search = document.getElementById("global-search"); if (search) search.focus(); }
+        if (event.key === "/") { event.preventDefault(); focusGlobalSearch(); }
         else if (event.key.toLowerCase() === "n") window.location.assign("/app/scrapes/new");
         else if (event.key.toLowerCase() === "j") window.location.assign("/app/jobs");
         else if (event.key.toLowerCase() === "r") window.location.assign("/app/results");
@@ -301,6 +326,12 @@
     setupCommandFilter();
     applyDisplayFormatting();
     document.querySelectorAll("[data-flash]").forEach((item) => toast(item.dataset.flash, item.classList.contains("notice-error") ? "error" : "success"));
+
+    // Restoring from the back/forward cache replays the DOM as it was left,
+    // including any in-flight busy state. Clear it so controls stay usable.
+    window.addEventListener("pageshow", () => {
+        document.querySelectorAll('form[aria-busy="true"]').forEach((form) => form.removeAttribute("aria-busy"));
+    });
 
     window.GMapsApp = { toast, openDialog, closeDialog };
 })();
