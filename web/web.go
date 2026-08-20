@@ -204,6 +204,7 @@ func New(svc *Service, addr string) (*Server, error) {
 	ans.registerProspectRoutes(mux)
 	ans.registerCheckpointRoutes(mux)
 	ans.registerBenchmarkRoutes(mux)
+	ans.registerCoverageRoutes(mux)
 	ans.registerResultRoutes(mux)
 	ans.registerDuplicateRoutes(mux)
 	ans.registerEnrichmentRoutes(mux)

@@ -33,6 +33,12 @@ type JobTaskDefinition struct {
 	SourceCell string          `json:"source_cell,omitempty"`
 	InputID    string          `json:"input_id,omitempty"`
 	Payload    json.RawMessage `json:"payload,omitempty"`
+	// Origin records how the task entered the plan: empty for the up-front
+	// plan, "expansion:<parentZip>" for tasks the coverage engine appended.
+	Origin string `json:"origin,omitempty"`
+	// Priority orders claims (higher first); zero keeps the historical
+	// FIFO order.
+	Priority int `json:"priority,omitempty"`
 }
 
 // JobTask is the durable execution state for one definition.
@@ -51,6 +57,8 @@ type JobTask struct {
 	Attempts    int             `json:"attempts"`
 	MaxAttempts int             `json:"max_attempts"`
 	LastError   string          `json:"last_error,omitempty"`
+	Origin      string          `json:"origin,omitempty"`
+	Priority    int             `json:"priority,omitempty"`
 	StartedAt   *time.Time      `json:"started_at,omitempty"`
 	FinishedAt  *time.Time      `json:"finished_at,omitempty"`
 	UpdatedAt   time.Time       `json:"updated_at"`

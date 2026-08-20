@@ -397,7 +397,7 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) error {
 		}
 		removeRunOnReturn = false
 
-		return w.scrapeJobCheckpointed(ctx, job, outpath, seedJobs, seedMetadata, exitMonitor)
+		return w.scrapeJobCheckpointed(ctx, job, outpath, seedJobs, seedMetadata, dedup, exitMonitor)
 	}
 
 	stopReason := make(chan jobruntime.StopReason, 1)
