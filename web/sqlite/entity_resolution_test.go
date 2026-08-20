@@ -378,12 +378,12 @@ func TestNearDuplicateNamesBecomeReviewCandidateAndRespectRules(t *testing.T) {
 
 	firstRow := map[string]string{
 		"title": "Luna Cafe", "category": "Cafe",
-		"address": "12 Pine St, Portland, OR 97204, United States",
+		"address":  "12 Pine St, Portland, OR 97204, United States",
 		"latitude": "45.5200", "longitude": "-122.6800",
 	}
 	secondRow := map[string]string{
 		"title": "Luna Cafe", "category": "Cafe",
-		"address": "14 Pine St, Portland, OR 97204, United States",
+		"address":  "14 Pine St, Portland, OR 97204, United States",
 		"latitude": "45.5209", "longitude": "-122.6800",
 	}
 
