@@ -124,7 +124,7 @@ func (s *Server) apiProspectOpeners(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) apiProspectIntegrations(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
-		settings, err := s.svc.ProspectIntegrations(r.Context())
+		settings, err := s.svc.ProspectIntegrationConfiguration(r.Context())
 		if err != nil {
 			renderProspectAPIError(w, err)
 			return
@@ -135,16 +135,16 @@ func (s *Server) apiProspectIntegrations(w http.ResponseWriter, r *http.Request)
 	if !s.requireCSRF(w, r) {
 		return
 	}
-	var settings ProspectIntegrationSettings
+	var settings ProspectIntegrationConfig
 	if err := decodeBoundedProspectJSON(w, r, &settings); err != nil {
 		renderProspectAPIError(w, err)
 		return
 	}
-	if err := s.svc.SaveProspectIntegrations(r.Context(), settings); err != nil {
+	if err := s.svc.SaveProspectIntegrationConfiguration(r.Context(), settings); err != nil {
 		renderProspectAPIError(w, err)
 		return
 	}
-	saved, err := s.svc.ProspectIntegrations(r.Context())
+	saved, err := s.svc.ProspectIntegrationConfiguration(r.Context())
 	if err != nil {
 		renderProspectAPIError(w, err)
 		return
@@ -153,8 +153,12 @@ func (s *Server) apiProspectIntegrations(w http.ResponseWriter, r *http.Request)
 }
 
 // apiDiscoveredCompanies is the Lead-Engine boundary: a read-only pull of one
-// job's businesses in the DiscoveredCompany contract shape.
+// job's businesses in the DiscoveredCompany contract shape. It stays dormant
+// behind the explicit future-integrations toggle.
 func (s *Server) apiDiscoveredCompanies(w http.ResponseWriter, r *http.Request) {
+	if !s.requireFutureIntegrations(w, r) {
+		return
+	}
 	jobID := strings.TrimSpace(r.URL.Query().Get("job_id"))
 	limit := 0
 	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {

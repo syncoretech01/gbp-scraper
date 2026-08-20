@@ -70,8 +70,17 @@
         return rendered;
     }
 
+    // futureIntegrationsToggle returns the explicit dormant-surfaces switch
+    // that lives next to the integrations editor. Its state travels through
+    // the same GET/PUT payload as the boundary URLs ("enabled").
+    function futureIntegrationsToggle(editor) {
+        return editor.querySelector("[data-future-integrations-toggle]");
+    }
+
     function collectFields(editor) {
         const body = {};
+        const toggle = futureIntegrationsToggle(editor);
+        if (toggle && !toggle.disabled) body.enabled = toggle.checked;
         editor.querySelectorAll("[data-prospect-field]").forEach((control) => {
             const key = control.dataset.prospectField;
             const type = control.dataset.prospectType;
@@ -98,6 +107,12 @@
             const payload = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error((payload.error && payload.error.message) || "not available");
             const data = payload.data && typeof payload.data === "object" ? payload.data : {};
+            const toggle = futureIntegrationsToggle(editor);
+            if (toggle && Object.prototype.hasOwnProperty.call(data, "enabled")) {
+                toggle.checked = data.enabled === true;
+                toggle.disabled = false;
+                delete data.enabled;
+            }
             const rendered = renderFields(editor, kind, data);
             if (!rendered) {
                 setStatus(editor, "The prospecting API returned no editable fields.");

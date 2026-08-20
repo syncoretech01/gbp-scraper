@@ -301,6 +301,24 @@
             " new queries" + (result.skipped ? ", skipped " + result.skipped + " duplicates" : "") + ".");
     }
 
+    // applyProspectingPipelinePreset switches on the enrichment-step fields
+    // that complete the standalone GBP pipeline (coverage -> scrape -> dedupe
+    // -> website pre-classification -> email discovery -> scoring -> call
+    // openers). It only runs when GBP coverage queries are generated with the
+    // preset checkbox ticked, so defaults for other scrapes never change.
+    function applyProspectingPipelinePreset() {
+        const preset = wizard.querySelector("[data-gbp-pipeline]");
+        if (!preset || !preset.checked) return false;
+        const email = field("email");
+        const checkMX = field("enrichment_check_mx");
+        const scope = field("enrichment_scope");
+        if (email) email.checked = true;
+        if (checkMX) checkMX.checked = true;
+        if (scope) scope.value = "homepage_contact_about";
+        updatePreview();
+        return true;
+    }
+
     // generateGBPQueries asks the local prospecting API for ZIP x synonym
     // coverage queries and merges them into the keywords list. The returned
     // centre only replaces the map centre while it is still empty or at the
@@ -353,8 +371,10 @@
                 }
             }
             const zipCount = Number(data.zip_count) || 0;
+            const pipelineApplied = applyProspectingPipelinePreset();
             setStatus("[data-gbp-status]", queries.length + " queries across " + zipCount + " ZIPs; added " + result.added +
-                " new" + (result.skipped ? ", skipped " + result.skipped + " duplicates" : "") + ".");
+                " new" + (result.skipped ? ", skipped " + result.skipped + " duplicates" : "") +
+                (pipelineApplied ? ". Prospecting pipeline enrichment enabled (step 4)." : "."));
             notify("GBP coverage queries added.", "success");
         } catch (error) {
             setStatus("[data-gbp-status]", error.message || "Could not generate coverage queries.");

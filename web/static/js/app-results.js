@@ -706,6 +706,43 @@
         }
     }
 
+    // preclassifySelected queues the lightweight website pre-classification
+    // profile for every selected business through the existing enrichment
+    // endpoint. The server coerces {"preclassify":true} into the bounded
+    // profile, so this stays a pure client-side action.
+    async function preclassifySelected(trigger) {
+        const ids = checkboxes().filter((item) => item.checked).map((item) => item.value).filter(Boolean);
+        if (!ids.length) {
+            announce("Select at least one business first.", "error");
+            return;
+        }
+        const csrf = explorer.querySelector('[name="csrf_token"]');
+        trigger.disabled = true;
+        try {
+            const response = await fetch("/api/v1/results/enrich", {
+                method: "POST",
+                credentials: "same-origin",
+                headers: {
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "X-CSRF-Token": csrf ? csrf.value : ""
+                },
+                body: JSON.stringify({ ids: ids, options: { preclassify: true } })
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error((payload.error && payload.error.message) || payload.message || "Could not queue website pre-classification.");
+            const meta = payload.meta || {};
+            const queued = Number(meta.queued) || 0;
+            const skipped = Number(meta.skipped) || 0;
+            announce("Website pre-classification queued for " + queued + " business" + (queued === 1 ? "" : "es") +
+                (skipped ? "; " + skipped + " skipped" : "") + ".");
+        } catch (error) {
+            announce(error.message || "Could not queue website pre-classification.", "error");
+        } finally {
+            trigger.disabled = false;
+        }
+    }
+
     explorer.addEventListener("change", (event) => {
         if (event.target.matches("[data-select-all]")) checkboxes().forEach((item) => { item.checked = event.target.checked; });
         if (event.target.matches('[name="result_ids"], [data-select-all]')) updateSelection();
@@ -795,6 +832,9 @@
         } else if (action === "open-selected-websites") {
             event.preventDefault();
             openSelectedWebsites();
+        } else if (action === "preclassify-selected") {
+            event.preventDefault();
+            preclassifySelected(trigger);
         } else if (action === "export-selected") {
             event.preventDefault();
             exportSelected();

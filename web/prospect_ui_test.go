@@ -240,7 +240,9 @@ func TestNewScrapeWizardIncludesGBPCoverageBlock(t *testing.T) {
 		"GBP prospecting coverage",
 		`data-action="generate-gbp-queries"`,
 		"zip,city,state,latitude,longitude,population",
-		"bundled ZIP list is a small sample",
+		"complete embedded US ZIP dataset",
+		"data-gbp-pipeline",
+		"Prospecting pipeline preset",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("new scrape page misses %q", want)
