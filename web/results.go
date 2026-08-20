@@ -300,7 +300,18 @@ type BusinessDetail struct {
 	RawJSON  string         `json:"raw_json"`
 	// ProspectReasons is the stored prospect_reasons JSON array explaining the
 	// prospect score; it is empty when the business has not been scored.
-	ProspectReasons  string                `json:"prospect_reasons,omitempty"`
+	ProspectReasons string `json:"prospect_reasons,omitempty"`
+	// IdentityMethod names how this row's identity was last established:
+	// "exact", "new", or a corroborated fallback method such as
+	// "phone_corroborated". Empty for rows created before identity
+	// provenance was recorded.
+	IdentityMethod string `json:"identity_method,omitempty"`
+	// IdentityConfidence is the [0,1] confidence recorded with
+	// IdentityMethod; nil when no provenance has been recorded.
+	IdentityConfidence *float64 `json:"identity_confidence,omitempty"`
+	// IdentityEvidence is the stored JSON array of
+	// {"signal","value","detail"} entries backing the identity decision.
+	IdentityEvidence string                `json:"identity_evidence,omitempty"`
 	Sources          []BusinessSourceView  `json:"sources"`
 	Provenance       []FieldProvenanceView `json:"provenance"`
 	Websites         []WebsiteView         `json:"websites"`
