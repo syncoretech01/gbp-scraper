@@ -150,12 +150,3 @@ func levenshteinDistance(left, right []rune) int {
 
 	return previous[len(right)]
 }
-
-// sortStrings is a dependency-free insertion sort; token lists are tiny.
-func sortStrings(values []string) {
-	for index := 1; index < len(values); index++ {
-		for position := index; position > 0 && values[position] < values[position-1]; position-- {
-			values[position], values[position-1] = values[position-1], values[position]
-		}
-	}
-}
