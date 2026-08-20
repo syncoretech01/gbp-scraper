@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gosom/google-maps-scraper/web"
@@ -32,6 +33,7 @@ func (repo *repo) JobCoverageTasks(ctx context.Context, jobID string) ([]web.Cov
 			COALESCE(json_extract(checkpoint, '$.rows_added'), 0),
 			COALESCE(json_extract(checkpoint, '$.rows_replaced'), 0),
 			COALESCE(json_extract(checkpoint, '$.duplicates_skipped'), 0),
+			COALESCE(json_extract(checkpoint, '$.truncated'), 0),
 			started_at, finished_at
 		FROM job_tasks WHERE job_id = ?
 		ORDER BY sequence, created_at, task_key`,
@@ -50,6 +52,10 @@ func (repo *repo) JobCoverageTasks(ctx context.Context, jobID string) ([]web.Cov
 
 		var startedAt, finishedAt sql.NullInt64
 
+		// json_extract renders a JSON boolean as 1/0, and a checkpoint
+		// written before the signal existed simply has no such key.
+		var truncated int64
+
 		if err := rows.Scan(
 			&task.TaskKey,
 			&task.Query,
@@ -62,12 +68,14 @@ func (repo *repo) JobCoverageTasks(ctx context.Context, jobID string) ([]web.Cov
 			&task.RowsAdded,
 			&task.RowsReplaced,
 			&task.DuplicatesSkipped,
+			&truncated,
 			&startedAt,
 			&finishedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan coverage task: %w", err)
 		}
 
+		task.Truncated = truncated != 0
 		task.LastError = jobruntime.RedactString(task.LastError)
 		task.StartedAt = nullableUnixTime(startedAt)
 		task.FinishedAt = nullableUnixTime(finishedAt)
@@ -119,8 +127,10 @@ func (repo *repo) JobCoverageSeedState(ctx context.Context, jobID string) (web.C
 			state.MaxSequence = sequence
 		}
 
-		if len(origin) >= len(web.CoverageExpansionOriginPrefix) &&
-			origin[:len(web.CoverageExpansionOriginPrefix)] == web.CoverageExpansionOriginPrefix {
+		// Both kinds of engine-appended task draw on the same budget, so
+		// both must be counted or a restart would hand out a fresh one.
+		if strings.HasPrefix(origin, web.CoverageExpansionOriginPrefix) ||
+			strings.HasPrefix(origin, web.CoverageRefinementOriginPrefix) {
 			state.ExpansionTasks++
 		}
 	}

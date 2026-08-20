@@ -124,12 +124,24 @@ type JobExecutionSnapshot struct {
 
 // JobTaskCheckpoint is the bounded metadata written after a task's result
 // file has been durably merged into the compatible job CSV.
+//
+// The payload is stored as JSON, so new fields are additive: a checkpoint
+// written by an older build simply reports their zero values.
 type JobTaskCheckpoint struct {
 	State             string `json:"state"`
 	RowsAdded         int64  `json:"rows_added,omitempty"`
 	RowsReplaced      int64  `json:"rows_replaced,omitempty"`
 	DuplicatesSkipped int64  `json:"duplicates_skipped,omitempty"`
 	DiskFreeBytes     uint64 `json:"disk_free_bytes,omitempty"`
+	// Truncated reports that this task's own result set reached the
+	// effective per-query cap for the job's configured depth, so the cell
+	// is very likely missing businesses the platform never rendered. It is
+	// evidence, not proof: see TruncationCap for the yardstick used.
+	Truncated bool `json:"truncated,omitempty"`
+	// TruncationCap is the effective per-query result cap the yield was
+	// compared against, recorded so the signal stays auditable after the
+	// depth or the cap model changes.
+	TruncationCap int `json:"truncation_cap,omitempty"`
 }
 
 type checkpointRepository interface {
