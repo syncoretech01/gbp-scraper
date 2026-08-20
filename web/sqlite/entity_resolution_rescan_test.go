@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -328,6 +329,93 @@ func TestRescanOfIdenticalMarketBatchIsIdempotent(t *testing.T) {
 		if got := totalBusinessChanges(t, repository); got != changes {
 			t.Fatalf("rescan pass %d added %d change rows, want a stable %d", pass, got-changes, changes)
 		}
+	}
+}
+
+func TestRescanWithRefreshedReviewCountsUpdatesInPlace(t *testing.T) {
+	t.Parallel()
+
+	repository, _, closeRepository := newLocalFeatureRepository(t)
+	defer closeRepository()
+
+	// A real second scrape is never byte-identical: review counts and ratings
+	// move. Those rows must update in place, not fork.
+	batch := make([]map[string]string, 0, len(metroMarketBatch()))
+	for index, row := range metroMarketBatch() {
+		batch = append(batch, rescanRow(row, map[string]string{
+			"review_count":  strconv.Itoa(100 + index),
+			"review_rating": "4.2",
+		}))
+	}
+	importRescanBatch(t, repository, "rescan-fresh-1", 0, batch)
+
+	businesses := liveBusinessCount(t, repository)
+	versions := totalBusinessVersions(t, repository)
+	provenance := identityProvenanceFingerprint(t, repository)
+	candidates := pendingCandidatePairs(t, repository)
+	if versions != businesses {
+		t.Fatalf("first import wrote %d versions for %d rows, want one each", versions, businesses)
+	}
+
+	refreshed := make([]map[string]string, 0, len(batch))
+	for index, row := range batch {
+		refreshed = append(refreshed, rescanRow(row, map[string]string{
+			"review_count":  strconv.Itoa(140 + index),
+			"review_rating": "4.4",
+		}))
+	}
+	importRescanBatch(t, repository, "rescan-fresh-2", time.Hour, refreshed)
+
+	if got := liveBusinessCount(t, repository); got != businesses {
+		t.Fatalf("refreshed rescan changed the row count: %d, want %d", got, businesses)
+	}
+	if got := totalBusinessVersions(t, repository); got != versions+businesses {
+		t.Fatalf("refreshed rescan wrote %d versions, want exactly one per row", got-versions)
+	}
+	if got := identityProvenanceFingerprint(t, repository); !equalStringSlices(got, provenance) {
+		t.Fatalf("refreshed rescan churned provenance:\n got %v\nwant %v", got, provenance)
+	}
+	if got := pendingCandidatePairs(t, repository); !equalStringSlices(got, candidates) {
+		t.Fatalf("refreshed rescan changed the review queue:\n got %v\nwant %v", got, candidates)
+	}
+
+	// The third pass repeats the second: unchanged content adds no version.
+	importRescanBatch(t, repository, "rescan-fresh-3", 2*time.Hour, refreshed)
+	if got := totalBusinessVersions(t, repository); got != versions+businesses {
+		t.Fatalf("repeating an unchanged batch added %d versions, want none", got-versions-businesses)
+	}
+}
+
+func TestKeylessRediscoveryDoesNotForkOnEveryRescan(t *testing.T) {
+	t.Parallel()
+
+	repository, _, closeRepository := newLocalFeatureRepository(t)
+	defer closeRepository()
+
+	// The weakest row a scrape can emit: a name and coordinates, no place_id,
+	// no phone, no website, and an address too short to key on. Its canonical
+	// key falls back to the raw row content, so volatile review counts alone
+	// must not fork it into a new row on every pass.
+	base := map[string]string{
+		"title": "Kiosk 7", "category": "Coffee shop",
+		"latitude": "37.7970", "longitude": "-122.3960",
+	}
+
+	for pass := 1; pass <= 3; pass++ {
+		importRescanBatch(
+			t, repository,
+			fmt.Sprintf("rescan-keyless-%d", pass),
+			time.Duration(pass)*time.Hour,
+			[]map[string]string{rescanRow(base, map[string]string{
+				"review_count": strconv.Itoa(10 * pass),
+			})},
+		)
+		if got := liveBusinessCount(t, repository); got != 1 {
+			t.Fatalf("pass %d forked a keyless rediscovery into %d rows, want 1", pass, got)
+		}
+	}
+	if got := pendingCandidateTotal(t, repository); got != 0 {
+		t.Fatalf("keyless rediscovery filed %d review pairs, want none", got)
 	}
 }
 
@@ -902,4 +990,52 @@ func equalStringSlices(left, right []string) bool {
 	}
 
 	return true
+}
+
+func TestKeylessListingDoesNotForkOnEveryRescan(t *testing.T) {
+	t.Parallel()
+
+	repository, _, closeRepository := newLocalFeatureRepository(t)
+	defer closeRepository()
+
+	// A listing with no place_id, no cid, no data_id, no phone, no website and
+	// no usable address has no identity key at all, so its row id is derived
+	// from the raw CSV content. A review count that ticks up between scrapes
+	// therefore changes the row id, and nothing but name and position is left
+	// to recognise the listing by.
+	listing := func(reviewCount string) map[string]string {
+		return map[string]string{
+			"title": "Riverbend Lookout", "category": "Scenic spot",
+			"latitude": "44.0520", "longitude": "-121.3150",
+			"review_count": reviewCount,
+		}
+	}
+
+	for pass, reviews := range []string{"10", "12", "15"} {
+		importRescanBatch(
+			t, repository,
+			fmt.Sprintf("rescan-keyless-%d", pass+1),
+			time.Duration(pass)*time.Hour,
+			[]map[string]string{listing(reviews)},
+		)
+	}
+
+	if got := liveBusinessCount(t, repository); got != 1 {
+		t.Fatalf("a keyless listing forked into %d rows across three rescans, want 1", got)
+	}
+	if pairs := pendingCandidatePairs(t, repository); len(pairs) != 0 {
+		t.Fatalf("a keyless listing filed %d review pairs, want none: %v", len(pairs), pairs)
+	}
+
+	var reviewCount int64
+	if err := repository.db.QueryRowContext(
+		context.Background(),
+		`SELECT COALESCE(review_count, 0) FROM businesses
+		WHERE deleted_at IS NULL AND merged_into_id IS NULL`,
+	).Scan(&reviewCount); err != nil {
+		t.Fatalf("read the surviving row: %v", err)
+	}
+	if reviewCount != 15 {
+		t.Fatalf("review_count = %d, want the newest observation's 15", reviewCount)
+	}
 }

@@ -634,7 +634,16 @@ func scoreFallbackRow(
 	}
 	if nameSimilarity >= identityNameSimilarityFloor && hasDistance &&
 		distance <= identityNameDistanceMetres {
-		consider(identityMethodNameProximity, identityNameConfidence)
+		nameTierConfidence := identityNameConfidence
+		if len(business.IdentityKeys) == 0 {
+			// The observation carries no place_id, cid, data_id, phone,
+			// domain or usable address, so its row id is derived from the raw
+			// CSV content and moves the moment a review count does. Leaving it
+			// at the review-only tier forks the same listing on every rescan,
+			// and nothing is left that could tell the two rows apart anyway.
+			nameTierConfidence = identityAttachConfidence
+		}
+		consider(identityMethodNameProximity, nameTierConfidence)
 	}
 
 	if chain && confidence < identityCandidateConfidence {
