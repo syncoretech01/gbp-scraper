@@ -506,7 +506,7 @@ func (analyzer preclassifyAnalyzer) Analyze(ctx context.Context, rawURL string) 
 // Every failure path here — an unsupported repository, a history read error,
 // an unusable policy answer — falls back to the configured timeout. Adaptation
 // is an optimization and must never be able to fail a website audit.
-func (s *Service) adaptEnrichmentTimeout(
+func adaptEnrichmentTimeout(
 	ctx context.Context,
 	repository enrichmentRepository,
 	task EnrichmentTask,
@@ -598,7 +598,7 @@ func (s *Service) processEnrichmentQueue(
 		}
 		processed++
 
-		effective := s.adaptEnrichmentTimeout(ctx, repository, task)
+		effective := adaptEnrichmentTimeout(ctx, repository, task)
 
 		analyzer, analyzerErr := factory(effective)
 		if analyzerErr != nil {
