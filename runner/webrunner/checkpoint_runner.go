@@ -289,7 +289,8 @@ func (w *webrunner) scrapeJobCheckpointed(
 	if job.Data.Coverage != nil {
 		if seedState, seedErr := w.svc.JobCoverageSeedState(ctx, job.ID); seedErr == nil {
 			extras.coverage = newCoverageEngine(job.ID, *job.Data.Coverage, seedState).
-				withPlanZoom(job.Data.Zoom)
+				withPlanZoom(job.Data.Zoom).
+				withSearchRadius(job.Data.Radius)
 		} else {
 			_ = w.svc.RecordJobWorkerEvent(
 				context.Background(), job.ID, "coverage-disabled", "warning",

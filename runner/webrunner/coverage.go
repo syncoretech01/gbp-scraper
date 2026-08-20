@@ -124,7 +124,16 @@ func (engine *coverageEngine) record(
 
 	windowSize := engine.options.WindowOrDefault()
 
-	if succeeded {
+	// Only the operator's own plan queries are evidence about the plan.
+	//
+	// Expansions and refinements are engine-generated probes into ground
+	// nobody asked for, and a probe that finds nothing says something about
+	// that neighbour cell, not about the queries still queued. Counting them
+	// let three empty neighbour probes fill the window and skip a productive
+	// plan query: measured in a dense metro, that cost 14 of 67 businesses.
+	// Their yield still governs further expansion through the budget and the
+	// net-new gate, which is where it belongs.
+	if succeeded && task.Origin == "" {
 		engine.window = append(engine.window, web.NewCoverageSample(
 			checkpoint.RowsAdded, checkpoint.RowsReplaced,
 			checkpoint.DuplicatesSkipped, true,

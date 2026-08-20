@@ -54,6 +54,8 @@ const (
 	// of them (00501/00544, for instance) sharing a centroid exactly, so
 	// querying both spends budget twice on one neighbourhood.
 	coverageMinimumZIPSeparationKM = 1.0
+	// metresPerKM converts JobData.Radius, which is configured in metres.
+	metresPerKM = 1000.0
 )
 
 // coverageBlindspotState is the per-run bookkeeping of the discovery
@@ -65,6 +67,9 @@ type coverageBlindspotState struct {
 	// planZoom is the job's configured zoom, needed to derive a tighter one
 	// for a refinement.
 	planZoom int
+	// searchRadiusKM is the job's configured search radius, which sets how
+	// far apart two ZIP centroids must be to cover different ground.
+	searchRadiusKM float64
 	// refinedTasks counts refinements earned per parent task key.
 	refinedTasks map[string]int
 	// expandedParents records the parent ZIPs that already seeded neighbour
@@ -82,6 +87,38 @@ func (engine *coverageEngine) withPlanZoom(zoom int) *coverageEngine {
 	engine.blindspot.planZoom = zoom
 
 	return engine
+}
+
+// withSearchRadius records the job's configured search radius in metres so
+// neighbour selection can tell genuinely new ground from a cell the plan
+// already swept. It returns the engine so construction stays a single
+// expression.
+func (engine *coverageEngine) withSearchRadius(metres int) *coverageEngine {
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+
+	engine.blindspot.searchRadiusKM = float64(metres) / metresPerKM
+
+	return engine
+}
+
+// zipSeparationFloorLocked is how far apart two ZIP centroids must be before
+// their queries are treated as covering different ground.
+//
+// A search sweeps a radius around its centre, so two centres closer together
+// than that radius return largely the same listings however different their
+// ZIP codes look. Measured in a dense metro: expanding from ZIP 94110 into
+// 94114, 94107 and 94131 — 1.78, 2.03 and 2.13 km away against a 10 km
+// radius — produced three completed tasks and zero rows, because the shared
+// in-run deduper had already seen every result. The floor therefore tracks
+// the configured radius, falling back to a conservative fixed minimum when a
+// job did not set one. Callers hold engine.mu.
+func (engine *coverageEngine) zipSeparationFloorLocked() float64 {
+	if engine.blindspot.searchRadiusKM > coverageMinimumZIPSeparationKM {
+		return engine.blindspot.searchRadiusKM
+	}
+
+	return coverageMinimumZIPSeparationKM
 }
 
 // effectiveQueryResultCap is the largest number of listings one query can
@@ -222,7 +259,7 @@ func (engine *coverageEngine) overlapsCoveredZIPLocked(candidate prospect.ZIPAre
 		distance := haversineKM(
 			covered.Latitude, covered.Longitude, candidate.Latitude, candidate.Longitude,
 		)
-		if distance < coverageMinimumZIPSeparationKM {
+		if distance < engine.zipSeparationFloorLocked() {
 			return true
 		}
 	}
