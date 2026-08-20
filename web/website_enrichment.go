@@ -29,6 +29,16 @@ const (
 	maximumEnrichmentInternalLinks = 100
 )
 
+// Preclassify coercions: the lightweight single-page probe keeps every
+// network dimension tighter than the full crawl allows.
+const (
+	preclassifyDefaultTimeoutSeconds = 10
+	preclassifyMaximumTimeoutSeconds = 15
+	preclassifyDefaultBodyBytes      = 256 << 10
+	preclassifyMaximumBodyBytes      = 512 << 10
+	preclassifyMaximumRedirects      = 5
+)
+
 // JobEnrichmentOptions is the compatible, nested scrape configuration used
 // to queue full website analysis after normalized Maps rows are committed.
 type JobEnrichmentOptions struct {
@@ -44,6 +54,7 @@ type JobEnrichmentOptions struct {
 	DisableInternalChecks bool   `json:"disable_internal_link_checks,omitempty"`
 	CheckMX               bool   `json:"check_mx,omitempty"`
 	CaptureScreenshot     bool   `json:"capture_screenshot,omitempty"`
+	Preclassify           bool   `json:"preclassify,omitempty"`
 }
 
 // EnrichmentOptionsForJob translates both the nested configuration and the
@@ -71,6 +82,7 @@ func EnrichmentOptionsForJob(data JobData) (EnrichmentOptions, bool, error) {
 		DisableInternalChecks: data.Enrichment.DisableInternalChecks,
 		CheckMX:               data.Enrichment.CheckMX && data.Enrichment.Emails,
 		CaptureScreenshot:     data.Enrichment.CaptureScreenshot,
+		Preclassify:           data.Enrichment.Preclassify,
 		StaleAfterHours:       24,
 	}).normalized()
 
@@ -89,6 +101,7 @@ func (options JobEnrichmentOptions) Validate() error {
 		MaxInternalLinkChecks: options.MaxInternalLinkChecks,
 		DisableInternalChecks: options.DisableInternalChecks,
 		CheckMX:               options.CheckMX,
+		Preclassify:           options.Preclassify,
 	}).normalized()
 
 	return err
@@ -106,11 +119,47 @@ type EnrichmentOptions struct {
 	DisableInternalChecks bool   `json:"disable_internal_link_checks,omitempty"`
 	CheckMX               bool   `json:"check_mx,omitempty"`
 	CaptureScreenshot     bool   `json:"capture_screenshot,omitempty"`
+	Preclassify           bool   `json:"preclassify,omitempty"`
 	Force                 bool   `json:"force,omitempty"`
 	StaleAfterHours       int    `json:"stale_after_hours,omitempty"`
 }
 
+// PreclassifyProfile returns the coerced lightweight profile used by the
+// single-page website pre-classifier probe.
+func PreclassifyProfile() EnrichmentOptions {
+	options, _ := (EnrichmentOptions{Preclassify: true}).normalized()
+
+	return options
+}
+
 func (options EnrichmentOptions) normalized() (EnrichmentOptions, error) {
+	if options.Preclassify {
+		// The pre-classifier probe coerces the lightweight single-page
+		// profile regardless of every other requested value.
+		options.Scope = string(enrichment.ScopeHomepage)
+		options.MaxPages = 1
+		options.DisableInternalChecks = true
+		options.MaxInternalLinkChecks = 0
+		options.CheckMX = false
+		options.CaptureScreenshot = false
+
+		if options.TimeoutSeconds <= 0 {
+			options.TimeoutSeconds = preclassifyDefaultTimeoutSeconds
+		}
+		if options.TimeoutSeconds > preclassifyMaximumTimeoutSeconds {
+			options.TimeoutSeconds = preclassifyMaximumTimeoutSeconds
+		}
+		if options.MaxBodyBytes <= 0 {
+			options.MaxBodyBytes = preclassifyDefaultBodyBytes
+		}
+		if options.MaxBodyBytes > preclassifyMaximumBodyBytes {
+			options.MaxBodyBytes = preclassifyMaximumBodyBytes
+		}
+		if options.MaxRedirects <= 0 || options.MaxRedirects > preclassifyMaximumRedirects {
+			options.MaxRedirects = preclassifyMaximumRedirects
+		}
+	}
+
 	options.Scope = strings.TrimSpace(strings.ToLower(options.Scope))
 	if options.Scope == "" {
 		options.Scope = string(enrichment.ScopeContactAbout)
@@ -364,7 +413,22 @@ type websiteAnalyzer interface {
 type websiteAnalyzerFactory func(EnrichmentOptions) (websiteAnalyzer, error)
 
 func defaultWebsiteAnalyzer(options EnrichmentOptions) (websiteAnalyzer, error) {
+	if options.Preclassify {
+		return preclassifyAnalyzer{config: options.crawlerConfig()}, nil
+	}
+
 	return enrichment.NewCrawler(options.crawlerConfig())
+}
+
+// preclassifyAnalyzer satisfies websiteAnalyzer with the cheap single-page
+// DNS/TLS/HTTP probe instead of the full bounded crawl.
+type preclassifyAnalyzer struct {
+	config enrichment.Config
+}
+
+// Analyze runs the single-page pre-classification probe.
+func (analyzer preclassifyAnalyzer) Analyze(ctx context.Context, rawURL string) (enrichment.Result, error) {
+	return enrichment.Preclassify(ctx, rawURL, analyzer.config)
 }
 
 // ProcessEnrichmentQueue claims and processes up to limit durable tasks. A
