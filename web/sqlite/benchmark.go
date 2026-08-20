@@ -177,7 +177,7 @@ func (repo *repo) benchmarkBusinesses(ctx context.Context, jobID string) (web.Be
 			COALESCE(SUM(CASE WHEN has_email = 1 AND has_phone = 1 THEN 1 ELSE 0 END), 0)
 		FROM (
 			SELECT
-				CASE WHEN businesses.emails <> ''
+				CASE WHEN businesses.emails NOT IN ('', '[]')
 					OR EXISTS(SELECT 1 FROM emails WHERE emails.business_id = businesses.id)
 				THEN 1 ELSE 0 END AS has_email,
 				CASE WHEN businesses.phone <> ''
