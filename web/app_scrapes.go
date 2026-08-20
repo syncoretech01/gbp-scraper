@@ -257,6 +257,13 @@ func parseWizardJob(r *http.Request) (Job, jobruntime.State, error) {
 		data.Lang = "en"
 	}
 
+	coverage, err := wizardCoverageOptions(r)
+	if err != nil {
+		return Job{}, "", err
+	}
+
+	data.Coverage = coverage
+
 	areaSnapshot := strings.TrimSpace(r.FormValue("area_geojson"))
 	if data.SavedAreaID != "" && areaSnapshot == "" {
 		return Job{}, "", fmt.Errorf("saved area snapshot is required")
@@ -416,6 +423,64 @@ func splitNonEmptyLines(value string) []string {
 	}
 
 	return result
+}
+
+// wizardCoverageOptions maps the optional adaptive-discovery form fields to
+// JobData.Coverage. When none of the fields is present the result is nil,
+// which keeps exactly the historical scrape behaviour.
+func wizardCoverageOptions(r *http.Request) (*CoverageOptions, error) {
+	autoStop := r.FormValue("coverage_auto_stop") == "on"
+	windowValue := strings.TrimSpace(r.FormValue("coverage_saturation_window"))
+	ratioValue := strings.TrimSpace(r.FormValue("coverage_min_new_ratio"))
+	expansionsValue := strings.TrimSpace(r.FormValue("coverage_max_expansions"))
+	minNewValue := strings.TrimSpace(r.FormValue("coverage_expansion_min_new"))
+
+	if !autoStop && windowValue == "" && ratioValue == "" && expansionsValue == "" && minNewValue == "" {
+		return nil, nil
+	}
+
+	options := &CoverageOptions{AutoStop: autoStop}
+
+	if windowValue != "" {
+		window, err := strconv.Atoi(windowValue)
+		if err != nil || window < minCoverageSaturationWindow || window > maxCoverageSaturationWindow {
+			return nil, fmt.Errorf("coverage saturation window must be a whole number between %d and %d",
+				minCoverageSaturationWindow, maxCoverageSaturationWindow)
+		}
+
+		options.SaturationWindow = window
+	}
+
+	if ratioValue != "" {
+		ratio, err := strconv.ParseFloat(ratioValue, 64)
+		if err != nil || ratio < minCoverageMinNewRatio || ratio > maxCoverageMinNewRatio {
+			return nil, fmt.Errorf("coverage minimum new ratio must be a number between %.2f and %.2f",
+				minCoverageMinNewRatio, maxCoverageMinNewRatio)
+		}
+
+		options.MinNewRatio = ratio
+	}
+
+	if expansionsValue != "" {
+		expansions, err := strconv.Atoi(expansionsValue)
+		if err != nil || expansions < 0 || expansions > maxCoverageExpansions {
+			return nil, fmt.Errorf("coverage expansions must be a whole number between 0 and %d", maxCoverageExpansions)
+		}
+
+		options.MaxExpansions = expansions
+	}
+
+	if minNewValue != "" {
+		minNew, err := strconv.Atoi(minNewValue)
+		if err != nil || minNew < 0 || minNew > maxCoverageExpansionMinNew {
+			return nil, fmt.Errorf("coverage expansion threshold must be a whole number between 0 and %d",
+				maxCoverageExpansionMinNew)
+		}
+
+		options.ExpansionMinNew = minNew
+	}
+
+	return options, nil
 }
 
 func requiredFormInt(r *http.Request, name string) (int, error) {
