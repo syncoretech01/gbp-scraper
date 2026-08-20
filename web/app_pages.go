@@ -67,7 +67,36 @@ type dashboardPageData struct {
 	ProxyLatency     []dashboardChartPoint
 	ProxyReliability []dashboardChartPoint
 	RecentJobs       []dashboardJob
+	Yield            dashboardYield
 	Prospects        dashboardProspectSummary
+}
+
+// dashboardYield summarises collection efficiency across the same recent jobs
+// the activity table already lists. It is composed entirely from the per-job
+// runtime and result stats the dashboard has already loaded, so it costs no
+// extra repository call and never invents a number.
+type dashboardYield struct {
+	// Jobs is the number of recent jobs that contributed at least one raw
+	// record; zero means the card renders its empty state.
+	Jobs             int
+	RawRecords       int64
+	UniqueRecords    int64
+	Duplicates       int64
+	Emails           int64
+	UniqueYield      string
+	DuplicateShare   string
+	EmailShare       string
+	UniquePercent    int
+	DuplicatePercent int
+	EmailPercent     int
+	// BestJob/WorstJob name the recent jobs with the highest and lowest
+	// unique-per-raw share so an operator can see where coverage is thin.
+	BestJobID     string
+	BestJobName   string
+	BestJobYield  string
+	WorstJobID    string
+	WorstJobName  string
+	WorstJobYield string
 }
 
 // dashboardProspectSummary feeds the Prospecting card: stored GBP website
@@ -82,11 +111,13 @@ type dashboardProspectSummary struct {
 }
 
 // dashboardProspectPoint pairs one taxonomy label with its count and a
-// CSS-safe badge state.
+// CSS-safe badge state. Percent is the share of scored businesses, used to
+// draw the funnel meter; it stays zero when nothing has been scored.
 type dashboardProspectPoint struct {
-	Label string
-	State string
-	Value int
+	Label   string
+	State   string
+	Value   int
+	Percent int
 }
 
 type dashboardMetrics struct {
@@ -151,11 +182,11 @@ type dashboardJob struct {
 	// "not recorded" before any raw record exists.
 	UniqueYield string
 	Runtime     string
-	CanPause      bool
-	CanResume     bool
-	CanCancel     bool
-	CanRetry      bool
-	HasResults    bool
+	CanPause    bool
+	CanResume   bool
+	CanCancel   bool
+	CanRetry    bool
+	HasResults  bool
 }
 
 type newScrapePageData struct {
@@ -552,8 +583,10 @@ func (s *Server) buildDashboard(r *http.Request) (dashboardPageData, appActivity
 				CanRetry:      canRetry,
 				HasResults:    stats.Rows > 0,
 			})
+			accumulateDashboardYield(&page.Yield, job, runtime.RawRecords, stats)
 		}
 	}
+	finaliseDashboardYield(&page.Yield)
 
 	page.Metrics.ActiveJobs = activity.Running
 	page.Metrics.QueuedJobs = activity.Queued
@@ -610,8 +643,8 @@ func (s *Server) buildDashboard(r *http.Request) (dashboardPageData, appActivity
 		page.Prospects.Supported = true
 		if summary, summaryErr := s.svc.ProspectSummaryData(r.Context()); summaryErr == nil {
 			page.Prospects.Scored = int(summary.Scored)
-			page.Prospects.ByStatus = dashboardProspectPoints(summary.ByStatus)
-			page.Prospects.ByTier = dashboardProspectPoints(summary.ByTier)
+			page.Prospects.ByStatus = dashboardProspectPoints(summary.ByStatus, page.Prospects.Scored)
+			page.Prospects.ByTier = dashboardProspectPoints(summary.ByTier, page.Prospects.Scored)
 		}
 	}
 
@@ -668,15 +701,81 @@ func (s *Server) buildDashboard(r *http.Request) (dashboardPageData, appActivity
 	return page, activity, nil
 }
 
+// accumulateDashboardYield folds one recent job into the workspace yield
+// summary. Only jobs that produced raw records count, so a queued or empty
+// job cannot drag the reported share toward zero.
+func accumulateDashboardYield(yield *dashboardYield, job Job, rawRecords int64, stats ResultStats) {
+	raw := rawRecords
+	if raw <= 0 {
+		raw = int64(stats.Rows)
+	}
+	if raw <= 0 {
+		return
+	}
+
+	yield.Jobs++
+	yield.RawRecords += raw
+	yield.UniqueRecords += int64(stats.UniqueBusinesses)
+	yield.Duplicates += int64(stats.Duplicates)
+	yield.Emails += int64(stats.WithEmail)
+
+	share := float64(stats.UniqueBusinesses) / float64(raw)
+	if yield.BestJobName == "" || share > yield.bestShare() {
+		yield.BestJobID, yield.BestJobName = job.ID, job.Name
+		yield.BestJobYield = ratioLabel(int64(stats.UniqueBusinesses), raw)
+	}
+	if yield.WorstJobName == "" || share < yield.worstShare() {
+		yield.WorstJobID, yield.WorstJobName = job.ID, job.Name
+		yield.WorstJobYield = ratioLabel(int64(stats.UniqueBusinesses), raw)
+	}
+}
+
+// bestShare and worstShare re-read the stored percentage labels so the
+// comparison uses exactly the number the operator sees.
+func (y dashboardYield) bestShare() float64  { return parsePercentLabel(y.BestJobYield) }
+func (y dashboardYield) worstShare() float64 { return parsePercentLabel(y.WorstJobYield) }
+
+func parsePercentLabel(label string) float64 {
+	trimmed := strings.TrimSuffix(strings.TrimSpace(label), "%")
+	value, err := strconv.ParseFloat(trimmed, 64)
+	if err != nil {
+		return 0
+	}
+
+	return value / 100
+}
+
+// finaliseDashboardYield turns the accumulated counters into the labels and
+// meter percentages the card renders.
+func finaliseDashboardYield(yield *dashboardYield) {
+	if yield.Jobs == 0 || yield.RawRecords <= 0 {
+		*yield = dashboardYield{}
+
+		return
+	}
+
+	yield.UniqueYield = ratioLabel(yield.UniqueRecords, yield.RawRecords)
+	yield.DuplicateShare = ratioLabel(yield.Duplicates, yield.RawRecords)
+	yield.EmailShare = ratioLabel(yield.Emails, yield.UniqueRecords)
+	yield.UniquePercent = percentage(int(yield.UniqueRecords), int(yield.RawRecords))
+	yield.DuplicatePercent = percentage(int(yield.Duplicates), int(yield.RawRecords))
+	yield.EmailPercent = percentage(int(yield.Emails), int(yield.UniqueRecords))
+	if yield.BestJobID == yield.WorstJobID {
+		yield.WorstJobID, yield.WorstJobName, yield.WorstJobYield = "", "", ""
+	}
+}
+
 // dashboardProspectPoints labels each taxonomy count with a CSS-safe badge
-// state for the Prospecting card.
-func dashboardProspectPoints(points []DashboardCountPoint) []dashboardProspectPoint {
+// state for the Prospecting card and, when a scored total is known, the share
+// of scored businesses each bucket represents.
+func dashboardProspectPoints(points []DashboardCountPoint, scored int) []dashboardProspectPoint {
 	converted := make([]dashboardProspectPoint, 0, len(points))
 	for _, point := range points {
 		converted = append(converted, dashboardProspectPoint{
-			Label: point.Label,
-			State: prospectStateClass(point.Label),
-			Value: int(point.Value),
+			Label:   point.Label,
+			State:   prospectStateClass(point.Label),
+			Value:   int(point.Value),
+			Percent: percentage(int(point.Value), scored),
 		})
 	}
 
