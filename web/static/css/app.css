@@ -21,6 +21,9 @@
     --danger-soft: #ffeaed;
     --purple: #7651c8;
     --purple-soft: #f0eafd;
+    /* Text drawn on top of a solid --primary fill. Dark mode lightens
+       --primary, so white would fail contrast there; see the dark blocks. */
+    --primary-contrast: #ffffff;
     --sidebar: #11192a;
     --sidebar-text: #dce5f5;
     --sidebar-muted: #8f9db4;
@@ -33,6 +36,57 @@
     --topbar-height: 4.25rem;
     --focus: 0 0 0 3px rgba(39, 94, 231, .25);
     --font: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+    /* Spacing scale. Component padding, gaps, and stack rhythm pick a step
+       instead of an ad-hoc value so density stays predictable. */
+    --space-1: .25rem;
+    --space-2: .4rem;
+    --space-3: .55rem;
+    --space-4: .7rem;
+    --space-5: .9rem;
+    --space-6: 1.1rem;
+    --space-7: 1.5rem;
+    --space-8: 2rem;
+
+    /* Type scale and weights. */
+    --text-xs: .72rem;
+    --text-sm: .78rem;
+    --text-base: .86rem;
+    --text-md: .925rem;
+    --text-lg: 1.05rem;
+    --text-xl: 1.35rem;
+    --text-2xl: 1.65rem;
+    --weight-medium: 620;
+    --weight-semibold: 680;
+    --weight-bold: 750;
+    --weight-black: 800;
+    --transition-fast: .12s ease;
+    --transition: .2s ease;
+
+    /* Semantic state pairs. Every badge, notice, toast, and meter resolves
+       through these so light and dark stay in step automatically. */
+    --state-neutral-fg: var(--text-muted);
+    --state-neutral-bg: var(--surface-muted);
+    --state-info-fg: var(--primary);
+    --state-info-bg: var(--primary-soft);
+    --state-success-fg: var(--success);
+    --state-success-bg: var(--success-soft);
+    --state-warning-fg: var(--warning);
+    --state-warning-bg: var(--warning-soft);
+    --state-danger-fg: var(--danger);
+    --state-danger-bg: var(--danger-soft);
+    --state-special-fg: var(--purple);
+    --state-special-bg: var(--purple-soft);
+
+    /* Coverage grid-cell colours. These hex values intentionally mirror the
+       ramp constants in app-map.js so map fills and legend swatches match. */
+    --cell-waiting: #8f99aa;
+    --cell-running: #477ae8;
+    --cell-completed: #3aa778;
+    --cell-partial: #d79a36;
+    --cell-failed: #d94d5b;
+    --cell-paused: #805dc8;
+    --cell-stroke: rgba(23, 32, 51, .5);
 }
 
 html[data-theme="dark"] {
@@ -58,11 +112,14 @@ html[data-theme="dark"] {
     --danger-soft: #4c2029;
     --purple: #b397f2;
     --purple-soft: #34284e;
+    --primary-contrast: #0b1120;
     --sidebar: #090e18;
     --sidebar-text: #e2e9f7;
     --sidebar-muted: #8996ad;
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, .28);
     --shadow-md: 0 14px 36px rgba(0, 0, 0, .35);
+    --focus: 0 0 0 3px rgba(121, 161, 255, .35);
+    --cell-stroke: rgba(226, 233, 247, .45);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -89,9 +146,14 @@ html[data-theme="dark"] {
         --danger-soft: #4c2029;
         --purple: #b397f2;
         --purple-soft: #34284e;
+        --primary-contrast: #0b1120;
         --sidebar: #090e18;
         --sidebar-text: #e2e9f7;
         --sidebar-muted: #8996ad;
+        --shadow-sm: 0 1px 2px rgba(0, 0, 0, .28);
+        --shadow-md: 0 14px 36px rgba(0, 0, 0, .35);
+        --focus: 0 0 0 3px rgba(121, 161, 255, .35);
+        --cell-stroke: rgba(226, 233, 247, .45);
     }
 }
 
@@ -106,9 +168,12 @@ button, a { -webkit-tap-highlight-color: transparent; }
 a { color: var(--primary); }
 img, svg { max-width: 100%; }
 [hidden] { display: none !important; }
-:focus-visible { outline: none; box-shadow: var(--focus); }
+/* Keyboard focus is always visible: a solid ring survives clipping contexts
+   where the soft box-shadow alone would be cut off. */
+:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; box-shadow: var(--focus); }
+:focus:not(:focus-visible) { outline: none; }
 .sr-only { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
-.skip-link { position: fixed; z-index: 1000; left: 1rem; top: 1rem; transform: translateY(-180%); background: var(--primary); color: #fff; padding: .7rem 1rem; border-radius: var(--radius-sm); }
+.skip-link { position: fixed; z-index: 1000; left: 1rem; top: 1rem; transform: translateY(-180%); background: var(--primary); color: var(--primary-contrast); padding: .7rem 1rem; border-radius: var(--radius-sm); font-weight: var(--weight-bold); }
 .skip-link:focus { transform: none; }
 
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); }
@@ -156,20 +221,22 @@ kbd { padding: .08rem .38rem; border: 1px solid var(--border-strong); border-bot
 .page-subtitle { max-width: 52rem; margin: .35rem 0 0; color: var(--text-muted); }
 .page-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .55rem; }
 
-.button { display: inline-flex; min-height: 2.45rem; align-items: center; justify-content: center; gap: .45rem; padding: .52rem .85rem; border: 1px solid var(--border-strong); border-radius: .55rem; background: var(--surface); color: var(--text); font-weight: 650; line-height: 1.2; text-decoration: none; cursor: pointer; }
+.button { display: inline-flex; min-height: 2.45rem; align-items: center; justify-content: center; gap: var(--space-2); padding: var(--space-3) var(--space-5); border: 1px solid var(--border-strong); border-radius: .55rem; background: var(--surface); color: var(--text); font-weight: var(--weight-medium); line-height: 1.2; text-decoration: none; cursor: pointer; transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast); }
 .button:hover { border-color: var(--primary); background: var(--surface-hover); }
-.button-primary { border-color: var(--primary); background: var(--primary); color: #fff; }
-.button-primary:hover { background: var(--primary-hover); color: #fff; }
+.button-primary { border-color: var(--primary); background: var(--primary); color: var(--primary-contrast); font-weight: var(--weight-bold); }
+.button-primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); color: var(--primary-contrast); }
 .button-danger { border-color: var(--danger); color: var(--danger); }
 .button-quiet { border-color: transparent; background: transparent; }
-.button-small { min-height: 2rem; padding: .35rem .65rem; font-size: .82rem; }
+.button-small { min-height: 2rem; padding: var(--space-2) var(--space-4); font-size: .82rem; }
 .button:active { transform: translateY(1px); }
 .button-primary:active { background: var(--primary-hover); }
-.button-danger:hover { background: var(--danger-soft); }
+.button-danger:hover { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
 .button-quiet:hover { border-color: var(--border); }
 .button[disabled], .button[aria-disabled="true"] { opacity: .5; cursor: not-allowed; pointer-events: none; }
 .button[aria-busy="true"] { position: relative; color: transparent; pointer-events: none; }
 .button[aria-busy="true"]::after { content: ""; position: absolute; inset: 0; margin: auto; width: 1rem; height: 1rem; border: 2px solid var(--text-faint); border-top-color: var(--primary); border-radius: 50%; animation: busy-spin .7s linear infinite; }
+.icon-button:hover { border-color: var(--border); }
+.icon-button[disabled], .icon-button[aria-disabled="true"] { opacity: .5; cursor: not-allowed; pointer-events: none; }
 
 .card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow-sm); }
 .card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; padding: 1rem 1.1rem; border-bottom: 1px solid var(--border); }
@@ -209,22 +276,29 @@ html[data-compact-tables="true"] .data-table th, html[data-compact-tables="true"
 .table-toolbar + .table-wrap { border-radius: 0 0 var(--radius) var(--radius); }
 .pagination { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: .8rem; color: var(--text-muted); }
 
-.status { display: inline-flex; align-items: center; gap: .35rem; padding: .22rem .52rem; border-radius: 2rem; font-size: .74rem; font-weight: 750; white-space: nowrap; }
+/* One badge scale serves every taxonomy on the workspace: job lifecycle
+   states, the legacy REST statuses that must not be renamed
+   (pending/working/ok/failed), durable task states, and website statuses.
+   Colour is reinforcement only — each badge always carries its text label. */
+.status { display: inline-flex; align-items: center; gap: .35rem; padding: .22rem .52rem; border-radius: 2rem; background: var(--state-neutral-bg); color: var(--state-neutral-fg); font-size: .74rem; font-weight: var(--weight-bold); white-space: nowrap; }
 .status::before { content: ""; width: .45rem; height: .45rem; border-radius: 50%; background: currentColor; }
-.status-draft, .status-cancelled { background: var(--surface-muted); color: var(--text-muted); }
-.status-queued, .status-starting { background: var(--surface-muted); color: var(--text-muted); }
-.status-running { background: var(--primary-soft); color: var(--primary); }
-.status-paused { background: var(--purple-soft); color: var(--purple); }
-.status-completed, .status-healthy { background: var(--success-soft); color: var(--success); }
-.status-partial, .status-warning, .status-slow { background: var(--warning-soft); color: var(--warning); }
-.status-failed, .status-blocked, .status-offline { background: var(--danger-soft); color: var(--danger); }
-/* Legacy REST statuses (pending/working/ok/failed) and durable task states
-   (waiting/running/done/failed/skipped/retry) share the same badge scale. */
-.status-pending, .status-waiting { background: var(--surface-muted); color: var(--text-muted); }
-.status-working { background: var(--primary-soft); color: var(--primary); }
-.status-ok, .status-done { background: var(--success-soft); color: var(--success); }
-.status-skipped { background: var(--surface-muted); color: var(--text-muted); }
-.status-retry, .status-expansion { background: var(--warning-soft); color: var(--warning); }
+/* Job lifecycle. */
+.status-draft, .status-cancelled, .status-queued, .status-starting, .status-archived { background: var(--state-neutral-bg); color: var(--state-neutral-fg); }
+.status-running { background: var(--state-info-bg); color: var(--state-info-fg); }
+.status-paused { background: var(--state-special-bg); color: var(--state-special-fg); }
+.status-completed, .status-healthy { background: var(--state-success-bg); color: var(--state-success-fg); }
+.status-partial, .status-warning, .status-slow, .status-degraded { background: var(--state-warning-bg); color: var(--state-warning-fg); }
+.status-failed, .status-blocked, .status-offline { background: var(--state-danger-bg); color: var(--state-danger-fg); }
+/* Legacy REST statuses and durable task states. */
+.status-pending, .status-waiting, .status-skipped { background: var(--state-neutral-bg); color: var(--state-neutral-fg); }
+.status-working { background: var(--state-info-bg); color: var(--state-info-fg); }
+.status-ok, .status-done { background: var(--state-success-bg); color: var(--state-success-fg); }
+.status-retry, .status-expansion { background: var(--state-warning-bg); color: var(--state-warning-fg); }
+/* Website audit statuses stored on each business record. */
+.status-active { background: var(--state-success-bg); color: var(--state-success-fg); }
+.status-inactive { background: var(--state-warning-bg); color: var(--state-warning-fg); }
+.status-error { background: var(--state-danger-bg); color: var(--state-danger-fg); }
+.status-unknown, .status-notchecked, .status-not-checked { background: var(--state-neutral-bg); color: var(--state-neutral-fg); }
 
 .field { display: grid; gap: .38rem; min-width: 0; }
 .field > label, .field-label { color: var(--text); font-size: .82rem; font-weight: 680; }
@@ -432,16 +506,21 @@ html[data-theme="dark"] .map-canvas { background-color: #1e322d; }
 .map-tool-grid { gap: .35rem; }
 .map-mode-switch { width: 100%; }
 .map-mode-switch label { flex: 1; text-align: center; }
-.map-cell { stroke: rgba(23,32,51,.5); stroke-width: 1.5; fill: rgba(100,112,135,.28); }
-.map-cell-running { fill: #477ae8; }
-.map-cell-completed { fill: #3aa778; }
-.map-cell-partial { fill: #d79a36; }
-.map-cell-failed, .map-cell-blocked { fill: #d94d5b; }
-.map-cell-paused { fill: #805dc8; }
+.map-cell { stroke: var(--cell-stroke); stroke-width: 1.5; fill: rgba(100,112,135,.28); }
+.map-cell-waiting { fill: var(--cell-waiting); }
+.map-cell-running { fill: var(--cell-running); }
+.map-cell-completed { fill: var(--cell-completed); }
+.map-cell-partial { fill: var(--cell-partial); }
+.map-cell-failed, .map-cell-blocked { fill: var(--cell-failed); }
+.map-cell-paused { fill: var(--cell-paused); }
 .map-marker circle { fill: var(--primary); stroke: #fff; stroke-width: 2; }
-.legend-swatch { display: inline-block; width: .65rem; height: .65rem; margin-right: .25rem; border-radius: .18rem; background: #8f99aa; }
-.cell-waiting { background: #8f99aa; }.cell-running { background: #477ae8; }.cell-completed { background: #3aa778; }.cell-partial { background: #d79a36; }.cell-failed, .cell-blocked { background: #d94d5b; }.cell-paused { background: #805dc8; }
+.legend-swatch { display: inline-block; width: .65rem; height: .65rem; margin-right: .25rem; border-radius: .18rem; background: var(--cell-waiting); }
+.cell-waiting { background: var(--cell-waiting); }.cell-running { background: var(--cell-running); }.cell-completed { background: var(--cell-completed); }.cell-partial { background: var(--cell-partial); }.cell-failed, .cell-blocked { background: var(--cell-failed); }.cell-paused { background: var(--cell-paused); }
 html[data-theme="dark"] .map-fallback { color: #b8c8bf; }
+@media (prefers-color-scheme: dark) {
+    html[data-theme="system"] .map-canvas { background-color: #1e322d; }
+    html[data-theme="system"] .map-fallback { color: #b8c8bf; }
+}
 .map-control-section .check { display: inline-flex; align-items: center; gap: .35rem; color: var(--text-muted); font-size: .78rem; }
 .map-control-section .check input { margin: 0; }
 .map-control-section [data-map-heatmap] { min-width: 12rem; }
@@ -488,6 +567,8 @@ html[data-theme="dark"] .map-fallback { color: #b8c8bf; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(.5rem); } }
 @keyframes busy-spin { to { transform: rotate(360deg); } }
 @keyframes skeleton-pulse { 50% { opacity: .45; } }
+@keyframes dialog-in { from { opacity: 0; transform: translateY(.6rem) scale(.99); } }
+@keyframes drawer-in { from { transform: translateX(1.5rem); opacity: 0; } }
 
 /* Async feedback: any region marked busy dims and blocks input; skeleton
    blocks stand in for content that is still loading. */
@@ -512,20 +593,107 @@ th[aria-sort="descending"] .sort-button::after { content: "↓"; opacity: 1; col
 .quick-action strong { font-size: .9rem; }
 .quick-action span { color: var(--text-muted); font-size: .76rem; }
 
-/* Adaptive coverage panel on the job monitor. */
-.coverage-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: .6rem; }
-.coverage-summary > div { padding: .65rem .75rem; border-radius: .55rem; background: var(--surface-muted); }
-.coverage-summary strong { display: block; font-size: 1.2rem; letter-spacing: -.02em; }
-.coverage-summary span { color: var(--text-muted); font-size: .76rem; }
+/* Adaptive coverage panel on the job monitor. The panel renders only when
+   the coverage endpoint answers; see app-monitor.js. */
+.coverage-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: var(--space-3); }
+.coverage-summary > div { padding: var(--space-4) var(--space-4); border-radius: .55rem; background: var(--surface-muted); }
+.coverage-summary strong { display: block; font-size: var(--text-xl); font-weight: var(--weight-black); letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.coverage-summary span { color: var(--text-muted); font-size: var(--text-sm); }
 .coverage-trend { min-height: 8rem; }
 .coverage-trend > span[data-kind="duplicates"] { background: var(--purple); }
-.coverage-saturation { display: flex; flex-wrap: wrap; align-items: center; gap: .55rem; margin: 0; padding: .55rem .7rem; border-radius: .5rem; background: var(--surface-muted); color: var(--text-muted); font-size: .82rem; }
+.coverage-saturation { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); margin: 0; padding: var(--space-3) var(--space-4); border-radius: .5rem; background: var(--surface-muted); color: var(--text-muted); font-size: var(--text-base); }
+.coverage-saturation strong { color: var(--text); }
+.coverage-query-table { max-height: 22rem; }
+.coverage-legend { display: flex; flex-wrap: wrap; gap: var(--space-4); margin: var(--space-3) 0 0; color: var(--text-muted); font-size: var(--text-xs); }
+.benchmark-link { margin-left: auto; color: var(--text-muted); font-size: var(--text-sm); }
+.benchmark-link:hover { color: var(--primary); }
 
 /* Wizard modes: Basic / Advanced / GBP Prospecting progressive disclosure. */
-.wizard-mode { display: grid; gap: .4rem; margin-bottom: .75rem; }
+.wizard-mode { display: grid; gap: var(--space-2); margin-bottom: var(--space-4); }
 .wizard-mode .segmented { display: grid; grid-auto-flow: column; width: 100%; }
 .wizard-mode .segmented label { text-align: center; }
-.wizard-mode-hint { margin: 0; color: var(--text-muted); font-size: .74rem; }
+.wizard-mode-hint { margin: 0; color: var(--text-muted); font-size: var(--text-xs); }
+.wizard-gbp-fieldset { display: grid; gap: var(--space-4); padding: var(--space-5); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-muted); }
+.wizard-gbp-fieldset > legend { padding: 0 var(--space-2); font-size: var(--text-md); font-weight: var(--weight-bold); }
+
+/* ---------------------------------------------------------------------------
+   Design-system layer: typography rhythm, component states, feedback surfaces.
+   Everything below resolves through the token scale defined on :root so the
+   light and dark palettes stay in step without duplicated colour rules.
+   --------------------------------------------------------------------------- */
+
+/* Typography hierarchy. Page title lives in .page-heading h1; section titles
+   are card headers; supporting copy is muted at one step down. */
+h2 { font-size: var(--text-lg); letter-spacing: -.015em; }
+h3 { font-size: var(--text-md); letter-spacing: -.01em; }
+h4 { font-size: var(--text-base); }
+h2, h3, h4 { font-weight: var(--weight-bold); }
+.section-title { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-4); margin: 0 0 var(--space-3); }
+.section-title h2 { margin: 0; }
+.text-xs { font-size: var(--text-xs); }
+.text-sm { font-size: var(--text-sm); }
+.numeric { font-variant-numeric: tabular-nums; }
+
+/* Form control states. Disabled and read-only controls must read as
+   unavailable rather than merely faded. */
+.input[disabled], .select[disabled], .textarea[disabled],
+.input[readonly], .textarea[readonly] { background: var(--surface-muted); color: var(--text-muted); cursor: not-allowed; }
+.input[readonly], .textarea[readonly] { cursor: text; }
+.input[aria-invalid="true"], .select[aria-invalid="true"], .textarea[aria-invalid="true"] { border-color: var(--danger); }
+.check-row input[disabled] + span, .check-row:has(input[disabled]) { color: var(--text-muted); cursor: not-allowed; }
+.segmented label:hover { background: var(--surface-hover); }
+.segmented input:focus-visible + label { outline: 2px solid var(--primary); outline-offset: 2px; }
+.segmented input[disabled] + label { opacity: .5; cursor: not-allowed; }
+
+/* Tables. Zebra-free by design (density beats stripes at this row count);
+   hover and selection carry the row affordance instead. */
+.data-table tbody tr { transition: background-color var(--transition-fast); }
+.data-table td small { color: var(--text-muted); }
+.table-footnote { margin: var(--space-3) 0 0; color: var(--text-muted); font-size: var(--text-xs); }
+.pagination .button-small { min-width: 5rem; }
+
+/* Cards, dialogs, drawers. */
+.card-header h2, .card-header h3 { font-size: var(--text-md); }
+.dialog-panel { width: min(38rem, calc(100vw - 2rem)); padding: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); box-shadow: var(--shadow-md); }
+.dialog-panel::backdrop, .layout-dialog::backdrop { background: rgba(6, 11, 20, .58); }
+dialog[open] { animation: dialog-in .16s ease-out; }
+.drawer[open] { animation: drawer-in .18s ease-out; }
+.drawer-section { padding-top: var(--space-5); margin-top: var(--space-5); border-top: 1px solid var(--border); }
+.drawer-section:first-child { padding-top: 0; margin-top: 0; border-top: 0; }
+.drawer-headline { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0 0 var(--space-3); }
+
+/* Feedback surfaces: empty, error, and loading states are designed, not
+   improvised, so every list and fetch has a defined resting appearance. */
+.empty-state span { display: block; max-width: 34rem; }
+.empty-state .page-actions { margin-top: var(--space-4); }
+.state-error { display: grid; min-height: 8rem; place-items: center; padding: var(--space-7); border: 1px solid var(--danger); border-radius: var(--radius); background: var(--danger-soft); color: var(--danger); text-align: center; }
+.state-error strong { display: block; margin-bottom: var(--space-1); }
+.state-loading { display: grid; gap: var(--space-3); padding: var(--space-5); }
+.skeleton-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(6rem, 1fr)); gap: var(--space-3); }
+.inline-spinner { display: inline-block; width: .85rem; height: .85rem; border: 2px solid var(--border-strong); border-top-color: var(--primary); border-radius: 50%; vertical-align: -.12rem; animation: busy-spin .7s linear infinite; }
+
+/* Bulk-action toolbar. The count is the anchor: it appears only with a live
+   selection and always states how many rows the buttons will touch. */
+.selection-bar { position: sticky; z-index: 12; top: calc(var(--topbar-height) + .25rem); border: 1px solid var(--primary); box-shadow: var(--shadow-sm); }
+.selection-bar strong { font-variant-numeric: tabular-nums; }
+.selection-scope { color: var(--text-muted); font-size: var(--text-xs); }
+.selection-bar .button-small { background: var(--surface); }
+
+/* Meters used for funnels and coverage shares. */
+.meter-row { display: grid; gap: var(--space-1); }
+.meter-row .metric-label { font-weight: var(--weight-semibold); }
+.meter-track { height: .5rem; overflow: hidden; border-radius: 2rem; background: var(--surface-muted); }
+.meter-fill { width: var(--meter, 0%); height: 100%; border-radius: inherit; background: var(--primary); }
+.meter-fill[data-tone="success"] { background: var(--success); }
+.meter-fill[data-tone="warning"] { background: var(--warning); }
+.meter-fill[data-tone="danger"] { background: var(--danger); }
+.meter-fill[data-tone="special"] { background: var(--purple); }
+
+/* Dashboard funnel + yield tables. */
+.funnel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: var(--space-4); }
+.funnel-step { display: grid; gap: var(--space-1); padding: var(--space-4) var(--space-5); border: 1px solid var(--border); border-radius: .6rem; background: var(--surface); }
+.funnel-step strong { font-size: var(--text-xl); font-weight: var(--weight-black); letter-spacing: -.03em; }
+.funnel-step span { color: var(--text-muted); font-size: var(--text-xs); }
 
 @media (max-width: 75rem) {
     .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -648,7 +816,7 @@ html[data-reduced-motion="true"] *, html[data-reduced-motion="true"] *::before, 
 .map-heat-legend { bottom: 3.6rem; flex-direction: column; align-items: flex-start; gap: .25rem; }
 .map-heat-legend[hidden] { display: none; }
 .map-heat-legend .heat-legend-title { font-weight: 700; }
-.heat-swatch { border: 1px solid rgba(16, 24, 40, .25); }
+.heat-swatch { border: 1px solid color-mix(in srgb, var(--text) 32%, transparent); }
 .heat-density-1 { background: #bcd3f5; }
 .heat-density-2 { background: #6ea0ea; }
 .heat-density-3 { background: #3478e5; }
@@ -671,23 +839,18 @@ html[data-reduced-motion="true"] *, html[data-reduced-motion="true"] *::before, 
 /* GBP prospecting badges. Each badge ALWAYS carries its text label (the
    taxonomy value or tier letter); colour is reinforcement, never the only
    signal. Status suffixes are the lowercased taxonomy with "_" -> "-". */
-.prospect-badge { display: inline-flex; align-items: center; gap: .35rem; padding: .22rem .52rem; border-radius: 2rem; font-size: .74rem; font-weight: 750; white-space: nowrap; background: var(--surface-muted); color: var(--text-muted); }
-.prospect-no-website { background: var(--danger-soft, #fbe3e5); color: var(--danger, #9c2130); }
-.prospect-dead { background: var(--danger-soft, #fbe3e5); color: var(--danger, #9c2130); }
-.prospect-ssl-broken { background: var(--danger-soft, #fbe3e5); color: var(--danger, #9c2130); }
-.prospect-parked { background: var(--warning-soft, #fdf0dc); color: var(--warning, #8a5a13); }
-.prospect-social-only { background: var(--warning-soft, #fdf0dc); color: var(--warning, #8a5a13); }
-.prospect-free-builder { background: var(--purple-soft, #ece2f7); color: var(--purple, #6d3aa8); }
-.prospect-no-https { background: var(--purple-soft, #ece2f7); color: var(--purple, #6d3aa8); }
-.prospect-live { background: var(--success-soft, #e0f2e6); color: var(--success, #1c7a3d); }
+.prospect-badge { display: inline-flex; align-items: center; gap: .35rem; padding: .22rem .52rem; border-radius: 2rem; font-size: .74rem; font-weight: var(--weight-bold); white-space: nowrap; background: var(--state-neutral-bg); color: var(--state-neutral-fg); }
+.prospect-no-website, .prospect-dead, .prospect-ssl-broken { background: var(--state-danger-bg); color: var(--state-danger-fg); }
+.prospect-parked, .prospect-social-only { background: var(--state-warning-bg); color: var(--state-warning-fg); }
+.prospect-free-builder, .prospect-no-https { background: var(--state-special-bg); color: var(--state-special-fg); }
+.prospect-live { background: var(--state-success-bg); color: var(--state-success-fg); }
 
 /* Worth-calling tiers: A is hottest, F is coldest. */
-.prospect-tier-a { background: var(--success-soft, #e0f2e6); color: var(--success, #1c7a3d); }
-.prospect-tier-b { background: var(--primary-soft, #e3ecfb); color: var(--primary, #1d4ea8); }
-.prospect-tier-c { background: var(--purple-soft, #ece2f7); color: var(--purple, #6d3aa8); }
-.prospect-tier-d { background: var(--warning-soft, #fdf0dc); color: var(--warning, #8a5a13); }
-.prospect-tier-e { background: var(--warning-soft, #fdf0dc); color: var(--warning, #8a5a13); }
-.prospect-tier-f { background: var(--surface-muted, #eceff3); color: var(--text-muted, #536278); }
+.prospect-tier-a { background: var(--state-success-bg); color: var(--state-success-fg); }
+.prospect-tier-b { background: var(--state-info-bg); color: var(--state-info-fg); }
+.prospect-tier-c { background: var(--state-special-bg); color: var(--state-special-fg); }
+.prospect-tier-d, .prospect-tier-e { background: var(--state-warning-bg); color: var(--state-warning-fg); }
+.prospect-tier-f { background: var(--state-neutral-bg); color: var(--state-neutral-fg); }
 
 /* Prospecting settings editors on the Settings page. */
 .prospect-editor { display: grid; gap: .65rem; }
