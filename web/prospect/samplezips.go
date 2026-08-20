@@ -1,14 +1,14 @@
 package prospect
 
-// SampleZIPAreas returns a bundled SAMPLE dataset of 60 well-known ZIP
-// codes across ten large US cities (San Francisco, Los Angeles,
-// New York, Chicago, Houston, Miami, Seattle, Austin, Denver, Boston).
+// SampleZIPAreas returns a tiny FIXTURE of 60 well-known ZIP codes
+// across ten large US cities (San Francisco, Los Angeles, New York,
+// Chicago, Houston, Miami, Seattle, Austin, Denver, Boston), kept for
+// tests and as a last-resort fallback.
 //
 // This is demo data, not a census product: centroids are rounded to
-// 2-3 decimal places and populations are rough approximations, both
-// good enough to try the query generator and centre a map, but not for
-// production coverage decisions. Supply your own CSV via ParseZIPCSV
-// for real coverage.
+// 2-3 decimal places and populations are rough approximations. For
+// production coverage use EmbeddedZIPAreas (the full embedded US ZIP
+// dataset) or supply your own CSV via ParseZIPCSV.
 func SampleZIPAreas() []ZIPArea {
 	return []ZIPArea{
 		// San Francisco, CA

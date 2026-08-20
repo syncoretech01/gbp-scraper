@@ -499,7 +499,9 @@ type ProspectQueryPlan struct {
 }
 
 // GenerateProspectQueries crosses category synonyms with the most populous
-// matching ZIP areas. When zipCSV is nil the built-in sample areas are used.
+// matching ZIP areas. When zipCSV is nil the embedded US ZIP dataset is used
+// (falling back to the built-in sample areas if the embedded data cannot be
+// decoded).
 func (s *Service) GenerateProspectQueries(state, city string, topN int, synonyms []string, zipCSV io.Reader) (ProspectQueryPlan, error) {
 	if topN <= 0 {
 		topN = defaultQueryTopN
@@ -525,7 +527,10 @@ func (s *Service) GenerateProspectQueries(state, city string, topN int, synonyms
 		return ProspectQueryPlan{}, fmt.Errorf("%w: at most %d synonyms are allowed", ErrInvalidProspectConfig, maximumQuerySynonyms)
 	}
 
-	areas := prospect.SampleZIPAreas()
+	areas, embedErr := prospect.EmbeddedZIPDataset()
+	if embedErr != nil || len(areas) == 0 {
+		areas = prospect.SampleZIPAreas()
+	}
 	if zipCSV != nil {
 		parsed, err := prospect.ParseZIPCSV(zipCSV)
 		if err != nil {
