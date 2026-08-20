@@ -8,6 +8,8 @@ import (
 	"github.com/gosom/scrapemate"
 )
 
+var _ exiter.Exiter = (*taskExiter)(nil)
+
 // taskSeedCount is how many seeds one checkpoint task owns. The durable plan
 // stores exactly one seed per task entry, so a task is finished once that seed
 // and every listing it found have been processed.

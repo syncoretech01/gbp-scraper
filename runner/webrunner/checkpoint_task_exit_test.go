@@ -106,7 +106,7 @@ func (mate *exitSignalingMate) Start(ctx context.Context, jobs ...scrapemate.IJo
 		monitor.IncrPlacesCompleted(1)
 	}
 
-	if err := mate.writeRow(seed); err != nil {
+	if err := writeTaskResultRow(mate.output, seed); err != nil {
 		return err
 	}
 
@@ -120,7 +120,18 @@ func (mate *exitSignalingMate) Start(ctx context.Context, jobs ...scrapemate.IJo
 	return nil
 }
 
-func (mate *exitSignalingMate) writeRow(seed string) error {
+func (*exitSignalingMate) Close() error { return nil }
+
+// writeTaskResultRow writes the header and one distinct business row for a
+// task, so a duplicated execution or a lost merge is visible in the final CSV.
+// The merge treats a shared address as the same business, which is why the row
+// is keyed on the seed.
+func writeTaskResultRow(output io.Writer, seed string) error {
+	const (
+		latitude  = "37.7749"
+		longitude = "-122.4194"
+	)
+
 	header := resultimport.LegacyHeaders()
 	row := make([]string, len(header))
 
@@ -133,13 +144,13 @@ func (mate *exitSignalingMate) writeRow(seed string) error {
 		case "address":
 			row[index] = seed + " Market Street, San Francisco"
 		case "latitude":
-			row[index] = "37.7749"
+			row[index] = latitude
 		case "longitude":
-			row[index] = "-122.4194"
+			row[index] = longitude
 		}
 	}
 
-	writer := csv.NewWriter(mate.output)
+	writer := csv.NewWriter(output)
 	if err := writer.Write(header); err != nil {
 		return err
 	}
@@ -152,8 +163,6 @@ func (mate *exitSignalingMate) writeRow(seed string) error {
 
 	return writer.Error()
 }
-
-func (*exitSignalingMate) Close() error { return nil }
 
 // TestCheckpointPoolCancelsEveryTaskOnItsOwnCompletion is the pool-level proof
 // of the fix. Before it, the pool's single exit monitor had the task count as

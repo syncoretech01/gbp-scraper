@@ -17,7 +17,6 @@ import (
 	"github.com/gosom/google-maps-scraper/runner"
 	"github.com/gosom/google-maps-scraper/web"
 	"github.com/gosom/google-maps-scraper/web/jobruntime"
-	"github.com/gosom/google-maps-scraper/web/resultimport"
 	"github.com/gosom/google-maps-scraper/web/sqlite"
 	"github.com/gosom/scrapemate"
 )
@@ -132,40 +131,7 @@ func (mate *countingMate) Start(ctx context.Context, jobs ...scrapemate.IJob) er
 		}
 	}
 
-	header := resultimport.LegacyHeaders()
-	row := make([]string, len(header))
-
-	for index, name := range header {
-		switch name {
-		case "place_id":
-			// One distinct business per task, so a duplicated task execution or
-			// a lost merge is visible in the final CSV.
-			row[index] = "place-" + seed
-		case "title":
-			row[index] = "Business " + seed
-		case "address":
-			// The merge treats a shared address as the same business, so each
-			// task must produce a genuinely distinct record.
-			row[index] = seed + " Market Street, San Francisco"
-		case "latitude":
-			row[index] = "37.7749"
-		case "longitude":
-			row[index] = "-122.4194"
-		}
-	}
-
-	writer := csv.NewWriter(mate.output)
-	if err := writer.Write(header); err != nil {
-		return err
-	}
-
-	if err := writer.Write(row); err != nil {
-		return err
-	}
-
-	writer.Flush()
-
-	return writer.Error()
+	return writeTaskResultRow(mate.output, seed)
 }
 
 func (*countingMate) Close() error { return nil }
