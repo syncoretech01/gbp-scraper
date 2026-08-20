@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	currentSchemaVersion           = 11
+	currentSchemaVersion           = 12
 	migrationChecksumSchemaVersion = 4
 )
 
@@ -1089,6 +1089,43 @@ var schemaMigrations = []schemaMigration{
 			`ALTER TABLE businesses ADD COLUMN prospect_updated_at INTEGER`,
 			`CREATE INDEX IF NOT EXISTS idx_businesses_prospect
 			ON businesses(prospect_status, prospect_tier)`,
+		},
+	},
+	{
+		version: 12,
+		name:    "adaptive-discovery",
+		statements: []string{
+			// Adaptive coverage: task provenance ('' = planned up front,
+			// 'expansion:<reason>' = added mid-run by the coverage engine),
+			// a claim priority (higher first; 0 keeps the historical FIFO
+			// order), and an earliest-retry timestamp for failure-class
+			// backoff without burning attempts in a tight loop.
+			`ALTER TABLE job_tasks ADD COLUMN origin TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE job_tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE job_tasks ADD COLUMN not_before INTEGER`,
+			`CREATE INDEX IF NOT EXISTS idx_job_tasks_claim
+			ON job_tasks(job_id, state, priority, sequence, created_at)`,
+			// Entity resolution provenance: how this business row's identity
+			// was established, with a confidence and the matched evidence.
+			// '' method means the original exact-key import path.
+			`ALTER TABLE businesses ADD COLUMN identity_method TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE businesses ADD COLUMN identity_confidence REAL`,
+			`ALTER TABLE businesses ADD COLUMN identity_evidence TEXT NOT NULL DEFAULT '[]'`,
+			// Aggregate per-proxy task outcomes (proxy_health stays the raw
+			// per-check log). Keyed by the proxy row; pool recorded for
+			// convenience so benchmark reads need no join.
+			`CREATE TABLE IF NOT EXISTS proxy_task_stats (
+				proxy_id TEXT PRIMARY KEY REFERENCES proxies(id) ON DELETE CASCADE,
+				pool_id TEXT NOT NULL DEFAULT '',
+				task_successes INTEGER NOT NULL DEFAULT 0,
+				task_failures INTEGER NOT NULL DEFAULT 0,
+				consecutive_failures INTEGER NOT NULL DEFAULT 0,
+				total_task_seconds REAL NOT NULL DEFAULT 0,
+				last_success_at INTEGER,
+				last_failure_at INTEGER,
+				last_error TEXT NOT NULL DEFAULT '',
+				updated_at INTEGER NOT NULL DEFAULT 0
+			)`,
 		},
 	},
 }
