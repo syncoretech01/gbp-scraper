@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -39,6 +40,14 @@ const (
 	preclassifyMaximumRedirects      = 5
 )
 
+// Adaptive timeout wiring. The window is the number of recent audits read
+// back per task; it is small on purpose because the policy only needs a
+// recent trend, and a wider window would pay more I/O per claimed task.
+const (
+	adaptiveTimeoutHistoryWindow = 10
+	adaptiveTimeoutEventAction   = "enrichment_timeout_adapted"
+)
+
 // JobEnrichmentOptions is the compatible, nested scrape configuration used
 // to queue full website analysis after normalized Maps rows are committed.
 type JobEnrichmentOptions struct {
@@ -55,6 +64,7 @@ type JobEnrichmentOptions struct {
 	CheckMX               bool   `json:"check_mx,omitempty"`
 	CaptureScreenshot     bool   `json:"capture_screenshot,omitempty"`
 	Preclassify           bool   `json:"preclassify,omitempty"`
+	AdaptiveTimeout       bool   `json:"adaptive_timeout,omitempty"`
 }
 
 // EnrichmentOptionsForJob translates both the nested configuration and the
@@ -83,6 +93,7 @@ func EnrichmentOptionsForJob(data JobData) (EnrichmentOptions, bool, error) {
 		CheckMX:               data.Enrichment.CheckMX && data.Enrichment.Emails,
 		CaptureScreenshot:     data.Enrichment.CaptureScreenshot,
 		Preclassify:           data.Enrichment.Preclassify,
+		AdaptiveTimeout:       data.Enrichment.AdaptiveTimeout,
 		StaleAfterHours:       24,
 	}).normalized()
 
@@ -102,6 +113,7 @@ func (options JobEnrichmentOptions) Validate() error {
 		DisableInternalChecks: options.DisableInternalChecks,
 		CheckMX:               options.CheckMX,
 		Preclassify:           options.Preclassify,
+		AdaptiveTimeout:       options.AdaptiveTimeout,
 	}).normalized()
 
 	return err
@@ -122,6 +134,28 @@ type EnrichmentOptions struct {
 	Preclassify           bool   `json:"preclassify,omitempty"`
 	Force                 bool   `json:"force,omitempty"`
 	StaleAfterHours       int    `json:"stale_after_hours,omitempty"`
+	// AdaptiveTimeout opts one enrichment run into spending its time budget
+	// where it pays: observed per-host latency and failure history shorten the
+	// per-request timeout, never lengthen it. Absent (the default) reproduces
+	// today's behavior exactly, so TimeoutSeconds is used verbatim.
+	AdaptiveTimeout bool `json:"adaptive_timeout,omitempty"`
+	// resolvedTimeout is the per-run budget the adaptive policy chose for one
+	// claimed task. It is deliberately unexported: it is runtime state, not a
+	// requested option, so it never reaches the persisted options JSON, an API
+	// response, or a saved job definition. Zero means "use TimeoutSeconds".
+	resolvedTimeout time.Duration
+}
+
+// requestTimeout returns the per-request budget the analyzer must use: the
+// adaptive value when one was resolved for this run, and otherwise exactly the
+// configured TimeoutSeconds. The policy is clamped to the configured ceiling,
+// so this never returns more than TimeoutSeconds.
+func (options EnrichmentOptions) requestTimeout() time.Duration {
+	if options.resolvedTimeout > 0 {
+		return options.resolvedTimeout
+	}
+
+	return time.Duration(options.TimeoutSeconds) * time.Second
 }
 
 // PreclassifyProfile returns the coerced lightweight profile used by the
@@ -212,7 +246,7 @@ func (options EnrichmentOptions) normalized() (EnrichmentOptions, error) {
 
 func (options EnrichmentOptions) crawlerConfig() enrichment.Config {
 	return enrichment.Config{
-		Timeout:                   time.Duration(options.TimeoutSeconds) * time.Second,
+		Timeout:                   options.requestTimeout(),
 		MaxPages:                  options.MaxPages,
 		MaxBodyBytes:              options.MaxBodyBytes,
 		MaxRedirects:              options.MaxRedirects,
@@ -293,6 +327,33 @@ type enrichmentRepository interface {
 	WebsiteAuditHistory(context.Context, string, int) ([]WebsiteAuditView, error)
 	AttachAuditScreenshot(ctx context.Context, auditID int64, relativePath string) error
 	RecordScreenshotEvent(ctx context.Context, action string, entityID string, details string) error
+}
+
+// enrichmentHistoryRepository is the optional readback used by the adaptive
+// timeout policy. It is deliberately separate from enrichmentRepository: a
+// repository that cannot serve observed history simply keeps the configured
+// timeout instead of failing the task.
+type enrichmentHistoryRepository interface {
+	WebsiteLatencyHistory(
+		ctx context.Context,
+		businessID string,
+		websiteURL string,
+		limit int,
+	) (enrichment.SiteHistory, error)
+	RecordEnrichmentEvent(ctx context.Context, action string, entityID string, details string) error
+}
+
+// adaptiveTimeoutEvidence is the operator-visible record of one adaptation. It
+// is written to the audit log, never to an existing API response shape, and
+// carries only the public host plus the two budgets.
+type adaptiveTimeoutEvidence struct {
+	BusinessID   string `json:"business_id,omitempty"`
+	Host         string `json:"host,omitempty"`
+	LastStatus   string `json:"last_status,omitempty"`
+	Observations int    `json:"observations"`
+	ConfiguredMS int64  `json:"configured_timeout_ms"`
+	AdaptedMS    int64  `json:"adapted_timeout_ms"`
+	Preclassify  bool   `json:"preclassify,omitempty"`
 }
 
 // RecoverEnrichmentTasks returns tasks left running by an interrupted process
@@ -431,6 +492,65 @@ func (analyzer preclassifyAnalyzer) Analyze(ctx context.Context, rawURL string) 
 	return enrichment.Preclassify(ctx, rawURL, analyzer.config)
 }
 
+// adaptEnrichmentTimeout resolves the per-request budget for one claimed task
+// and returns the options the analyzer should be built from.
+//
+// It is a strict no-op unless the task explicitly opted in, so an existing
+// queued task behaves byte-identically to today. When it does apply, the
+// adapted budget is only ever shorter than the configured one: the policy
+// clamps to the configured ceiling, and a value that did not shrink is
+// discarded so the analyzer keeps the configured timeout verbatim. Neither
+// concurrency nor request counts change, so the resource envelope can only
+// shrink.
+//
+// Every failure path here — an unsupported repository, a history read error,
+// an unusable policy answer — falls back to the configured timeout. Adaptation
+// is an optimization and must never be able to fail a website audit.
+func (s *Service) adaptEnrichmentTimeout(
+	ctx context.Context,
+	repository enrichmentRepository,
+	task EnrichmentTask,
+) EnrichmentOptions {
+	options := task.Options
+	if !options.AdaptiveTimeout {
+		return options
+	}
+	history, supported := repository.(enrichmentHistoryRepository)
+	if !supported {
+		return options
+	}
+	ceiling := options.requestTimeout()
+	if ceiling <= 0 {
+		return options
+	}
+	observed, err := history.WebsiteLatencyHistory(
+		ctx, task.BusinessID, task.WebsiteURL, adaptiveTimeoutHistoryWindow,
+	)
+	if err != nil {
+		return options
+	}
+	adapted := enrichment.AdaptiveTimeout(ceiling, observed)
+	if adapted <= 0 || adapted >= ceiling {
+		return options
+	}
+	options.resolvedTimeout = adapted
+
+	evidence, marshalErr := json.Marshal(adaptiveTimeoutEvidence{
+		BusinessID:   task.BusinessID,
+		Host:         observed.Host,
+		LastStatus:   observed.LastStatus,
+		Observations: len(observed.Observations),
+		ConfiguredMS: ceiling.Milliseconds(),
+		AdaptedMS:    adapted.Milliseconds(),
+		Preclassify:  options.Preclassify,
+	})
+	if marshalErr == nil {
+		_ = history.RecordEnrichmentEvent(ctx, adaptiveTimeoutEventAction, task.ID, string(evidence))
+	}
+
+	return options
+}
+
 // ProcessEnrichmentQueue claims and processes up to limit durable tasks. A
 // failed task is recorded and does not stop later tasks from running.
 func (s *Service) ProcessEnrichmentQueue(ctx context.Context, limit int) (int, error) {
@@ -478,7 +598,9 @@ func (s *Service) processEnrichmentQueue(
 		}
 		processed++
 
-		analyzer, analyzerErr := factory(task.Options)
+		effective := s.adaptEnrichmentTimeout(ctx, repository, task)
+
+		analyzer, analyzerErr := factory(effective)
 		if analyzerErr != nil {
 			_ = repository.FinishEnrichmentTask(ctx, task.ID, nil, analyzerErr)
 			failures = append(failures, fmt.Errorf("enrichment task %s: %w", task.ID, analyzerErr))
@@ -486,8 +608,11 @@ func (s *Service) processEnrichmentQueue(
 		}
 
 		startedAt := time.Now().UTC()
-		requestBudget := time.Duration(task.Options.TimeoutSeconds) * time.Second *
-			time.Duration(task.Options.MaxPages+task.Options.MaxInternalLinkChecks+2)
+		// The whole-task budget derives from the same per-request timeout the
+		// analyzer received, so an adapted (shorter) budget frees the worker
+		// sooner and can never widen the envelope.
+		requestBudget := effective.requestTimeout() *
+			time.Duration(effective.MaxPages+effective.MaxInternalLinkChecks+2)
 		if requestBudget < 30*time.Second {
 			requestBudget = 30 * time.Second
 		}

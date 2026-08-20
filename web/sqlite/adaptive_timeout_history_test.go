@@ -9,6 +9,24 @@ import (
 	"github.com/gosom/google-maps-scraper/web/enrichment"
 )
 
+// enrichmentHistoryContract mirrors the unexported optional interface the web
+// enrichment worker type-asserts on. It cannot be imported (web imports this
+// package), so this local copy pins the sqlite side of the contract: if the
+// signatures below stop matching, the worker silently falls back to the
+// configured timeout instead of adapting, and this assertion is what catches
+// the drift.
+type enrichmentHistoryContract interface {
+	WebsiteLatencyHistory(
+		ctx context.Context,
+		businessID string,
+		websiteURL string,
+		limit int,
+	) (enrichment.SiteHistory, error)
+	RecordEnrichmentEvent(ctx context.Context, action string, entityID string, details string) error
+}
+
+var _ enrichmentHistoryContract = (*repo)(nil)
+
 // latencyHistoryRepo opens an isolated schema in t.TempDir(). The live
 // workspace database is never touched by these tests.
 func latencyHistoryRepo(t *testing.T) *repo {
