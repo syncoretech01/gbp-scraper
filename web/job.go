@@ -105,6 +105,10 @@ type JobData struct {
 	GridBBox        string                `json:"grid_bbox,omitempty"`
 	GridCellKM      float64               `json:"grid_cell_km,omitempty"`
 	IncrementalMode string                `json:"incremental_mode,omitempty"`
+	// Coverage enables the adaptive discovery engine for this job. A nil
+	// value keeps exactly the historical behaviour: no saturation stop and
+	// no mid-run expansion.
+	Coverage *CoverageOptions `json:"coverage,omitempty"`
 }
 
 // Incremental rescan modes. An empty mode is a full collection; the other
@@ -175,6 +179,11 @@ func (d *JobData) Validate() error {
 	}
 	if d.Enrichment != nil {
 		if err := d.Enrichment.Validate(); err != nil {
+			return err
+		}
+	}
+	if d.Coverage != nil {
+		if err := d.Coverage.Validate(); err != nil {
 			return err
 		}
 	}

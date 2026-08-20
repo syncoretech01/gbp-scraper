@@ -79,17 +79,18 @@ func (repo *repo) PrepareJobTasks(
 				input_id = excluded.input_id,
 				max_attempts = excluded.max_attempts,
 				state = CASE
-					WHEN job_tasks.state = 'completed' THEN job_tasks.state
+					WHEN job_tasks.state IN ('completed', 'skipped') THEN job_tasks.state
 					ELSE 'pending'
 				END,
 				attempts = CASE
-					WHEN job_tasks.state = 'completed' THEN job_tasks.attempts
+					WHEN job_tasks.state IN ('completed', 'skipped') THEN job_tasks.attempts
 					WHEN job_tasks.state = 'failed' OR job_tasks.attempts >= excluded.max_attempts THEN 0
 					ELSE job_tasks.attempts
 				END,
-				last_error = CASE WHEN job_tasks.state = 'completed' THEN job_tasks.last_error ELSE '' END,
-				started_at = CASE WHEN job_tasks.state = 'completed' THEN job_tasks.started_at ELSE NULL END,
-				finished_at = CASE WHEN job_tasks.state = 'completed' THEN job_tasks.finished_at ELSE NULL END,
+				last_error = CASE WHEN job_tasks.state IN ('completed', 'skipped') THEN job_tasks.last_error ELSE '' END,
+				started_at = CASE WHEN job_tasks.state IN ('completed', 'skipped') THEN job_tasks.started_at ELSE NULL END,
+				finished_at = CASE WHEN job_tasks.state IN ('completed', 'skipped') THEN job_tasks.finished_at ELSE NULL END,
+				not_before = CASE WHEN job_tasks.state IN ('completed', 'skipped') THEN job_tasks.not_before ELSE NULL END,
 				updated_at = excluded.updated_at`,
 			taskID,
 			jobID,
@@ -637,7 +638,7 @@ func (repo *repo) unfinishedJobTasks(ctx context.Context, jobID string) ([]web.J
 	rows, err := repo.db.QueryContext(
 		ctx,
 		`SELECT id, job_id, task_key, kind, state, sequence, query, source_cell, input_id,
-			payload, checkpoint, attempts, max_attempts, last_error, started_at, finished_at, updated_at
+			payload, checkpoint, attempts, max_attempts, last_error, origin, priority, started_at, finished_at, updated_at
 		FROM job_tasks
 		WHERE job_id = ? AND state IN ('pending', 'running')
 		ORDER BY sequence, created_at, id`,
@@ -674,7 +675,7 @@ func (repo *repo) MapCellTasks(ctx context.Context, jobID string) ([]web.JobTask
 	rows, err := repo.db.QueryContext(
 		ctx,
 		`SELECT id, job_id, task_key, kind, state, sequence, query, source_cell, input_id,
-			payload, checkpoint, attempts, max_attempts, last_error, started_at, finished_at, updated_at
+			payload, checkpoint, attempts, max_attempts, last_error, origin, priority, started_at, finished_at, updated_at
 		FROM job_tasks WHERE job_id = ? AND source_cell <> ''
 		ORDER BY sequence, task_key`,
 		jobID,
@@ -707,7 +708,7 @@ func readJobTask(ctx context.Context, queryer checkpointQueryer, jobID, taskKey 
 	row := queryer.QueryRowContext(
 		ctx,
 		`SELECT id, job_id, task_key, kind, state, sequence, query, source_cell, input_id,
-			payload, checkpoint, attempts, max_attempts, last_error, started_at, finished_at, updated_at
+			payload, checkpoint, attempts, max_attempts, last_error, origin, priority, started_at, finished_at, updated_at
 		FROM job_tasks WHERE job_id = ? AND task_key = ?`,
 		jobID,
 		taskKey,
@@ -744,6 +745,8 @@ func scanJobTask(scanner checkpointScanner) (web.JobTask, error) {
 		&task.Attempts,
 		&task.MaxAttempts,
 		&task.LastError,
+		&task.Origin,
+		&task.Priority,
 		&startedAt,
 		&finishedAt,
 		&updatedAt,

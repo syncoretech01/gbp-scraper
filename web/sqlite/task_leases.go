@@ -55,13 +55,18 @@ func (repo *repo) ClaimNextJobTask(
 
 	var taskKey string
 
+	// Eligibility honours failure-class backoff (not_before) and the claim
+	// order prefers higher priorities; the default zero priority preserves
+	// the historical FIFO order exactly.
 	err = tx.QueryRowContext(
 		ctx,
 		`SELECT task_key FROM job_tasks
 		WHERE job_id = ? AND state IN ('pending', 'failed') AND attempts < max_attempts
-		ORDER BY sequence, created_at, task_key
+			AND (not_before IS NULL OR not_before <= ?)
+		ORDER BY priority DESC, sequence, created_at, task_key
 		LIMIT 1`,
 		jobID,
+		now,
 	).Scan(&taskKey)
 
 	if errors.Is(err, sql.ErrNoRows) {
@@ -81,7 +86,7 @@ func (repo *repo) ClaimNextJobTask(
 		ctx,
 		`UPDATE job_tasks SET
 			state = 'running', attempts = attempts + 1, last_error = '',
-			lease_owner = ?, lease_expires_at = ?, heartbeat_at = ?,
+			lease_owner = ?, lease_expires_at = ?, heartbeat_at = ?, not_before = NULL,
 			started_at = ?, finished_at = NULL, updated_at = ?
 		WHERE job_id = ? AND task_key = ? AND state IN ('pending', 'failed')
 			AND attempts < max_attempts`,
