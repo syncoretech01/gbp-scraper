@@ -135,7 +135,7 @@ func seedBenchmarkWorkspace(t *testing.T, ctx context.Context) *repo {
 		},
 		map[string]string{
 			"input_id": "seed-4", "title": "Quiet Business", "category": "Bakery",
-			"address": "44 Cedar Blvd, Austin, TX 78704",
+			"address":  "44 Cedar Blvd, Austin, TX 78704",
 			"latitude": "30.2455", "longitude": "-97.7502", "place_id": "bench-none",
 		},
 	)
