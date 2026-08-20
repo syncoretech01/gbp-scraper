@@ -27,6 +27,11 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// inactivitySafetyNet is how long a scrapemate run may report no activity at
+// all before it gives up. It is unchanged behaviour and remains the last
+// resort for a stalled run, not the normal way a run ends.
+const inactivitySafetyNet = 3 * time.Minute
+
 type webrunner struct {
 	srv             *web.Server
 	svc             *web.Service
@@ -403,6 +408,10 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) error {
 	stopReason := make(chan jobruntime.StopReason, 1)
 
 	if len(seedJobs) > 0 {
+		// One scrapemate run receives every seed here, so the monitor's done
+		// condition is reachable within that run and the exiter cancels as
+		// soon as the last seed and listing finish. The per-task composite the
+		// checkpoint pool needs is therefore not required on this path.
 		exitMonitor.SetSeedCount(len(seedJobs))
 
 		allowedSeconds := max(60, len(seedJobs)*10*job.Data.Depth/50+120)
@@ -670,7 +679,10 @@ func defaultSetupMate(cfg *runner.Config) func(context.Context, io.Writer, *web.
 
 		opts := []func(*scrapemateapp.Config) error{
 			scrapemateapp.WithConcurrency(jobConfig.Concurrency),
-			scrapemateapp.WithExitOnInactivity(time.Minute * 3),
+			// Safety net only. A healthy run ends when its exit monitor sees
+			// the run's (or the task's) seeds and listings complete; this
+			// timeout covers a run that stalls without ever reporting.
+			scrapemateapp.WithExitOnInactivity(inactivitySafetyNet),
 		}
 
 		if !job.Data.FastMode {

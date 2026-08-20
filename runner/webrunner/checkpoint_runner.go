@@ -220,6 +220,10 @@ func (w *webrunner) scrapeJobCheckpointed(
 	if err != nil {
 		return w.failJob(ctx, job, fmt.Errorf("prepare task checkpoints: %w", err))
 	}
+	// The run-level seed count spans the whole plan: it keeps the shared
+	// monitor's snapshot, its MaxRecords budget, and coverage expansion
+	// coherent. Per-task completion is decided by each task's own monitor (see
+	// taskExiter), so this count no longer gates when a task may exit.
 	if len(pending) > 0 {
 		exitMonitor.SetSeedCount(len(pending))
 	}
@@ -244,8 +248,14 @@ func (w *webrunner) scrapeJobCheckpointed(
 
 	stopReasons := make(chan jobruntime.StopReason, 4)
 	go w.watchRequestedStop(runCtx, job.ID, runCancel, stopReasons)
+	// The run-level monitor keeps the run-wide cancel: reaching MaxRecords
+	// still stops every worker at once. Its "all seeds and places done" signal
+	// is deliberately left unconsumed here, because in a pool that signal can
+	// only arrive while the final task is still inside its scrapemate run —
+	// cancelling then would mark that finished task interrupted and hand it
+	// back to the queue. The pool ends when its durable plan is drained, and
+	// each task ends on its own monitor (see taskExiter).
 	exitMonitor.SetCancelFunc(runCancel)
-	go exitMonitor.Run(runCtx)
 
 	startedAt := time.Now().UTC()
 	deadline := startedAt.Add(time.Duration(allowedSeconds) * time.Second)
@@ -387,6 +397,11 @@ func (w *webrunner) scrapeJobCheckpointed(
 // runCheckpointTask executes exactly one seed into its own temporary CSV. Live
 // progress reporting belongs to the pool supervisor, so the task itself only
 // runs the scraper and hands back a file to merge.
+//
+// The task runs behind a taskExiter: its own completion cancels this task's
+// context as soon as its seed and every listing that seed found are done,
+// while the run-level monitor keeps its record budget and its run-wide cancel.
+// scrapemate's inactivity timeout stays configured and covers a stalled task.
 func (w *webrunner) runCheckpointTask(
 	ctx context.Context,
 	job *web.Job,
@@ -424,9 +439,15 @@ func (w *webrunner) runCheckpointTask(
 	taskCtx, taskCancel := context.WithCancel(ctx)
 	defer taskCancel()
 
-	before := exiter.SnapshotOf(exitMonitor)
-	runErr := mate.Start(taskCtx, seed)
-	after := exiter.SnapshotOf(exitMonitor)
+	taskMonitor := newTaskExiter(exitMonitor, taskSeedCount)
+	taskMonitor.SetCancelFunc(taskCancel)
+
+	go taskMonitor.Run(taskCtx)
+
+	runErr := mate.Start(taskCtx, seedWithExitMonitor(seed, taskMonitor))
+	// Only this task's own counters can say whether its seed finished; the
+	// run-level snapshot also moves for every other task running in parallel.
+	after := taskMonitor.ownSnapshot()
 
 	if closeErr := mate.Close(); closeErr != nil {
 		runErr = errors.Join(runErr, fmt.Errorf("close checkpoint worker: %w", closeErr))
@@ -443,7 +464,7 @@ func (w *webrunner) runCheckpointTask(
 	}
 	keepRun = true
 
-	return runPath, normalizeCheckpointRunError(taskCtx, runErr, after.SeedsCompleted > before.SeedsCompleted)
+	return runPath, normalizeCheckpointRunError(taskCtx, runErr, after.SeedsCompleted > 0)
 }
 
 func ensureCheckpointCSV(outfile *os.File) error {
