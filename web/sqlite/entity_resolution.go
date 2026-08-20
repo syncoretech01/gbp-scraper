@@ -728,7 +728,11 @@ func applyIdentityOutcome(
 		method, confidence, evidence := newRowIdentityProvenance(business)
 
 		return writeIdentityProvenance(ctx, tx, targetID, method, confidence, evidence, observedAt)
-	case resolution.businessID != "" && resolution.method != identityMethodExact:
+	case resolution.businessID != "" && resolution.method != identityMethodExact &&
+		resolution.businessID != business.ID:
+		// A corroborated attach onto a different stored row records how the
+		// two observations were linked. Re-attaching a record to its own row
+		// (a re-import under a new job) leaves provenance untouched.
 		if err := writeIdentityProvenance(
 			ctx, tx, targetID,
 			resolution.method, resolution.confidence, resolution.evidence,

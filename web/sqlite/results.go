@@ -1433,6 +1433,14 @@ func storeFuzzyDuplicateCandidates(
 		if score < 0.62 {
 			continue
 		}
+		suppressed, err := keepSeparatePairExists(ctx, tx, targetID, candidate.id)
+		if err != nil {
+			return err
+		}
+		if suppressed {
+			// A human already ruled this pair as distinct businesses.
+			continue
+		}
 		left, right := targetID, candidate.id
 		if left > right {
 			left, right = right, left
