@@ -126,7 +126,8 @@ func (engine *coverageEngine) record(
 
 	if succeeded {
 		engine.window = append(engine.window, web.NewCoverageSample(
-			checkpoint.RowsAdded, checkpoint.DuplicatesSkipped, true,
+			checkpoint.RowsAdded, checkpoint.RowsReplaced,
+			checkpoint.DuplicatesSkipped, true,
 		))
 
 		if len(engine.window) > windowSize {

@@ -667,7 +667,7 @@ func coverageWindowSamples(completed []CoverageTaskRow, window int) []CoverageSa
 	// Only rows in the 'completed' state reach here, so every sample the
 	// report rebuilds is by definition a successful task.
 	for _, row := range completed[start:] {
-		samples = append(samples, NewCoverageSample(row.RowsAdded, row.DuplicatesSkipped, true))
+		samples = append(samples, NewCoverageSample(row.RowsAdded, row.RowsReplaced, row.DuplicatesSkipped, true))
 	}
 
 	return samples
@@ -678,7 +678,13 @@ func coverageWindowSamples(completed []CoverageTaskRow, window int) []CoverageSa
 // Empty are additive evidence-quality flags whose zero values mean "quality
 // unknown", which every rule below treats as the conservative case.
 type CoverageSample struct {
-	RowsAdded         int64 `json:"rows_added"`
+	RowsAdded int64 `json:"rows_added"`
+	// RowsReplaced counts stored rows this attempt superseded: businesses
+	// the workspace already held. The CSV merge reports a re-found business
+	// as one added row AND one replaced row, so a task that re-found only
+	// known businesses looks productive on RowsAdded alone. Net-new is what
+	// saturation must judge.
+	RowsReplaced      int64 `json:"rows_replaced,omitempty"`
 	DuplicatesSkipped int64 `json:"duplicates_skipped"`
 	// Succeeded reports that the task attempt completed without error. A
 	// failed, timed-out or proxy-broken attempt is not evidence about the
@@ -693,35 +699,54 @@ type CoverageSample struct {
 // NewCoverageSample builds one window sample from a finished task attempt,
 // deriving Empty from the counters so the flag can never disagree with them.
 // A failed attempt is never empty evidence, however few rows it produced.
-func NewCoverageSample(rowsAdded, duplicatesSkipped int64, succeeded bool) CoverageSample {
+func NewCoverageSample(rowsAdded, rowsReplaced, duplicatesSkipped int64, succeeded bool) CoverageSample {
 	return CoverageSample{
 		RowsAdded:         rowsAdded,
+		RowsReplaced:      rowsReplaced,
 		DuplicatesSkipped: duplicatesSkipped,
 		Succeeded:         succeeded,
 		Empty:             succeeded && rowsAdded <= 0 && duplicatesSkipped <= 0,
 	}
 }
 
-// CoverageWindowRatio computes sum(new)/sum(new+dup) over a window. An
-// empty window, or one with neither new rows nor duplicates, reports 1 so
-// that "no evidence" never looks like saturation.
+// CoverageSampleNetNew is how many genuinely new businesses one sample
+// contributed: added rows minus the stored rows they superseded, floored at
+// zero because a single run row can supersede several stored rows through
+// multi-key identity matching.
+func CoverageSampleNetNew(sample CoverageSample) int64 {
+	netNew := sample.RowsAdded - sample.RowsReplaced
+	if netNew < 0 {
+		return 0
+	}
+
+	return netNew
+}
+
+// CoverageWindowRatio computes the share of a window's observed businesses
+// that were genuinely new: sum(net-new) / sum(net-new + re-found +
+// duplicates). Re-found businesses (RowsReplaced) count against the ratio
+// because a query that only rediscovers what the workspace already holds has
+// covered no new ground, however many rows it wrote. A window with no
+// observations at all reports 1 so that "no evidence" never looks like
+// saturation.
 //
-// The zero-yield rule (see CoverageWindowEvidence.ZeroYield) is what handles
-// the genuinely empty case; this ratio deliberately stays blind to it.
+// The zero-yield rule (see CoverageWindowEvidence.ZeroYield) handles the
+// genuinely empty case; this ratio deliberately stays blind to it.
 func CoverageWindowRatio(samples []CoverageSample) float64 {
-	var added, duplicates int64
+	var netNew, refound, duplicates int64
 
 	for _, sample := range samples {
-		added += sample.RowsAdded
+		netNew += CoverageSampleNetNew(sample)
+		refound += sample.RowsReplaced
 		duplicates += sample.DuplicatesSkipped
 	}
 
-	total := added + duplicates
+	total := netNew + refound + duplicates
 	if total <= 0 {
 		return 1
 	}
 
-	return float64(added) / float64(total)
+	return float64(netNew) / float64(total)
 }
 
 // CoverageWindowEvidence summarises the outcome quality of one saturation

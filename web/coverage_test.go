@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -147,9 +148,13 @@ func TestBuildCoverageReportContract(t *testing.T) {
 		t.Fatalf("saturation = %#v", report.Saturation)
 	}
 
-	// 11 new rows against 11 duplicates over both completed tasks.
-	if report.Saturation.CurrentNewRatio != 0.5 {
-		t.Fatalf("current new ratio = %f, want 0.5", report.Saturation.CurrentNewRatio)
+	// Net-new is what counts: the two completed tasks added 11 rows, but one
+	// of those superseded a stored business, so 10 businesses were genuinely
+	// new against 1 re-found and 11 duplicates.
+	const wantRatio = 10.0 / 22.0
+
+	if math.Abs(report.Saturation.CurrentNewRatio-wantRatio) > 1e-9 {
+		t.Fatalf("current new ratio = %f, want %f", report.Saturation.CurrentNewRatio, wantRatio)
 	}
 
 	if len(report.ByQuery) != 4 {
@@ -269,7 +274,7 @@ func TestNewCoverageSampleDerivesEvidenceFlags(t *testing.T) {
 	}
 
 	for _, testCase := range cases {
-		sample := NewCoverageSample(testCase.rowsAdded, testCase.duplicatesSkipped, testCase.succeeded)
+		sample := NewCoverageSample(testCase.rowsAdded, 0, testCase.duplicatesSkipped, testCase.succeeded)
 
 		if sample.Succeeded != testCase.succeeded || sample.Empty != testCase.wantEmpty {
 			t.Errorf("%s: sample = %#v, want succeeded=%v empty=%v",
@@ -292,9 +297,9 @@ func TestNewCoverageSampleDerivesEvidenceFlags(t *testing.T) {
 func TestCoverageWindowEvidenceZeroYieldRules(t *testing.T) {
 	t.Parallel()
 
-	empty := NewCoverageSample(0, 0, true)
-	productive := NewCoverageSample(5, 1, true)
-	failed := NewCoverageSample(0, 0, false)
+	empty := NewCoverageSample(0, 0, 0, true)
+	productive := NewCoverageSample(5, 0, 1, true)
+	failed := NewCoverageSample(0, 0, 0, false)
 
 	cases := []struct {
 		name    string
