@@ -1414,3 +1414,153 @@ func pageConfidence(page enrichment.PageResult) float64 {
 
 	return 0.9
 }
+
+// Website latency history bounds. The readback exists to shape one request
+// timeout, so it deliberately reads a short recent window rather than the
+// whole audit trail.
+const (
+	minimumLatencyHistoryWindow = 1
+	maximumLatencyHistoryWindow = 50
+)
+
+// WebsiteLatencyHistory returns the bounded recent probe outcomes observed for
+// one business website, newest first, for the adaptive timeout policy.
+//
+// The query is keyed on business_id and ordered by completed_at, which is
+// exactly the shape of idx_website_audits_business_time, and it reads no
+// payload columns. Rows are then narrowed in Go to the audits whose requested
+// or final URL normalizes to the same registrable domain as websiteURL, so a
+// business that changed website does not inherit the old host's latency.
+//
+// A business with no audits, an unknown business ID, and an unparsable
+// website URL all yield an empty history and a nil error: absent history is a
+// normal state that must leave the configured timeout untouched, never a
+// failure that aborts an enrichment task.
+func (repo *repo) WebsiteLatencyHistory(
+	ctx context.Context,
+	businessID string,
+	websiteURL string,
+	limit int,
+) (enrichment.SiteHistory, error) {
+	businessID = strings.TrimSpace(businessID)
+	if businessID == "" {
+		return enrichment.SiteHistory{}, nil
+	}
+	if limit < minimumLatencyHistoryWindow {
+		limit = minimumLatencyHistoryWindow
+	}
+	if limit > maximumLatencyHistoryWindow {
+		limit = maximumLatencyHistoryWindow
+	}
+
+	host := resultimport.NormalizeDomain(websiteURL)
+
+	rows, err := repo.db.QueryContext(
+		ctx,
+		`SELECT requested_url, final_url, reachable, status_code, response_time_ms, error
+		FROM website_audits WHERE business_id = ?
+		ORDER BY completed_at DESC, id DESC LIMIT ?`,
+		businessID,
+		limit,
+	)
+	if err != nil {
+		return enrichment.SiteHistory{}, fmt.Errorf("read website latency history: %w", err)
+	}
+	// The scan error inside the loop returns early, so the cursor needs an
+	// unconditional release. sql.Rows.Close is idempotent, which keeps the
+	// explicit close-error reporting below intact.
+	defer func() { _ = rows.Close() }()
+
+	history := enrichment.SiteHistory{Host: host, Observations: make([]enrichment.SiteObservation, 0, limit)}
+	for rows.Next() {
+		var requestedURL, finalURL, auditError string
+		var reachable, statusCode int
+		var responseMS int64
+		if err := rows.Scan(
+			&requestedURL, &finalURL, &reachable, &statusCode, &responseMS, &auditError,
+		); err != nil {
+			return enrichment.SiteHistory{}, fmt.Errorf("scan website latency history: %w", err)
+		}
+		if host != "" &&
+			resultimport.NormalizeDomain(requestedURL) != host &&
+			resultimport.NormalizeDomain(finalURL) != host {
+			continue
+		}
+		history.Observations = append(history.Observations, latencyObservation(
+			reachable != 0, statusCode, responseMS, auditError,
+		))
+	}
+	if err := rows.Err(); err != nil {
+		return enrichment.SiteHistory{}, fmt.Errorf("read website latency history: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return enrichment.SiteHistory{}, fmt.Errorf("close website latency history: %w", err)
+	}
+
+	var status string
+	if err := repo.db.QueryRowContext(
+		ctx,
+		`SELECT website_status FROM businesses WHERE id = ?`,
+		businessID,
+	).Scan(&status); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return enrichment.SiteHistory{}, fmt.Errorf("read business website status: %w", err)
+	}
+	history.LastStatus = strings.TrimSpace(status)
+
+	return history, nil
+}
+
+// latencyObservation converts one persisted audit row into the policy input.
+// A stored audit records either a successful probe or an error string, and the
+// error text is the only surviving evidence of how the probe failed.
+func latencyObservation(
+	reachable bool,
+	statusCode int,
+	responseMS int64,
+	auditError string,
+) enrichment.SiteObservation {
+	observation := enrichment.SiteObservation{
+		ResponseTime: time.Duration(responseMS) * time.Millisecond,
+		Reachable:    reachable,
+	}
+	if strings.TrimSpace(auditError) == "" {
+		return observation
+	}
+	if enrichment.IsTimeoutError(auditError) {
+		observation.TimedOut = true
+
+		return observation
+	}
+	// A recorded error alongside a real HTTP status is a page-level problem,
+	// not a transport failure: the host still answered and its latency sample
+	// stays usable.
+	if reachable && statusCode > 0 {
+		return observation
+	}
+	observation.Failed = true
+
+	return observation
+}
+
+// RecordEnrichmentEvent appends one auditable enrichment worker event, for
+// example enrichment_timeout_adapted. Events live in audit_logs so worker
+// telemetry can never rewrite immutable audit evidence or change an existing
+// API response shape.
+func (repo *repo) RecordEnrichmentEvent(ctx context.Context, action, entityID, details string) error {
+	if strings.TrimSpace(details) == "" {
+		details = "{}"
+	}
+	if _, err := repo.db.ExecContext(
+		ctx,
+		`INSERT INTO audit_logs(action, entity_type, entity_id, details, created_at)
+		VALUES (?, 'website_audit', ?, ?, ?)`,
+		action,
+		entityID,
+		details,
+		time.Now().UTC().Unix(),
+	); err != nil {
+		return fmt.Errorf("record enrichment event: %w", err)
+	}
+
+	return nil
+}
