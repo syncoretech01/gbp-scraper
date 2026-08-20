@@ -1,0 +1,77 @@
+{{define "app/page/benchmark"}}{{template "app/layout" .}}{{end}}
+
+{{define "app/page-actions"}}
+<div class="page-actions">
+    <a class="button" href="/app/jobs/{{.Page.JobID}}">Back to job monitor</a>
+    <a class="button" href="{{.Page.APIPath}}">Download JSON report</a>
+</div>
+{{end}}
+
+{{define "app/content"}}
+<div class="section-stack">
+    <section class="card" aria-labelledby="benchmark-identity-title">
+        <div class="card-header"><div><h2 id="benchmark-identity-title">Report identity</h2><p>Stable, self-contained evidence for version-to-version comparison. The JSON report at <code>{{.Page.APIPath}}</code> carries the same numbers.</p></div></div>
+        <div class="card-body"><dl class="key-value"><dt>Job</dt><dd>{{.Page.JobName}} <code>{{.Page.JobID}}</code></dd><dt>Engine version</dt><dd>{{if .Page.EngineVersion}}{{.Page.EngineVersion}}{{else}}not recorded{{end}}</dd><dt>Database schema</dt><dd>v{{.Page.SchemaVersion}}</dd><dt>Generated</dt><dd>{{.Page.GeneratedAt}}</dd></dl></div>
+    </section>
+
+    <section class="grid metrics-grid" aria-label="Headline benchmark totals">
+        {{range .Page.Metrics}}<article class="card metric"><div class="metric-label">{{.Label}}</div><p class="metric-value">{{.Value}}</p><span class="metric-detail">{{.Detail}}</span></article>{{end}}
+    </section>
+
+    <section class="grid grid-2">
+        <article class="card"><div class="card-header"><div><h2>Task plan outcome</h2><p>Durable task states, attempts, and retries</p></div></div>
+            <div class="card-body"><dl class="key-value">{{range .Page.TaskRows}}<dt>{{.Label}}</dt><dd>{{.Value}}</dd>{{end}}</dl></div>
+        </article>
+        <article class="card"><div class="card-header"><div><h2>Runtime</h2><p>Wall-clock evidence from the durable job runtime</p></div></div>
+            <div class="card-body"><dl class="key-value">{{range .Page.RuntimeRows}}<dt>{{.Label}}</dt><dd>{{.Value}}</dd>{{end}}</dl></div>
+        </article>
+    </section>
+
+    <section class="card" aria-labelledby="benchmark-yield-query-title">
+        <div class="card-header"><div><h2 id="benchmark-yield-query-title">Yield by query</h2><p>Rows merged per executed query, with the share that was new</p></div></div>
+        {{if .Page.YieldByQuery}}<div class="table-wrap"><table class="data-table"><thead><tr><th>Query</th><th>Tasks</th><th>Rows added</th><th>Duplicates skipped</th><th>Unique ratio</th></tr></thead><tbody>{{range .Page.YieldByQuery}}<tr><td>{{.Key}}</td><td>{{.Tasks}}</td><td>{{.RowsAdded}}</td><td>{{.DuplicatesSkipped}}</td><td>{{.UniqueRatio}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="card-body"><p class="field-hint">No task queries recorded for this job.</p></div>{{end}}
+    </section>
+
+    <section class="grid grid-2">
+        <article class="card"><div class="card-header"><div><h2>Yield by ZIP</h2><p>Parsed from GBP-shaped queries ending in a ZIP5</p></div></div>
+            {{if .Page.YieldByZip}}<div class="table-wrap"><table class="data-table"><thead><tr><th>ZIP</th><th>Tasks</th><th>Rows added</th><th>Duplicates</th><th>Unique ratio</th></tr></thead><tbody>{{range .Page.YieldByZip}}<tr><td>{{.Key}}</td><td>{{.Tasks}}</td><td>{{.RowsAdded}}</td><td>{{.DuplicatesSkipped}}</td><td>{{.UniqueRatio}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="card-body"><p class="field-hint">No ZIP-shaped queries in this run.</p></div>{{end}}
+        </article>
+        <article class="card"><div class="card-header"><div><h2>Yield by synonym</h2><p>Query prefix before &ldquo;in&rdquo;</p></div></div>
+            {{if .Page.YieldBySynonym}}<div class="table-wrap"><table class="data-table"><thead><tr><th>Synonym</th><th>Tasks</th><th>Rows added</th><th>Duplicates</th><th>Unique ratio</th></tr></thead><tbody>{{range .Page.YieldBySynonym}}<tr><td>{{.Key}}</td><td>{{.Tasks}}</td><td>{{.RowsAdded}}</td><td>{{.DuplicatesSkipped}}</td><td>{{.UniqueRatio}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="card-body"><p class="field-hint">No &ldquo;synonym in place&rdquo; queries in this run.</p></div>{{end}}
+        </article>
+    </section>
+
+    <section class="card" aria-labelledby="benchmark-saturation-title">
+        <div class="card-header"><div><h2 id="benchmark-saturation-title">Saturation trend</h2><p>Completed tasks in finish order: a falling cumulative new ratio means the area is saturating</p></div></div>
+        {{if .Page.Saturation}}<div class="table-wrap"><table class="data-table"><thead><tr><th>#</th><th>Task</th><th>Rows added</th><th>Duplicates skipped</th><th>Cumulative new ratio</th></tr></thead><tbody>{{range .Page.Saturation}}<tr><td>{{.Seq}}</td><td><code>{{.TaskKey}}</code></td><td>{{.RowsAdded}}</td><td>{{.DuplicatesSkipped}}</td><td>{{.CumulativeNewRatio}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="card-body"><p class="field-hint">No completed tasks yet.</p></div>{{end}}
+    </section>
+
+    <section class="card" aria-labelledby="benchmark-failures-title">
+        <div class="card-header"><div><h2 id="benchmark-failures-title">Failures by class</h2><p>Warning and error worker events grouped by coarse cause; retries are attempts that returned to the queue</p></div></div>
+        {{if .Page.Failures}}<div class="table-wrap"><table class="data-table"><thead><tr><th>Class</th><th>Occurrences</th><th>Retries</th><th>Sample (redacted)</th></tr></thead><tbody>{{range .Page.Failures}}<tr><td>{{.Class}}</td><td>{{.Count}}</td><td>{{.Retries}}</td><td>{{.Sample}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="card-body"><p class="field-hint">No warnings or errors recorded for this run.</p></div>{{end}}
+    </section>
+
+    <section class="card" aria-labelledby="benchmark-proxies-title">
+        <div class="card-header"><div><h2 id="benchmark-proxies-title">Proxy performance</h2><p>Aggregate task outcomes per proxy; credentials never appear here</p></div></div>
+        {{if .Page.Proxies}}<div class="table-wrap"><table class="data-table"><thead><tr><th>Proxy</th><th>Pool</th><th>Successes</th><th>Failures</th><th>Consecutive failures</th><th>Avg task time</th><th>Last error (redacted)</th></tr></thead><tbody>{{range .Page.Proxies}}<tr><td>{{.Name}}</td><td>{{if .Pool}}<code>{{.Pool}}</code>{{else}}&mdash;{{end}}</td><td>{{.Successes}}</td><td>{{.Failures}}</td><td>{{.Consecutive}}</td><td>{{.AverageTask}}</td><td>{{.LastError}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="card-body"><p class="field-hint">No proxy data recorded.</p></div>{{end}}
+    </section>
+
+    <section class="grid grid-2">
+        <article class="card"><div class="card-header"><div><h2>Website status</h2><p>Businesses linked to this job</p></div></div>
+            {{if .Page.WebsiteStatus}}<div class="table-wrap"><table class="data-table"><thead><tr><th>Status</th><th>Businesses</th></tr></thead><tbody>{{range .Page.WebsiteStatus}}<tr><td>{{.Label}}</td><td>{{.Count}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="card-body"><p class="field-hint">No businesses linked to this job.</p></div>{{end}}
+        </article>
+        <article class="card"><div class="card-header"><div><h2>Contact availability</h2><p>Coverage over the {{.Page.Email.Total}} linked businesses</p></div></div>
+            <div class="card-body"><dl class="key-value"><dt>With email</dt><dd>{{.Page.Email.WithEmail}}</dd><dt>With phone</dt><dd>{{.Page.Email.WithPhone}}</dd><dt>With both</dt><dd>{{.Page.Email.WithBoth}}</dd><dt>Total</dt><dd>{{.Page.Email.Total}}</dd></dl></div>
+        </article>
+    </section>
+
+    <section class="grid grid-2">
+        <article class="card"><div class="card-header"><div><h2>Prospect tiers</h2><p>Worth-calling classification of linked businesses</p></div></div>
+            {{if .Page.ProspectTiers}}<div class="table-wrap"><table class="data-table"><thead><tr><th>Tier</th><th>Businesses</th></tr></thead><tbody>{{range .Page.ProspectTiers}}<tr><td>{{.Label}}</td><td>{{.Count}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="card-body"><p class="field-hint">No prospect tiers recorded.</p></div>{{end}}
+        </article>
+        <article class="card"><div class="card-header"><div><h2>Prospect statuses</h2><p>Stored GBP website-status signals</p></div></div>
+            {{if .Page.ProspectStatus}}<div class="table-wrap"><table class="data-table"><thead><tr><th>Status</th><th>Businesses</th></tr></thead><tbody>{{range .Page.ProspectStatus}}<tr><td>{{.Label}}</td><td>{{.Count}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="card-body"><p class="field-hint">No prospect statuses recorded.</p></div>{{end}}
+        </article>
+    </section>
+</div>
+{{end}}
