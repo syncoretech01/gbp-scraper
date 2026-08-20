@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,6 +42,25 @@ type liveRunState struct {
 type proxyRunState struct {
 	tasks  int
 	failed bool
+
+	// id is the durable proxy row behind this plan entry, when known; it
+	// keys proxy_task_stats attribution.
+	id string
+	// Health counters seeded from proxy_task_stats and updated in-memory as
+	// tasks finish. They only order the non-sticky candidate list; they
+	// never exclude a proxy.
+	consecutiveFailures int64
+	successes           int64
+	failures            int64
+}
+
+func (record proxyRunState) failureRate() float64 {
+	total := record.successes + record.failures
+	if total == 0 {
+		return 0
+	}
+
+	return float64(record.failures) / float64(total)
 }
 
 func newLiveRunState(deadline time.Time) *liveRunState {
@@ -93,6 +113,57 @@ func (state *liveRunState) setProxyPlan(plan *web.ProxyPlan, direct bool) {
 	}
 }
 
+// applyProxyHealth attributes durable per-proxy task history to the active
+// plan's entries, keyed by the decrypted proxy URL. Unknown URLs keep zero
+// counters, which sorts them like fresh proxies.
+func (state *liveRunState) applyProxyHealth(health map[string]web.ProxyTaskHealth) {
+	if len(health) == 0 {
+		return
+	}
+
+	state.proxyMu.Lock()
+	defer state.proxyMu.Unlock()
+
+	if state.proxyPlan == nil {
+		return
+	}
+
+	for index, proxy := range state.proxyPlan.Proxies {
+		if index >= len(state.perProxy) {
+			break
+		}
+
+		if entry, ok := health[proxy]; ok {
+			state.perProxy[index].id = entry.ProxyID
+			state.perProxy[index].consecutiveFailures = entry.ConsecutiveFailures
+			state.perProxy[index].successes = entry.Successes
+			state.perProxy[index].failures = entry.Failures
+		}
+	}
+}
+
+// recordProxyOutcome updates the in-memory health of one plan entry after a
+// task attempt, mirroring the durable proxy_task_stats rule: a success
+// resets the consecutive-failure streak.
+func (state *liveRunState) recordProxyOutcome(index int, success bool) {
+	state.proxyMu.Lock()
+	defer state.proxyMu.Unlock()
+
+	if index < 0 || index >= len(state.perProxy) {
+		return
+	}
+
+	if success {
+		state.perProxy[index].successes++
+		state.perProxy[index].consecutiveFailures = 0
+
+		return
+	}
+
+	state.perProxy[index].failures++
+	state.perProxy[index].consecutiveFailures++
+}
+
 func (state *liveRunState) currentPoolID() string {
 	state.proxyMu.Lock()
 	defer state.proxyMu.Unlock()
@@ -114,7 +185,14 @@ type taskProxyAssignment struct {
 	override bool
 	proxies  []string
 	// index is the attributed proxy for sticky strategies, -1 otherwise.
+	// Only this index may be marked failed, exactly as before.
 	index int
+	// statsIndex is the plan entry task statistics are recorded against:
+	// the sticky choice, or the head of the ordered non-sticky list. -1
+	// when no plan proxy is attributable.
+	statsIndex int
+	// statsProxyID is the durable proxy row behind statsIndex, when known.
+	statsProxyID string
 }
 
 var errNoUsableProxies = errors.New("every proxy in the pool is failed or at its task cap")
@@ -128,11 +206,11 @@ func (state *liveRunState) assignTaskProxies(task web.JobTask) (taskProxyAssignm
 	defer state.proxyMu.Unlock()
 
 	if state.direct {
-		return taskProxyAssignment{override: true, proxies: nil, index: -1}, nil
+		return taskProxyAssignment{override: true, proxies: nil, index: -1, statsIndex: -1}, nil
 	}
 
 	if state.proxyPlan == nil {
-		return taskProxyAssignment{override: false, index: -1}, nil
+		return taskProxyAssignment{override: false, index: -1, statsIndex: -1}, nil
 	}
 
 	plan := state.proxyPlan
@@ -159,23 +237,52 @@ func (state *liveRunState) assignTaskProxies(task web.JobTask) (taskProxyAssignm
 	sticky := plan.Strategy == "sticky_query" || plan.Strategy == "sticky_cell"
 
 	if !sticky {
-		// Non-sticky pools keep their strategy-ordered list so the browser
-		// layer rotates exactly as before; the rotation offset spreads the
-		// preferred first proxy across tasks. Per-proxy attribution is not
-		// possible here, so caps count the task against the first proxy.
-		ordered := make([]string, 0, len(usable))
+		// Non-sticky pools order their candidate list by task health
+		// (consecutive failures, then failure rate) so struggling exits sink
+		// to the back without ever being excluded. When health does not
+		// differentiate the candidates — the default for fresh pools — the
+		// strategy-ordered list and its rotation offset behave exactly as
+		// before. Per-proxy failure attribution is still not possible here,
+		// so caps and stats count the task against the list head.
+		candidates := append([]int(nil), usable...)
 
-		offset := state.rotation % len(usable)
-		state.rotation++
+		if state.healthDifferentiatesLocked(usable) {
+			sort.SliceStable(candidates, func(a, b int) bool {
+				left, right := state.perProxy[candidates[a]], state.perProxy[candidates[b]]
+				if left.consecutiveFailures != right.consecutiveFailures {
+					return left.consecutiveFailures < right.consecutiveFailures
+				}
 
-		for position := range usable {
-			ordered = append(ordered, plan.Proxies[usable[(position+offset)%len(usable)]])
+				return left.failureRate() < right.failureRate()
+			})
+		} else {
+			offset := state.rotation % len(candidates)
+			state.rotation++
+			rotated := make([]int, 0, len(candidates))
+
+			for position := range candidates {
+				rotated = append(rotated, candidates[(position+offset)%len(candidates)])
+			}
+
+			candidates = rotated
 		}
 
-		first := usable[offset]
+		ordered := make([]string, 0, len(candidates))
+
+		for _, index := range candidates {
+			ordered = append(ordered, plan.Proxies[index])
+		}
+
+		first := candidates[0]
 		state.perProxy[first].tasks++
 
-		return taskProxyAssignment{override: true, proxies: ordered, index: -1}, nil
+		return taskProxyAssignment{
+			override:     true,
+			proxies:      ordered,
+			index:        -1,
+			statsIndex:   first,
+			statsProxyID: state.perProxy[first].id,
+		}, nil
 	}
 
 	key := task.Query
@@ -194,10 +301,32 @@ func (state *liveRunState) assignTaskProxies(task web.JobTask) (taskProxyAssignm
 	state.perProxy[chosen].tasks++
 
 	return taskProxyAssignment{
-		override: true,
-		proxies:  []string{plan.Proxies[chosen]},
-		index:    chosen,
+		override:     true,
+		proxies:      []string{plan.Proxies[chosen]},
+		index:        chosen,
+		statsIndex:   chosen,
+		statsProxyID: state.perProxy[chosen].id,
 	}, nil
+}
+
+// healthDifferentiatesLocked reports whether recorded task health orders the
+// candidates at all. Callers hold proxyMu.
+func (state *liveRunState) healthDifferentiatesLocked(usable []int) bool {
+	if len(usable) < 2 {
+		return false
+	}
+
+	reference := state.perProxy[usable[0]]
+
+	for _, index := range usable[1:] {
+		record := state.perProxy[index]
+		if record.consecutiveFailures != reference.consecutiveFailures ||
+			record.failureRate() != reference.failureRate() {
+			return true
+		}
+	}
+
+	return false
 }
 
 // markProxyFailed records a proxy-classified failure against an attributed
@@ -301,6 +430,39 @@ func classifyTaskFailure(err error) string {
 	}
 }
 
+// maximumTaskFailureBackoff caps every failure-class backoff.
+const maximumTaskFailureBackoff = 300 * time.Second
+
+// taskFailureBackoff returns how long a retryable task should wait before it
+// may be claimed again, by failure class and attempt count. It never exceeds
+// maximumTaskFailureBackoff.
+func taskFailureBackoff(failureKind string, attempts int) time.Duration {
+	if attempts < 1 {
+		attempts = 1
+	}
+
+	var backoff time.Duration
+
+	switch failureKind {
+	case "browser-failure":
+		backoff = 20 * time.Second * time.Duration(attempts)
+	case "proxy-failure":
+		backoff = 30 * time.Second * time.Duration(attempts)
+	case "website-timeout":
+		backoff = 10 * time.Second * time.Duration(attempts)
+	case "parsing-failure":
+		backoff = 5 * time.Second
+	default:
+		backoff = 10 * time.Second * time.Duration(attempts)
+	}
+
+	if backoff > maximumTaskFailureBackoff {
+		backoff = maximumTaskFailureBackoff
+	}
+
+	return backoff
+}
+
 // pollLiveControls applies pending operator requests at the supervisor tick.
 func (w *webrunner) pollLiveControls(run *taskPoolRun, runCancel context.CancelFunc) {
 	job := run.job
@@ -385,6 +547,11 @@ func (w *webrunner) switchRunProxyPool(run *taskPoolRun, poolID string) {
 	}
 
 	run.live.setProxyPlan(&plan, false)
+
+	if health, healthErr := w.svc.ProxyTaskHealthByURL(context.Background(), plan.PoolID); healthErr == nil {
+		run.live.applyProxyHealth(health)
+	}
+
 	_ = w.svc.RecordJobWorkerEvent(
 		context.Background(), job.ID, "proxy-pool-changed", "information",
 		fmt.Sprintf("Operator switched new tasks to proxy pool %s (%d usable proxies)", plan.PoolID, len(plan.Proxies)),

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/gosom/google-maps-scraper/deduper"
 	"github.com/gosom/google-maps-scraper/exiter"
 	"github.com/gosom/google-maps-scraper/web"
 	"github.com/gosom/google-maps-scraper/web/jobruntime"
@@ -30,6 +31,10 @@ const (
 	// idleClaimBackoff spaces out claim attempts once the queue looks empty but
 	// other workers still hold leases that may yet fail and requeue work.
 	idleClaimBackoff = 250 * time.Millisecond
+	// backedOffClaimWait spaces out claim attempts while every remaining
+	// pending task is deferred by failure-class backoff. The pool must
+	// neither spin nor conclude the plan is drained in that window.
+	backedOffClaimWait = 2 * time.Second
 )
 
 // taskPoolPlan divides one job's resource budget between parallel tasks.
@@ -110,6 +115,24 @@ type taskPoolRun struct {
 	// live carries the between-task reconfiguration state: extendable
 	// deadline, switchable proxy plan, and retry-current signalling.
 	live *liveRunState
+
+	// coverage is the adaptive discovery engine; nil keeps exactly the
+	// historical behaviour.
+	coverage *coverageEngine
+	// dedup and extraReviews let a worker rebuild the seed of a
+	// coverage-expansion task from its durable payload.
+	dedup        deduper.Deduper
+	extraReviews bool
+}
+
+// taskPoolExtras bundles the optional collaborators of one pool run so the
+// pool entry point keeps a manageable signature.
+type taskPoolExtras struct {
+	proxyPlan    *web.ProxyPlan
+	proxyHealth  map[string]web.ProxyTaskHealth
+	coverage     *coverageEngine
+	dedup        deduper.Deduper
+	extraReviews bool
 }
 
 // requestStop latches the first stop reason. Later reasons are ignored so the
@@ -174,16 +197,24 @@ func (w *webrunner) runTaskPool(
 	desiredConcurrency int,
 	startedAt time.Time,
 	deadline time.Time,
-	proxyPlan *web.ProxyPlan,
+	extras taskPoolExtras,
 ) jobruntime.StopReason {
-	run := &taskPoolRun{job: job, outpath: outpath, live: newLiveRunState(deadline)}
+	run := &taskPoolRun{
+		job:          job,
+		outpath:      outpath,
+		live:         newLiveRunState(deadline),
+		coverage:     extras.coverage,
+		dedup:        extras.dedup,
+		extraReviews: extras.extraReviews,
+	}
 	run.desiredConcurrency.Store(int64(desiredConcurrency))
 	run.effectiveConcurrency.Store(int64(plan.PerTaskConcurrency * plan.Workers))
 	run.workers.Store(int64(plan.Workers))
 	run.failureBudget.Store(int64(desiredConcurrency))
 
-	if proxyPlan != nil {
-		run.live.setProxyPlan(proxyPlan, false)
+	if extras.proxyPlan != nil {
+		run.live.setProxyPlan(extras.proxyPlan, false)
+		run.live.applyProxyHealth(extras.proxyHealth)
 	}
 
 	supervisorDone := make(chan struct{})
@@ -285,7 +316,21 @@ func (w *webrunner) runTaskWorker(
 			// Other workers may still fail and requeue their tasks, so idle
 			// once before concluding the plan is drained.
 			if run.activeTasks.Load() == 0 {
-				return
+				// Pending tasks may all be deferred by failure-class
+				// backoff. The plan is not drained then: wait until the
+				// earliest of them becomes claimable again.
+				snapshot, snapshotErr := w.svc.GetJobExecution(context.WithoutCancel(runCtx), job.ID)
+				if snapshotErr != nil || snapshot.Tasks.Pending == 0 {
+					return
+				}
+
+				select {
+				case <-runCtx.Done():
+					return
+				case <-time.After(backedOffClaimWait):
+				}
+
+				continue
 			}
 
 			select {
@@ -299,14 +344,25 @@ func (w *webrunner) runTaskWorker(
 
 		seed, exists := seedsByKey[task.Key]
 		if !exists {
-			_ = w.svc.FailJobTask(
-				context.Background(), job.ID, task.Key,
-				fmt.Errorf("checkpoint task %q has no current seed", task.Key), false,
-				web.JobTaskCheckpoint{},
-			)
-			run.taskFailures.Add(1)
+			// Coverage-expansion tasks were appended after the plan was
+			// seeded (possibly in an earlier process); their seeds are
+			// rebuilt from the durable payload so they run identically.
+			expansionSeed, buildErr := buildExpansionSeed(job, task, run.dedup, exitMonitor, run.extraReviews)
+			if buildErr == nil && expansionSeed != nil {
+				seed = expansionSeed
+			} else {
+				if buildErr == nil {
+					buildErr = fmt.Errorf("checkpoint task %q has no current seed", task.Key)
+				}
 
-			continue
+				_ = w.svc.FailJobTask(
+					context.Background(), job.ID, task.Key, buildErr, false,
+					web.JobTaskCheckpoint{},
+				)
+				run.taskFailures.Add(1)
+
+				continue
+			}
 		}
 
 		if !w.executeLeasedTask(ctx, runCtx, runCancel, run, owner, task, seed, exitMonitor, plan) {
@@ -415,7 +471,9 @@ func (w *webrunner) executeLeasedTask(
 		}
 	}()
 
+	taskStartedAt := time.Now()
 	runPath, taskErr := w.runCheckpointTask(taskCtx, &taskJob, seed, exitMonitor)
+	taskDuration := time.Since(taskStartedAt)
 
 	run.live.unregisterTaskCancel(task.Key)
 	cancelTask()
@@ -467,20 +525,27 @@ func (w *webrunner) executeLeasedTask(
 			taskErr = errors.New("task produced no output file")
 		}
 
+		w.recordProxyTaskOutcome(run, assignment, false, taskDuration, taskErr)
 		w.failLeasedTask(run, task, taskErr, web.JobTaskCheckpoint{})
+		w.deferFailedTask(run.job.ID, task, classifyTaskFailure(taskErr))
 
 		return true
 	}
 
 	checkpoint, mergeErr := run.mergeTaskOutput(runPath, sample.DiskFreeBytes)
 	if mergeErr != nil {
-		w.failLeasedTask(run, task, fmt.Errorf("merge checkpoint task results: %w", mergeErr), checkpoint)
+		mergeErr = fmt.Errorf("merge checkpoint task results: %w", mergeErr)
+
+		w.recordProxyTaskOutcome(run, assignment, false, taskDuration, mergeErr)
+		w.failLeasedTask(run, task, mergeErr, checkpoint)
+		w.deferFailedTask(run.job.ID, task, classifyTaskFailure(mergeErr))
 
 		return true
 	}
 
 	if taskErr == nil {
 		run.windowSuccesses.Add(1)
+		w.recordProxyTaskOutcome(run, assignment, true, taskDuration, nil)
 
 		if completeErr := w.svc.CompleteJobTask(context.Background(), job.ID, task.Key, checkpoint); completeErr != nil {
 			_ = w.svc.RecordJobWorkerEvent(
@@ -491,12 +556,17 @@ func (w *webrunner) executeLeasedTask(
 					"error":    jobruntime.RedactString(completeErr.Error()),
 				},
 			)
+
+			return true
 		}
+
+		w.applyCoverage(run, task, checkpoint, exitMonitor)
 
 		return true
 	}
 
 	failureKind := classifyTaskFailure(taskErr)
+	w.recordProxyTaskOutcome(run, assignment, false, taskDuration, taskErr)
 	_ = w.svc.RecordJobWorkerEvent(
 		context.Background(), job.ID, failureKind, "warning",
 		fmt.Sprintf("Task attempt failed (%s); a retry gets a fresh browser context", failureKind),
@@ -519,6 +589,7 @@ func (w *webrunner) executeLeasedTask(
 	}
 
 	w.failLeasedTask(run, task, taskErr, checkpoint)
+	w.deferFailedTask(job.ID, task, failureKind)
 
 	if job.Data.RetryDelay > 0 {
 		select {
@@ -596,6 +667,51 @@ func (w *webrunner) failLeasedTask(
 	if !retryable {
 		run.taskFailures.Add(1)
 	}
+}
+
+// deferFailedTask applies failure-class backoff to a task that returned to
+// pending, so retries do not burn attempts in a tight loop.
+func (w *webrunner) deferFailedTask(jobID string, task web.JobTask, failureKind string) {
+	if task.Attempts >= task.MaxAttempts {
+		return
+	}
+
+	wait := taskFailureBackoff(failureKind, task.Attempts)
+	if wait <= 0 {
+		return
+	}
+
+	_ = w.svc.DeferJobTask(context.Background(), jobID, task.Key, time.Now().UTC().Add(wait))
+}
+
+// recordProxyTaskOutcome attributes one finished task attempt to the proxy it
+// ran through: the in-memory health used for assignment ordering and the
+// durable proxy_task_stats aggregate.
+func (w *webrunner) recordProxyTaskOutcome(
+	run *taskPoolRun,
+	assignment taskProxyAssignment,
+	success bool,
+	duration time.Duration,
+	taskErr error,
+) {
+	if assignment.statsIndex < 0 || assignment.statsProxyID == "" {
+		return
+	}
+
+	run.live.recordProxyOutcome(assignment.statsIndex, success)
+
+	message := ""
+	if taskErr != nil {
+		message = jobruntime.RedactString(taskErr.Error())
+	}
+
+	_ = w.svc.UpsertProxyTaskStat(context.Background(), web.ProxyTaskStatInput{
+		ProxyID:         assignment.statsProxyID,
+		PoolID:          run.live.currentPoolID(),
+		Success:         success,
+		DurationSeconds: duration.Seconds(),
+		LastError:       message,
+	})
 }
 
 // heartbeatLeasedTask keeps one lease alive and signals when it is lost.

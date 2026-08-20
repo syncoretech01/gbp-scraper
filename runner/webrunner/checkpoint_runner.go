@@ -205,6 +205,7 @@ func (w *webrunner) scrapeJobCheckpointed(
 	outpath string,
 	seedJobs []scrapemate.IJob,
 	metadata map[string]seedTaskMetadata,
+	dedup deduper.Deduper,
 	exitMonitor exiter.Exiter,
 ) error {
 	definitions, seedsByKey, err := buildCheckpointTaskDefinitions(job, seedJobs, metadata)
@@ -251,7 +252,10 @@ func (w *webrunner) scrapeJobCheckpointed(
 
 	// Sticky assignment and per-proxy caps need the pool's plan, not just its
 	// resolved URL list. Absence of a plan keeps the job's own proxies as-is.
-	var proxyPlan *web.ProxyPlan
+	extras := taskPoolExtras{
+		dedup:        dedup,
+		extraReviews: w.cfg.ExtraReviews || job.Data.ExtraReviews,
+	}
 
 	if job.Data.ProxyPoolID != "" {
 		resolve := w.svc.ResolveProxyPlan
@@ -260,7 +264,27 @@ func (w *webrunner) scrapeJobCheckpointed(
 		}
 
 		if plan, planErr := resolve(ctx, job.Data.ProxyPoolID); planErr == nil && len(plan.Proxies) > 0 {
-			proxyPlan = &plan
+			extras.proxyPlan = &plan
+
+			// Recorded task history orders the non-sticky candidate list;
+			// running without it simply treats every proxy as fresh.
+			if health, healthErr := w.svc.ProxyTaskHealthByURL(ctx, plan.PoolID); healthErr == nil {
+				extras.proxyHealth = health
+			}
+		}
+	}
+
+	// A configured coverage block turns on the adaptive discovery engine.
+	// Nil keeps exactly the historical behaviour.
+	if job.Data.Coverage != nil {
+		if seedState, seedErr := w.svc.JobCoverageSeedState(ctx, job.ID); seedErr == nil {
+			extras.coverage = newCoverageEngine(job.ID, *job.Data.Coverage, seedState)
+		} else {
+			_ = w.svc.RecordJobWorkerEvent(
+				context.Background(), job.ID, "coverage-disabled", "warning",
+				"The adaptive coverage engine could not read the plan state and stays off for this run",
+				map[string]any{"error": jobruntime.RedactString(seedErr.Error())},
+			)
 		}
 	}
 	desiredConcurrency := job.Data.Concurrency
@@ -297,7 +321,7 @@ func (w *webrunner) scrapeJobCheckpointed(
 
 	stopReason := w.runTaskPool(
 		ctx, runCtx, runCancel, job, outpath, seedsByKey, exitMonitor,
-		stopReasons, plan, desiredConcurrency, startedAt, deadline, proxyPlan,
+		stopReasons, plan, desiredConcurrency, startedAt, deadline, extras,
 	)
 
 	if stopReason == jobruntime.StopReasonNone {
