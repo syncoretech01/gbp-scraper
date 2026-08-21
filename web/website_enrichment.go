@@ -65,7 +65,23 @@ type JobEnrichmentOptions struct {
 	CaptureScreenshot     bool   `json:"capture_screenshot,omitempty"`
 	Preclassify           bool   `json:"preclassify,omitempty"`
 	AdaptiveTimeout       bool   `json:"adaptive_timeout,omitempty"`
+	// StaleAfterHours re-audits a business only when its last completed
+	// audit is older than this many hours. Zero keeps the historical
+	// 24-hour default, so an older saved job is unchanged.
+	StaleAfterHours int `json:"stale_after_hours,omitempty"`
+	// ForceReaudit ignores StaleAfterHours and re-audits every business the
+	// job observed.
+	ForceReaudit bool `json:"force_reaudit,omitempty"`
 }
+
+// DefaultEnrichmentStaleHours is the staleness window a job uses when none is
+// configured. It is the value every job used before the window became an
+// option, so leaving it unset changes nothing.
+const DefaultEnrichmentStaleHours = 24
+
+// MaximumEnrichmentStaleHours bounds the configurable staleness window at one
+// year so a stored job can never carry an absurd value.
+const MaximumEnrichmentStaleHours = 8760
 
 // EnrichmentOptionsForJob translates both the nested configuration and the
 // legacy Email flag. Existing saved jobs therefore keep their historical
@@ -94,10 +110,27 @@ func EnrichmentOptionsForJob(data JobData) (EnrichmentOptions, bool, error) {
 		CaptureScreenshot:     data.Enrichment.CaptureScreenshot,
 		Preclassify:           data.Enrichment.Preclassify,
 		AdaptiveTimeout:       data.Enrichment.AdaptiveTimeout,
-		StaleAfterHours:       24,
+		StaleAfterHours:       jobEnrichmentStaleHours(data),
+		Force:                 data.Enrichment.ForceReaudit,
 	}).normalized()
 
 	return options, true, err
+}
+
+// jobEnrichmentStaleHours resolves the staleness window one job's local
+// website audit uses. An unset window keeps the historical 24 hours.
+func jobEnrichmentStaleHours(data JobData) int {
+	if data.Enrichment == nil {
+		return DefaultEnrichmentStaleHours
+	}
+	if data.Enrichment.StaleAfterHours <= 0 {
+		return DefaultEnrichmentStaleHours
+	}
+	if data.Enrichment.StaleAfterHours > MaximumEnrichmentStaleHours {
+		return MaximumEnrichmentStaleHours
+	}
+
+	return data.Enrichment.StaleAfterHours
 }
 
 // Validate checks locally enforceable bounds without requiring enrichment to
@@ -115,8 +148,14 @@ func (options JobEnrichmentOptions) Validate() error {
 		Preclassify:           options.Preclassify,
 		AdaptiveTimeout:       options.AdaptiveTimeout,
 	}).normalized()
+	if err != nil {
+		return err
+	}
+	if options.StaleAfterHours < 0 || options.StaleAfterHours > MaximumEnrichmentStaleHours {
+		return fmt.Errorf("re-audit window must be between 0 and %d hours", MaximumEnrichmentStaleHours)
+	}
 
-	return err
+	return nil
 }
 
 // EnrichmentOptions controls one bounded website audit. Zero values receive

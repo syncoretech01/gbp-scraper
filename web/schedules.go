@@ -45,6 +45,13 @@ type ScheduleSpec struct {
 	CustomCron    string    `json:"custom_cron,omitempty"`
 	OverlapPolicy string    `json:"overlap_policy"`
 	MissedPolicy  string    `json:"missed_policy"`
+	// IncrementalMode is the JobData.IncrementalMode every run this schedule
+	// creates is stamped with, overriding whatever the template stored. An
+	// empty value keeps the template's own mode, which is exactly what every
+	// schedule did before this option existed. It travels inside the
+	// schedules.configuration JSON the spec already occupies, so no schema
+	// change is involved.
+	IncrementalMode string `json:"incremental_mode,omitempty"`
 }
 
 type ScheduleRecord struct {
@@ -231,11 +238,51 @@ func (s *Service) StartDueSchedules(ctx context.Context, now time.Time, limit in
 			automationErrs = append(automationErrs, retryErr)
 		}
 		jobs = append(jobs, retries...)
-		if _, pruneErr := automation.PruneScheduleRuns(ctx, now); pruneErr != nil {
-			automationErrs = append(automationErrs, pruneErr)
+		if err := s.applyScheduleRetention(ctx, automation, now); err != nil {
+			automationErrs = append(automationErrs, err)
 		}
 	}
 	return jobs, errors.Join(automationErrs...)
+}
+
+// applyScheduleRetention enforces each schedule's own retention window on the
+// artifacts one run leaves behind: the run-history row, the operational log,
+// and any completed export produced from the run's job.
+//
+// Exports are deleted through the ordinary export-deletion path so the file on
+// disk and the row go together. Collected data — the job, its normalized
+// results, and its per-job CSV — is never a retention candidate. Screenshots
+// are attached to businesses rather than runs, so they are governed by the
+// workspace storage cap and the System maintenance cleanup instead.
+func (s *Service) applyScheduleRetention(
+	ctx context.Context,
+	automation scheduleAutomationRepository,
+	now time.Time,
+) error {
+	var retentionErrs []error
+	if source, ok := automation.(scheduleExportRetentionRepository); ok {
+		exportIDs, err := source.ExpiredScheduleRunExports(ctx, now)
+		if err != nil {
+			retentionErrs = append(retentionErrs, err)
+		}
+		for _, exportID := range exportIDs {
+			if err := s.DeleteExport(ctx, exportID); err != nil && !errors.Is(err, ErrExportNotFound) {
+				retentionErrs = append(retentionErrs, fmt.Errorf("prune scheduled export %s: %w", exportID, err))
+			}
+		}
+	}
+	if _, err := automation.PruneScheduleRuns(ctx, now); err != nil {
+		retentionErrs = append(retentionErrs, err)
+	}
+
+	return errors.Join(retentionErrs...)
+}
+
+// scheduleExportRetentionRepository optionally reports the completed exports
+// belonging to expired schedule runs. A repository without it simply keeps
+// exports, which is the historical behaviour.
+type scheduleExportRetentionRepository interface {
+	ExpiredScheduleRunExports(context.Context, time.Time) ([]string, error)
 }
 
 // settleFinishedScheduleRuns records terminal outcomes on schedule_runs rows

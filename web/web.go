@@ -191,6 +191,8 @@ func New(svc *Service, addr string) (*Server, error) {
 		ans.jobLogsDownload(w, r)
 	})
 	ans.registerLifecycleRoutes(mux)
+	ans.registerScrapePlanRoutes(mux)
+	ans.registerTemplateMetricRoutes(mux)
 	ans.registerJobOrganisationRoutes(mux)
 	ans.registerJobLabelRoutes(mux)
 	ans.registerRetentionRoutes(mux)

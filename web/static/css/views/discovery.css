@@ -905,6 +905,80 @@ body[data-active-nav="new-scrape"] .key-value {
 body[data-active-nav="new-scrape"] .key-value dt { color: var(--text-muted); font-size: var(--text-xs); }
 body[data-active-nav="new-scrape"] .key-value dd { margin: 0; overflow-wrap: anywhere; }
 
+/* --- Step 3: data-field selection ---------------------------------------
+   The selection is progressive disclosure inside the step: the toggle reveals
+   three grouped fieldsets that compose .fieldset and .check-grid from app.css,
+   so only the grouping frame is defined here. */
+
+body[data-active-nav="new-scrape"] .field-selection { display: grid; gap: var(--space-4); }
+body[data-active-nav="new-scrape"] .field-selection[hidden] { display: none; }
+
+body[data-active-nav="new-scrape"] .field-group {
+    padding: var(--space-4);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+    background: var(--surface-muted);
+}
+
+body[data-active-nav="new-scrape"] .field-group > legend {
+    padding: 0 var(--space-2);
+    color: var(--text);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-bold);
+}
+
+body[data-active-nav="new-scrape"] .field-group .field-hint { margin: 0 0 var(--space-3); }
+body[data-active-nav="new-scrape"] .field-group code { font-size: var(--text-2xs); }
+
+/* --- Step 1: business category picker ------------------------------------
+   The chip grid is a bounded scroll region so a long sector never pushes the
+   generator's action row off screen. */
+
+body[data-active-nav="new-scrape"] .category-picker {
+    display: grid;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+    background: var(--surface-muted);
+}
+
+body[data-active-nav="new-scrape"] .category-picker[hidden] { display: none; }
+body[data-active-nav="new-scrape"] .category-picker h4 { margin: 0; }
+body[data-active-nav="new-scrape"] .category-picker .field-hint { margin: 0; }
+
+body[data-active-nav="new-scrape"] .category-options {
+    max-height: 12rem;
+    padding: var(--space-1);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+}
+
+body[data-active-nav="new-scrape"] .category-options .chip[aria-pressed="true"] {
+    border-color: var(--primary);
+    background: var(--state-info-bg);
+    color: var(--state-info-fg);
+}
+
+body[data-active-nav="new-scrape"] .category-groups {
+    display: grid;
+    gap: var(--space-3);
+    padding-top: var(--space-3);
+    border-top: 1px solid var(--border-subtle);
+}
+
+body[data-active-nav="new-scrape"] .category-groups[hidden] { display: none; }
+body[data-active-nav="new-scrape"] .category-groups h4 { margin: 0; }
+
+body[data-active-nav="new-scrape"] .category-picker .rail-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+}
+
 @media (max-width: 75rem) {
     body[data-active-nav="new-scrape"] .wizard-split { grid-template-columns: minmax(0, 1fr); }
 }

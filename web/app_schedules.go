@@ -35,6 +35,7 @@ type scheduleCardView struct {
 	RetryBackoffSeconds int
 	AutoExportFormat    string
 	RunsRetentionDays   int
+	IncrementalMode     string
 	Runs                []scheduleRunView
 }
 
@@ -93,7 +94,8 @@ func (s *Server) schedulesPage(w http.ResponseWriter, r *http.Request) {
 			LastRunAt: optionalTimeLabel(schedule.LastRunAt), OverlapPolicy: schedule.Spec.OverlapPolicy,
 			MissedPolicy: schedule.Spec.MissedPolicy, RetryCount: schedule.RetryCount,
 			RetryBackoffSeconds: schedule.RetryBackoffSeconds, AutoExportFormat: schedule.AutoExportFormat,
-			RunsRetentionDays: schedule.RunsRetentionDays, Runs: runsBySchedule[schedule.ID],
+			RunsRetentionDays: schedule.RunsRetentionDays, IncrementalMode: schedule.Spec.IncrementalMode,
+			Runs: runsBySchedule[schedule.ID],
 		})
 	}
 	activity, _ := s.appActivity(r)
@@ -204,9 +206,14 @@ func (s *Server) createSchedule(w http.ResponseWriter, r *http.Request) {
 			MaxScheduleRunsRetentionDays), http.StatusUnprocessableEntity)
 		return
 	}
+	incrementalMode := strings.TrimSpace(r.FormValue("incremental_mode"))
+	if !ValidIncrementalMode(incrementalMode) {
+		http.Error(w, "unsupported incremental mode", http.StatusUnprocessableEntity)
+		return
+	}
 	spec := ScheduleSpec{
 		Recurrence: recurrence, FirstRunAt: firstRun, CustomCron: strings.TrimSpace(r.FormValue("cron")),
-		OverlapPolicy: overlapPolicy, MissedPolicy: missedPolicy,
+		OverlapPolicy: overlapPolicy, MissedPolicy: missedPolicy, IncrementalMode: incrementalMode,
 	}
 	for _, value := range r.Form["weekdays"] {
 		day, parseErr := strconv.Atoi(value)

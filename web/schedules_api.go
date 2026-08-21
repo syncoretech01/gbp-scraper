@@ -39,6 +39,10 @@ type scheduleUpdateRequest struct {
 	RetryBackoffSeconds *int    `json:"retry_backoff_seconds,omitempty"`
 	AutoExportFormat    *string `json:"auto_export_format,omitempty"`
 	RunsRetentionDays   *int    `json:"runs_retention_days,omitempty"`
+	// IncrementalMode stamps every run this schedule creates with one
+	// JobData.IncrementalMode. An explicit empty string clears it, which
+	// returns the schedule to using the template's own mode.
+	IncrementalMode *string `json:"incremental_mode,omitempty"`
 }
 
 type scheduleAPIView struct {
@@ -56,6 +60,7 @@ type scheduleAPIView struct {
 	RetryBackoffSeconds int        `json:"retry_backoff_seconds"`
 	AutoExportFormat    string     `json:"auto_export_format"`
 	RunsRetentionDays   int        `json:"runs_retention_days"`
+	IncrementalMode     string     `json:"incremental_mode,omitempty"`
 	NextRunAt           *time.Time `json:"next_run_at,omitempty"`
 	LastRunAt           *time.Time `json:"last_run_at,omitempty"`
 	UpdatedAt           time.Time  `json:"updated_at"`
@@ -183,6 +188,12 @@ func scheduleUpdateFromForm(r *http.Request) (scheduleUpdateRequest, error) {
 	setString("overlap_policy", &update.OverlapPolicy)
 	setString("missed_policy", &update.MissedPolicy)
 	setString("auto_export_format", &update.AutoExportFormat)
+	// An empty incremental_mode is meaningful — it clears the override — so it
+	// is read directly rather than through setString, which skips blanks.
+	if values, ok := r.Form["incremental_mode"]; ok && len(values) > 0 {
+		value := strings.TrimSpace(values[0])
+		update.IncrementalMode = &value
+	}
 	if values, ok := r.Form["enabled"]; ok && len(values) > 0 {
 		enabled, err := parseScheduleFormBool(values[0])
 		if err != nil {
@@ -288,6 +299,13 @@ func applyScheduleUpdate(schedule *ScheduleRecord, update scheduleUpdateRequest,
 		}
 		schedule.RunsRetentionDays = *update.RunsRetentionDays
 	}
+	if update.IncrementalMode != nil {
+		mode := strings.TrimSpace(*update.IncrementalMode)
+		if !ValidIncrementalMode(mode) {
+			return fmt.Errorf("unsupported incremental mode %q", *update.IncrementalMode)
+		}
+		schedule.Spec.IncrementalMode = mode
+	}
 	if update.Enabled != nil {
 		schedule.Enabled = *update.Enabled
 	}
@@ -320,7 +338,8 @@ func scheduleAPIViewFrom(schedule ScheduleRecord) scheduleAPIView {
 		OverlapPolicy: schedule.Spec.OverlapPolicy, MissedPolicy: schedule.Spec.MissedPolicy,
 		RetryCount: schedule.RetryCount, RetryBackoffSeconds: schedule.RetryBackoffSeconds,
 		AutoExportFormat: schedule.AutoExportFormat, RunsRetentionDays: schedule.RunsRetentionDays,
-		NextRunAt: schedule.NextRunAt, LastRunAt: schedule.LastRunAt, UpdatedAt: schedule.UpdatedAt,
+		IncrementalMode: schedule.Spec.IncrementalMode,
+		NextRunAt:       schedule.NextRunAt, LastRunAt: schedule.LastRunAt, UpdatedAt: schedule.UpdatedAt,
 	}
 }
 
