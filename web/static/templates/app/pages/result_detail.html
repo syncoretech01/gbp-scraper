@@ -1,5 +1,10 @@
 {{define "app/page/result-detail"}}{{template "app/layout" .}}{{end}}
 
-{{define "app/page-actions"}}<div class="page-actions"><a class="button" href="/app/results">Back to results</a>{{if .Page.Business.MapsURL}}<a class="button button-primary" href="{{.Page.Business.MapsURL}}" target="_blank" rel="noopener noreferrer">Open Maps</a>{{end}}</div>{{end}}
+{{define "app/page-actions"}}<div class="page-actions"><a class="button button-sm" href="/app/results">Back to results</a>{{if .Page.Business.Website}}<a class="button button-sm" href="{{.Page.Business.Website}}" target="_blank" rel="noopener noreferrer">Website<span class="sr-only"> (opens in a new tab)</span></a>{{end}}{{if .Page.Business.MapsURL}}<a class="button button-sm button-primary" href="{{.Page.Business.MapsURL}}" target="_blank" rel="noopener noreferrer">Open Maps</a>{{end}}</div>{{end}}
 
-{{define "app/content"}}<section class="card card-body">{{template "app/result-drawer" .Page}}</section>{{end}}
+{{/*
+The full record page reuses the drawer surface verbatim so the two never drift.
+It renders inside a page-width container rather than a card: the partial brings
+its own cards.
+*/}}
+{{define "app/content"}}<div class="result-detail-page">{{template "app/result-drawer" .Page}}</div>{{end}}
