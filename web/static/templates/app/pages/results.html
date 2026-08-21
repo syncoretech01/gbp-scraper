@@ -18,7 +18,7 @@ the nested expression, the save-as-view form, the column machinery) now lives
 behind a drawer or a dialog so business rows start near the top of the canvas.
 */}}
 {{define "app/content"}}
-<div class="results-workspace" data-results-explorer data-endpoint="/api/v1/results" data-export-url="{{.Page.ExportURL}}" data-map-url="{{.Page.MapURL}}">
+<div class="results-workspace" data-results-explorer data-endpoint="/api/v1/results" data-export-url="{{.Page.ExportURL}}" data-map-url="{{.Page.MapURL}}" data-view-columns="{{.Page.LayoutColumns}}" data-view-group="{{.Page.LayoutGroup}}">
     {{if .Page.Notice}}<div class="notice notice-success" role="status"><div><strong>{{.Page.Notice}}</strong></div></div>{{end}}
 
     <section class="results-summary" aria-label="Result summary">
@@ -251,7 +251,7 @@ behind a drawer or a dialog so business rows start near the top of the canvas.
                         <input type="hidden" name="filter_logic" value="{{.Page.FilterLogic}}">
                         <input type="hidden" name="filter_json" value="{{.Page.FilterJSON}}">
                         {{range .Page.Filters}}<input type="hidden" name="filter_field" value="{{.Field}}"><input type="hidden" name="filter_operator" value="{{.Operator}}"><input type="hidden" name="filter_value" value="{{.Value}}">{{end}}
-                        <div class="field"><label class="sr-only" for="saved-view-name">View name</label><input class="input" id="saved-view-name" name="name" maxlength="120" required placeholder="San Francisco dentists with email"></div>
+                        <input type="hidden" name="group" value="none" data-save-view-group><div data-save-view-columns></div><div class="field"><label class="sr-only" for="saved-view-name">View name</label><input class="input" id="saved-view-name" name="name" maxlength="120" required placeholder="San Francisco dentists with email"></div><p class="field-hint">The visible columns, their order, and the current grouping are saved with this view.</p>
                         <button class="button button-primary" type="submit">Save view</button>
                     </form>
                 </div>

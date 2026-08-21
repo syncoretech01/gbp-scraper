@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -33,12 +35,74 @@ type ScrapeTemplate struct {
 	UpdatedAt     time.Time
 }
 
+// SavedResultView pins a Results workspace: the search itself plus the table
+// layout it was saved with, so reopening a view restores the same filters,
+// sort, visible columns, and grouping.
 type SavedResultView struct {
-	ID        string
-	Name      string
-	Search    ResultSearch
+	ID     string
+	Name   string
+	Search ResultSearch
+	// Columns lists the visible column keys, in display order. An empty
+	// list means the view carries no layout and the browser keeps its own.
+	Columns []string
+	// Group is the table grouping key ("none", "category", "city",
+	// "status", or "reviewed").
+	Group     string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// NormalizeSavedViewLayoutQuery reads a bounded table layout from a Results
+// URL. It returns the comma-joined visible column keys and the grouping key,
+// both empty when the URL carries no layout.
+func NormalizeSavedViewLayoutQuery(values url.Values) (string, string) {
+	raw := strings.TrimSpace(values.Get("columns"))
+	columns, group := NormalizeSavedViewLayout(strings.Split(raw, ","), values.Get("group"))
+	if group == "none" {
+		group = ""
+	}
+
+	return strings.Join(columns, ","), group
+}
+
+// MaximumSavedViewColumns bounds the stored column list so one saved view
+// can never grow without limit.
+const MaximumSavedViewColumns = 64
+
+// SavedViewGroupings lists the table groupings a saved view may store.
+func SavedViewGroupings() []string {
+	return []string{"none", "category", "city", "status", "reviewed"}
+}
+
+// NormalizeSavedViewLayout bounds an operator-supplied table layout: column
+// keys are trimmed, deduplicated, and limited in count and length, and an
+// unknown grouping falls back to "none".
+func NormalizeSavedViewLayout(columns []string, group string) ([]string, string) {
+	const maximumColumnKeyLength = 32
+
+	cleaned := make([]string, 0, len(columns))
+	seen := make(map[string]struct{}, len(columns))
+	for _, column := range columns {
+		column = strings.ToLower(strings.TrimSpace(column))
+		if column == "" || len(column) > maximumColumnKeyLength {
+			continue
+		}
+		if _, ok := seen[column]; ok {
+			continue
+		}
+		seen[column] = struct{}{}
+		cleaned = append(cleaned, column)
+		if len(cleaned) == MaximumSavedViewColumns {
+			break
+		}
+	}
+
+	group = strings.ToLower(strings.TrimSpace(group))
+	if !slices.Contains(SavedViewGroupings(), group) {
+		group = "none"
+	}
+
+	return cleaned, group
 }
 
 type reusableRepository interface {

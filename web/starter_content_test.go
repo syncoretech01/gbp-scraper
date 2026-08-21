@@ -62,8 +62,11 @@ func TestSeedStarterContentPopulatesFreshWorkspace(t *testing.T) {
 		t.Fatalf("ListSavedResultViews() error = %v", err)
 	}
 
-	if len(views) != 6 {
-		t.Fatalf("seeded views = %d, want 6", len(views))
+	// The example reusable views are declared once in starter_content.go, so
+	// the expected count is read from there rather than pinned to a literal.
+	wantViews := len(starterResultViews(time.Now().UTC()))
+	if len(views) != wantViews {
+		t.Fatalf("seeded views = %d, want %d", len(views), wantViews)
 	}
 
 	if seeded != len(templates)+len(views) {
@@ -153,8 +156,9 @@ func TestSeedStarterContentKeepsUserTemplates(t *testing.T) {
 		t.Fatalf("ListSavedResultViews() error = %v", err)
 	}
 
-	if len(views) != 6 || seeded != 6 {
-		t.Fatalf("seeded = %d with %d views, want 6 views and nothing else", seeded, len(views))
+	wantViews := len(starterResultViews(time.Now().UTC()))
+	if len(views) != wantViews || seeded != wantViews {
+		t.Fatalf("seeded = %d with %d views, want %d views and nothing else", seeded, len(views), wantViews)
 	}
 
 	if repository.settings[starterContentSettingKey] != starterContentVersion {
@@ -179,8 +183,9 @@ func TestSeedStarterContentSkipsViewsTheValidatorRejects(t *testing.T) {
 		t.Fatalf("ListSavedResultViews() error = %v", err)
 	}
 
-	if len(views) != 5 {
-		t.Fatalf("views after one rejection = %d, want 5", len(views))
+	wantViews := len(starterResultViews(time.Now().UTC())) - 1
+	if len(views) != wantViews {
+		t.Fatalf("views after one rejection = %d, want %d", len(views), wantViews)
 	}
 
 	for _, view := range views {
@@ -189,8 +194,8 @@ func TestSeedStarterContentSkipsViewsTheValidatorRejects(t *testing.T) {
 		}
 	}
 
-	if seeded != 10 {
-		t.Fatalf("SeedStarterContent() = %d, want 10 (5 templates + 5 accepted views)", seeded)
+	if wantSeeded := len(starterScrapeTemplates(time.Now().UTC())) + wantViews; seeded != wantSeeded {
+		t.Fatalf("SeedStarterContent() = %d, want %d (templates plus accepted views)", seeded, wantSeeded)
 	}
 
 	if repository.settings[starterContentSettingKey] != starterContentVersion {
@@ -433,10 +438,24 @@ func (repository *starterSeedRepository) validateSeedFilter(filter ResultFilter)
 		"quality_score": true, "confidence": true, "website_response_ms": true,
 		"prospect_score": true,
 	}
+	// Membership fields test a child table rather than a column, so they
+	// accept the presence operators as well as an exact platform or value.
+	membershipFields := map[string]bool{
+		"social": true, "technology": true, "tags": true, "category_member": true,
+		"email_status": true, "email_kind": true,
+	}
+	membershipOperators := map[string]bool{
+		"eq": true, "neq": true, "contains": true, "not_contains": true,
+		"empty": true, "not_empty": true,
+	}
 
 	switch {
 	case textFields[filter.Field]:
 		if !textOperators[filter.Operator] {
+			return fmt.Errorf("%w: %s/%s", ErrInvalidResultQuery, filter.Field, filter.Operator)
+		}
+	case membershipFields[filter.Field]:
+		if !membershipOperators[filter.Operator] {
 			return fmt.Errorf("%w: %s/%s", ErrInvalidResultQuery, filter.Field, filter.Operator)
 		}
 	case numericFields[filter.Field]:

@@ -68,7 +68,24 @@
         group: "none",
         mode: "table"
     };
-    let layout = normalizeLayout(readStoredJSON(currentLayoutKey) || defaultLayout);
+    // A saved view may carry its own visible columns and grouping. When the
+    // URL supplies them they win over whatever this browser last stored, so
+    // opening a shared view shows the table the view was saved with.
+    function savedViewLayout() {
+        const columns = String(explorer.dataset.viewColumns || "").split(",").filter(Boolean);
+        const group = String(explorer.dataset.viewGroup || "").trim();
+        if (!columns.length && !group) return null;
+        const base = readStoredJSON(currentLayoutKey) || defaultLayout;
+        const seeded = Object.assign({}, base);
+        if (columns.length) {
+            seeded.order = columns.concat(knownColumnKeys.filter((key) => !columns.includes(key)));
+            seeded.visible = columns.slice();
+        }
+        if (group) seeded.group = group;
+        return seeded;
+    }
+
+    let layout = normalizeLayout(savedViewLayout() || readStoredJSON(currentLayoutKey) || defaultLayout);
     let activeLayoutName = "";
 
     resultRows().forEach((row, index) => { row.dataset.originalIndex = String(index); });
@@ -152,6 +169,25 @@
             group: value.group,
             mode: value.mode
         };
+    }
+
+    // syncSavedViewLayout keeps the save-as-view form carrying the layout the
+    // operator can actually see, so a saved view stores filters, sorting,
+    // visible columns, and grouping together.
+    function syncSavedViewLayout() {
+        const holder = explorer.querySelector("[data-save-view-columns]");
+        const groupInput = explorer.querySelector("[data-save-view-group]");
+        if (groupInput) groupInput.value = layout.group || "none";
+        if (!holder) return;
+        const visible = layout.order.filter((key) => layout.visible.includes(key));
+        holder.replaceChildren();
+        visible.forEach((key) => {
+            const field = document.createElement("input");
+            field.type = "hidden";
+            field.name = "columns";
+            field.value = key;
+            holder.appendChild(field);
+        });
     }
 
     function persistCurrentLayout() {
@@ -495,6 +531,7 @@
         renderColumnControls();
         window.requestAnimationFrame(applyFrozenColumns);
         if (persist) persistCurrentLayout();
+        syncSavedViewLayout();
         updateLayoutState();
         ensureFocusableCell();
     }

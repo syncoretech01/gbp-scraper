@@ -107,6 +107,7 @@ func decodeDuplicateDecision(w http.ResponseWriter, r *http.Request) (DuplicateD
 	return DuplicateDecision{
 		CandidateID:    candidateID,
 		KeepBusinessID: strings.TrimSpace(r.FormValue("keep_business_id")),
+		FieldStrategy:  strings.TrimSpace(r.FormValue("field_strategy")),
 		Note:           strings.TrimSpace(r.FormValue("note")),
 	}, nil
 }

@@ -47,6 +47,10 @@ type resultsPageData struct {
 	// ExportPresets hand the current view to the export builder already
 	// narrowed to a practical outreach slice.
 	ExportPresets []resultExportPreset
+	// LayoutColumns and LayoutGroup carry a saved view's stored table layout
+	// into the page so reopening a view restores its columns and grouping.
+	LayoutColumns string
+	LayoutGroup   string
 }
 
 // resultQuickFilter is one prominent lead workflow. URL always points back at
@@ -243,6 +247,8 @@ type appBusinessSource struct {
 	ConfidenceLabel     string
 	RawJSONLabel        string
 	NormalizedJSONLabel string
+	SourceTypeLabel     string
+	MethodLabel         string
 }
 
 type appBusinessVersion struct {
@@ -257,6 +263,10 @@ type appFieldProvenance struct {
 	ExtractedLabel  string
 	SupersededLabel string
 	ConfidenceLabel string
+	// SourceTypeLabel names the stored source type in the specification's
+	// vocabulary, and MethodLabel does the same for the extraction method.
+	SourceTypeLabel string
+	MethodLabel     string
 }
 
 type appWebsiteView struct {
@@ -324,7 +334,7 @@ func (s *Server) resultsPage(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		http.Redirect(w, r, savedViewURL(view.Search), http.StatusSeeOther)
+		http.Redirect(w, r, savedViewLayoutURL(view), http.StatusSeeOther)
 		return
 	}
 	search, err := parseResultSearch(r)
@@ -408,6 +418,8 @@ func (s *Server) buildResultsPage(r *http.Request, search ResultSearch) (results
 			CanEditFields:    s.manualEditAvailable(),
 		},
 	}
+	page.LayoutColumns, page.LayoutGroup = NormalizeSavedViewLayoutQuery(r.URL.Query())
+
 	flatFilters := search.Filters
 	requestedFilterLogic := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("filter_logic")))
 	requestedFilterJSON := strings.TrimSpace(r.URL.Query().Get("filter_json"))
@@ -856,6 +868,8 @@ func (s *Server) loadAppBusinessDetail(r *http.Request) (appBusinessDetail, int,
 			ConfidenceLabel:     fmt.Sprintf("%.0f%%", source.Confidence*100),
 			RawJSONLabel:        prettyJSON(source.RawJSON),
 			NormalizedJSONLabel: prettyJSON(source.NormalizedJSON),
+			SourceTypeLabel:     ProvenanceSourceTypeLabel(source.SourceType),
+			MethodLabel:         ProvenanceMethodLabel(source.ExtractionMethod),
 		})
 	}
 	for _, item := range detail.Provenance {
@@ -868,6 +882,8 @@ func (s *Server) loadAppBusinessDetail(r *http.Request) (appBusinessDetail, int,
 			ExtractedLabel:      appResultTime(item.ExtractedAt),
 			SupersededLabel:     superseded,
 			ConfidenceLabel:     fmt.Sprintf("%.0f%%", item.Confidence*100),
+			SourceTypeLabel:     ProvenanceSourceTypeLabel(item.SourceType),
+			MethodLabel:         ProvenanceMethodLabel(item.ExtractionMethod),
 		})
 	}
 	for _, item := range detail.Websites {
