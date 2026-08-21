@@ -446,63 +446,93 @@ The build provides the following working paths:
   shutdown is left in its running state so startup recovery requeues it, rather
   than being recorded as a permanent website failure.
 
-## Deferred optional features
+## Deliberate deviations: the capability ships by another route
 
-These are implementable locally but deliberately deferred: each needs either a
-new dependency, an external account, or a product decision that outweighs its
-value for a local-first tool. None is a technical limitation.
+Each line below appears unticked in the checklist because the specification
+named a particular *mechanism*. The capability itself ships; the mechanism
+differs, deliberately, and the equivalent is named here.
 
-- **Parquet export** — needs a columnar-format dependency; every dataset is
-  already exportable as CSV/JSON/SQLite for downstream conversion.
-- **Google Sheets sync** — needs the user's own Google OAuth credentials and
-  consent flow; exports plus the watch folder cover the workflow offline.
-- **Custom plugin hooks** for enrichment/validation/scoring/export — needs a
-  stable plugin ABI decision; the post-run command hook covers scripted
-  extension today.
-- **PostgreSQL as the application workspace** — a full second repository
-  implementation; SQLite/WAL covers local scale, and the CLI's PostgreSQL run
-  modes remain available.
-- **Curated business-category taxonomy** — needs a maintained dataset; the
-  free-text category x location generator covers the workflow.
-- **Client-side virtual scrolling** — indexed server pagination is the chosen
-  responsiveness design.
-- **Encrypted backups** — needs a passphrase UX decision (the proxy master key
-  must never double as a backup key).
-- **Least-recently-used and per-request proxy rotation** — per-request
-  rotation lives inside the browser layer; per-task sticky assignment covers
-  attribution.
-- **Adaptive website timeout** for the enrichment crawler.
-- **Error-page screenshots** (homepage screenshots exist).
-- **Collection-skipping incremental mode** — skipping detail fetches for
-  already-known Place IDs would save time on rescans; detection-at-import
-  covers correctness today.
-- **Spreadsheet keyboard model and a formal WCAG conformance audit.**
-- **GBP prospecting externals** — deep website auditing (site-whisper),
-  mailbox-level email verification (syncore-email-verifier) and the
-  CRM/Lead-Engine pipeline stay in their own repositories per the GBP build
-  specification's DO-NOT-BUILD table. Website-status classification itself is
-  now fully local (the single-page pre-classifier plus the local enrichment
-  crawler), so none of the eight statuses depends on an external service.
-  The DiscoveredCompany endpoint and discovered_companies export are dormant
-  behind the off-by-default prospect.future_integrations setting; the stored
-  boundary URLs are stored-only configuration (see docs/gbp-prospecting.md).
-  domain_age_days from the spec's optional rawPayload needs WHOIS data and is
-  deferred with the externals.
+- **Post-run shell command / Python script, and in-process plugin hooks.**
+  Ruled out on security grounds, not effort: executing operator-supplied
+  processes from a locally served web UI creates a code-execution surface that
+  a single request-forgery or template mistake turns into remote code
+  execution on the host. The automation need is met by the signed outbound
+  webhook (HMAC shared secret, retries with backoff, delivery history) plus the
+  local REST API, which is exactly how a self-hosted n8n or Activepieces
+  instance drives this application in both directions.
+- **HTMX, Alpine.js, Tailwind, Tabulator, Apache ECharts.** The UI is
+  server-rendered Go templates with vanilla JavaScript and a documented token +
+  component design system in `web/static/css/app.css`. It delivers what those
+  libraries were recommended for - progressive enhancement, modal/form state,
+  a consistent visual system, a dense sortable/filterable/groupable data table
+  with column management, and charts drawn as inline SVG/CSS - with no runtime
+  CDN (the strict CSP forbids one), no build tooling, and no npm.
+- **robfig/cron, Excelize.** The local scheduler (`web/schedules.go`) and the
+  native XLSX writer (`web/export_xlsx.go`) provide the same capability without
+  the dependency.
+- **Go slog / Zerolog.** Structured, redacted job events are persisted to
+  SQLite and served to the Job Monitor, which is the observability the
+  recommendation stood for; process logging stays on the standard library.
+- **Client-side virtual scrolling.** Indexed server-side pagination with
+  configurable page size is the chosen responsiveness design; it keeps large
+  workspaces responsive without holding the result set in the browser.
+- **PostgreSQL as the application workspace.** SQLite with WAL is the default
+  and covers local scale; the CLI's PostgreSQL run modes remain available for
+  the scraper itself. Porting every repository method is a second persistence
+  implementation, not a missing feature.
 
-## Genuinely infeasible locally or without paid services
+## Genuinely infeasible locally, or external-only
 
-- **Block/rate-limit measurement** and **per-request browser telemetry**: the
-  upstream scraping engine emits no such signals, and adding them would mean
-  forking the engine, which the compatibility constraint (preserve existing
-  scraper behaviour) rules out. Everything downstream that would consume a
-  block rate is labelled honestly instead of estimated.
-- **Per-listing checkpoint cursors inside one task** for the same reason; the
-  merge-deduplicated task restart makes the gap harmless in practice.
-- **Exit-IP geolocation** for proxies — requires an external geolocation
-  service or licensed database.
+- **Google Sheets sync.** Requires Google OAuth credentials and an external
+  service. Exports (CSV, JSON, JSONL, XLSX, Parquet, SQLite), the watch folder,
+  the webhook, and the local database destinations cover the same workflow
+  offline.
+- **Site-whisper deep website auditing, mailbox-level email verification, and
+  the CRM/Lead-Engine pipeline.** These stay in their own repositories per the
+  GBP specification's DO-NOT-BUILD table. Website-status classification itself
+  is fully local, so none of the eight statuses depends on an external service.
+  The DiscoveredCompany endpoint and its export stay dormant behind the
+  off-by-default `prospect.future_integrations` setting.
+- **`domain_age_days`** needs WHOIS data from an external service.
+- **Exit-IP geolocation** for proxies needs an external geolocation service or
+  a licensed database. Note the narrower, honest boundary that remains inside
+  the exit-IP feature: an HTTP CONNECT tunnel carries no outbound-address field
+  in the protocol, so for HTTP/HTTPS proxies the stored address is the endpoint
+  this host dialled rather than a confirmed exit; SOCKS5 can report the bound
+  address, and the source of the value is stored beside it.
+- **Per-listing checkpoint cursors inside a single task.** The engine commits a
+  task's results as one unit; the merge-deduplicated task restart makes the gap
+  harmless in practice.
+- **Browser-level resource controls beyond image blocking** - font and video
+  blocking, and a hard per-browser memory cap. Image blocking and the low-disk
+  pause both ship; the remaining two would require forking the upstream
+  scraping engine's browser setup, which the compatibility constraint rules
+  out.
 - **Large, stable residential/mobile proxy networks, CAPTCHA solving,
   high-confidence mailbox verification, and commercial company/person
-  databases** — external paid services by nature.
+  databases.** External paid services by nature.
+
+## Corrections applied on 2026-08-22
+
+The previous revision of this document asserted several boundaries that later
+releases removed. They are corrected here rather than left to mislead:
+
+- **Parquet export** now ships (`web/export_parquet.go`, typed columns).
+- **Adaptive website timeout** ships, opt-in, and only ever shortens the
+  per-request budget.
+- **Error-page screenshots** ship alongside homepage screenshots.
+- **Least-recently-used proxy rotation** ships (`proxies.last_used_at`).
+- **Block-rate measurement** ships: it is computed from the refusal events the
+  worker genuinely records, against that day's finished tasks, and feeds both
+  the dashboard trend and the adaptive concurrency decision.
+- **A curated business-category vocabulary** ships with the wizard's category
+  picker and reusable category groups.
+- **Encrypted backups** ship through the maintenance repository.
+- **Collection-skipping incremental modes** ship (`new_only`, `new_changed`,
+  `volatile_fields`, and the stale-contacts re-enrichment mode).
+- The claim that "the post-run command hook covers scripted extension today"
+  was simply wrong: no such hook existed, and it is now a deliberate security
+  decision documented above.
 
 ## Field issue: 37 spreadsheet lines and a pending job
 

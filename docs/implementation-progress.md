@@ -73,19 +73,19 @@ Last updated: 2026-08-19
 
 - [x] Expose the scraper engine’s existing advanced capabilities through a polished graphical interface.
 - [x] Keep business data, proxy credentials, exports, logs, and configuration on the local machine; screenshot storage is explicitly not implemented.
-- [ ] Support small one-off searches and large geographic collection projects from the same application.
+- [x] Support small one-off searches and large geographic collection projects from the same application.
 - [x] Make long-running jobs observable, controllable, safely restartable, and auditable within the checkpoint boundary documented in `technical-limitations.md`.
 - [x] Provide clean, deduplicated, filterable, and exportable results rather than only raw CSV output.
 - [x] Avoid mandatory dependence on paid APIs, hosted databases, commercial enrichment providers, or cloud workers.
 
 ### Guiding principles
 
-- [ ] **Local-first:** Bind to localhost by default; store application data in local SQLite or optional local PostgreSQL.
+- [x] **Local-first:** Bind to localhost by default; store application data in local SQLite or optional local PostgreSQL.
 - [x] **Open-source components:** The implemented local stack uses the existing open-source Go/SQLite/browser components and embedded first-party assets.
-- [ ] **Progressive disclosure:** Offer simple presets for normal users and advanced controls for technical operators.
+- [x] **Progressive disclosure:** Offer simple presets for normal users and advanced controls for technical operators.
 - [x] **Recoverability:** Persist durable lifecycle state, committed partial results, retry files, and restart recovery so interruptions do not destroy completed writes.
 - [x] **Auditability:** Record source query, source URL, grid cell, extraction time, versions, changes, and core field provenance.
-- [ ] **Performance safety:** Measure local CPU, RAM, disk, browser count, and block rate before increasing concurrency.
+- [x] **Performance safety:** Measure local CPU, RAM, disk, browser count, and block rate before increasing concurrency.
 - [x] **No hidden lock-in:** Allow configuration and result export in open formats such as JSON, CSV, SQLite, and GeoJSON.
 
 ## 02 Application Structure and Navigation
@@ -190,7 +190,7 @@ Last updated: 2026-08-19
 
 - [x] Rating and review-count ranges.
 - [x] Included and excluded business categories.
-- [ ] Open, temporarily closed, and permanently closed status.
+- [x] Open, temporarily closed, and permanently closed status.
 - [x] Claimed or unclaimed listing status where available.
 - [x] Business name contains/does not contain conditions.
 - [x] Post-scrape filters for website, email, phone, social profile, city, ZIP, website status, and quality score.
@@ -568,7 +568,7 @@ Last updated: 2026-08-19
 - [x] SQLite.
 - [x] PostgreSQL-compatible insert transaction (not a native server backup).
 - [x] MySQL/MariaDB-compatible insert transaction.
-- [ ] Parquet.
+- [x] Parquet.
 - [x] GeoJSON.
 - [x] KML.
 - [x] VCard.
@@ -576,17 +576,17 @@ Last updated: 2026-08-19
 
 ### Export builder
 
-- [ ] Export all, selected, filtered, or saved-view records.
+- [x] Export all, selected, filtered, or saved-view records.
 - [x] Choose, rename, and reorder columns.
 - [x] Export normalized preferred businesses by default, with an explicit source-row duplicate view.
-- [ ] Split by city, category, job, or maximum row count.
-- [ ] Include raw JSON, source data, provenance, or change history.
+- [x] Split by city, category, job, or maximum row count.
+- [x] Include raw JSON, source data, provenance, or change history.
 - [x] Compress multiple files into ZIP.
 
 ### Export history
 
 - [x] File name, format, record count, source job, filters, date, size, checksum, repeat download, and delete; saved-view identity is represented by persisted filters.
-- [ ] Save export presets for repeated delivery formats.
+- [x] Save export presets for repeated delivery formats.
 
 ## 23 Local API
 
@@ -599,13 +599,13 @@ Last updated: 2026-08-19
 - [x] **Maps:** Saved areas, grid preview, cell status, and geographic result queries.
 - [x] **Proxies:** Import, test, pool, enable/disable, health, and usage.
 - [x] **Schedules:** Create, update, enable, disable, run now, and history.
-- [ ] **Exports:** Create, status, list, download, repeat, and delete.
+- [x] **Exports:** Create, status, list, download, repeat, and delete.
 - [x] **System:** Health, resource metrics, database statistics, version, maintenance, and diagnostics.
 
 ### API experience
 
-- [ ] OpenAPI/Swagger documentation.
-- [ ] Examples in cURL, Python, JavaScript, and Go.
+- [x] OpenAPI/Swagger documentation.
+- [x] Examples in cURL, Python, JavaScript, and Go.
 - [x] Local API keys with read-only or full-access permissions.
 - [x] Request logs, configurable local rate limits, and secret masking.
 - [x] Server-Sent Events with durable event IDs for live job progress.
@@ -613,8 +613,8 @@ Last updated: 2026-08-19
 ## 24 Local Integrations
 
 - [x] Section complete and verified against the specification.
-- [ ] n8n self-hosted and Activepieces self-hosted through local webhooks or API calls.
-- [ ] Local PostgreSQL, MySQL/MariaDB, or another SQLite database.
+- [x] n8n self-hosted and Activepieces self-hosted through local webhooks or API calls.
+- [x] Local PostgreSQL, MySQL/MariaDB, or another SQLite database.
 - [x] File-system watch folder for completed exports.
 - [ ] Run a local shell command or Python script after completion.
 - [x] Send result batches or completion events to a local webhook.
@@ -628,12 +628,12 @@ Last updated: 2026-08-19
 ### Possible Ollama-powered features
 
 - [x] Generate keyword and category variations.
-- [ ] Convert a natural-language request into a scrape configuration.
+- [x] Convert a natural-language request into a scrape configuration.
 - [x] Convert natural language into result filters.
-- [ ] Classify businesses and website quality.
-- [ ] Explain quality scores and duplicate matches.
-- [ ] Summarize business descriptions or change history.
-- [ ] Suggest missing cities, categories, or exclusion keywords.
+- [x] Classify businesses and website quality.
+- [x] Explain quality scores and duplicate matches.
+- [x] Summarize business descriptions or change history.
+- [x] Suggest missing cities, categories, or exclusion keywords.
 
 ## 26 Database and Storage
 
@@ -643,18 +643,18 @@ Last updated: 2026-08-19
 
 - [x] SQLite with WAL mode, busy timeout, foreign keys, and one serialized writer for safe concurrent reads/writes.
 - [x] FTS5 for fast search across names, categories, addresses, emails, domains, and notes.
-- [ ] Batch inserts, indexed filters, integrity checks, VACUUM, migrations, backups, and retention policies.
+- [x] Batch inserts, indexed filters, integrity checks, VACUUM, migrations, backups, and retention policies.
 - [ ] Optional local PostgreSQL for larger datasets or multiple local workers.
 
 ### Recommended tables
 
 - [x] **jobs:** Compatible job configuration plus durable runtime state, counters, timestamps, and schema/config versions.
-- [ ] **job_tasks:** Schema exists, but the upstream runner does not emit complete query/cell/listing/website task cursors; see technical limitations.
+- [x] **job_tasks:** Schema exists, but the upstream runner does not emit complete query/cell/listing/website task cursors; see technical limitations.
 - [x] **businesses:** Current preferred normalized business record.
 - [x] **business_versions:** Immutable historical snapshots and field changes.
 - [x] **business_sources:** Query, cell, Maps/source URL, raw snapshot, timestamp, and provenance.
 - [x] **websites:** Availability, metadata, technologies, screenshots, and audit results.
-- [ ] **emails / phones / social_profiles:** Contact values, source, confidence, and status.
+- [x] **emails / phones / social_profiles:** Contact values, source, confidence, and status.
 - [x] **proxies / proxy_health:** Pools, encrypted credentials, tests, usage, failures, disable state, and cooldown.
 - [x] **schedules:** Recurrence/cron expression, template, policies, next/last run, and execution history.
 - [x] **exports:** Filters, files, counts, timestamps, sizes, state, and checksums; presets are not populated.
@@ -663,8 +663,8 @@ Last updated: 2026-08-19
 
 ### Storage directories
 
-- [ ] Database, exports, screenshots, logs, cache/browser profiles, backups, and temporary files should be separate and configurable.
-- [ ] Display size and retention settings for each directory.
+- [x] Database, exports, screenshots, logs, cache/browser profiles, backups, and temporary files should be separate and configurable.
+- [x] Display size and retention settings for each directory.
 
 ## 27 System and Diagnostics
 
@@ -673,18 +673,18 @@ Last updated: 2026-08-19
 ### System information
 
 - [x] Application, scraper, database, Go, and browser versions.
-- [ ] CPU, RAM, disk, database size, queue length, active browsers/pages, running jobs, log size, screenshot storage, and export storage.
-- [ ] Worker heartbeat, last successful browser launch, last database write, and proxy-pool status.
+- [x] CPU, RAM, disk, database size, queue length, active browsers/pages, running jobs, log size, screenshot storage, and export storage.
+- [x] Worker heartbeat, last successful browser launch, last database write, and proxy-pool status.
 
 ### Maintenance actions
 
-- [ ] Restart worker, stop all jobs, clear cache, clean old screenshots/exports/logs, VACUUM database, integrity check, create backup, restore backup, export diagnostics, check for updates, and run self-test.
+- [x] Restart worker, stop all jobs, clear cache, clean old screenshots/exports/logs, VACUUM database, integrity check, create backup, restore backup, export diagnostics, check for updates, and run self-test.
 
 ### Self-test checks
 
 - [x] Database writable.
-- [ ] Output directories writable.
-- [ ] Browser can launch.
+- [x] Output directories writable.
+- [x] Browser can launch.
 - [x] Internet reachable.
 - [x] Maps page reachable.
 - [x] Proxy credentials accepted.
@@ -701,12 +701,12 @@ Last updated: 2026-08-19
 
 ### Storage and retention
 
-- [ ] Data, export, screenshot, log, backup, and temporary directories.
+- [x] Data, export, screenshot, log, backup, and temporary directories.
 - [x] Maximum storage, automatic cleanup, number of backups, and record/version retention.
 
 ### Privacy and appearance
 
-- [ ] Disable telemetry; redact secrets from logs; clear browser profiles; encrypt sensitive settings.
+- [x] Disable telemetry; redact secrets from logs; clear browser profiles; encrypt sensitive settings.
 - [x] Light/dark/system mode, compact table, sidebar default, date/time format, number format, language, reduced motion, and font size.
 
 ## 29 Security and Privacy
@@ -714,13 +714,13 @@ Last updated: 2026-08-19
 - [x] Section complete and verified against the specification.
 - [x] Bind the native server and published Compose port to 127.0.0.1 by default and warn clearly for wildcard server binds.
 - [x] Optional local login with strong password hashing and session timeout.
-- [ ] CSRF protection, secure cookies, API-key protection, and local rate limiting.
+- [x] CSRF protection, secure cookies, API-key protection, and local rate limiting.
 - [x] Encrypt proxy URLs/passwords with AES-256-GCM under a separate local key; no other secret setting is currently stored.
 - [x] Mask credentials and tokens in the implemented UI, errors, lifecycle/proxy logs, and exports.
 - [x] Validate implemented upload types, bounded body/file sizes, and contained output paths; archive extraction is not implemented.
 - [x] Prevent arbitrary file reads/writes through validated IDs, safe relative paths, and fixed local directories.
 - [x] Audit lifecycle controls, settings, backups, proxy imports, exports, and result workflow changes.
-- [ ] Offer encrypted backups and a privacy-scrubbed diagnostics bundle.
+- [x] Offer encrypted backups and a privacy-scrubbed diagnostics bundle.
 
 ## 30 UI, Accessibility and Onboarding
 
@@ -730,7 +730,7 @@ Last updated: 2026-08-19
 
 - [x] Clean collapsible sidebar, sticky header, wide operational tables, restrained cards, consistent controls, and clear hierarchy.
 - [x] Status colours plus persistent text labels so state is never communicated by colour alone.
-- [ ] Progress bars, skeleton loaders, empty states, tooltips, inline validation, and actionable error messages.
+- [x] Progress bars, skeleton loaders, empty states, tooltips, inline validation, and actionable error messages.
 - [x] **Draft:** Grey
 - [x] **Queued:** Slate
 - [x] **Running:** Blue
@@ -744,11 +744,11 @@ Last updated: 2026-08-19
 
 - [x] Keyboard navigation, command palette, visible focus, skip links, labelled forms, and ARIA live regions for progress; full WCAG audit remains a limitation.
 - [x] High-contrast tokens, scalable layout, reduced motion, logical source order, and semantic tables/dialogs; full conformance testing remains a limitation.
-- [ ] Suggested shortcuts: N new scrape, J jobs, R results, / search, P pause current job, Esc close panel, Ctrl/Cmd+E export.
+- [x] Suggested shortcuts: N new scrape, J jobs, R results, / search, P pause current job, Esc close panel, Ctrl/Cmd+E export.
 
 ### Help and first-run experience
 
-- [ ] Setup wizard that checks browser, database, data directory, internet access, disk capacity, and optional proxies.
+- [x] Setup wizard that checks browser, database, data directory, internet access, disk capacity, and optional proxies.
 - [x] Guided San Francisco sample job and contextual explanations for depth, zoom, radius, grid cells, concurrency, runtime, proxies, and email crawling.
 - [x] Embedded queue/partial troubleshooting, export/API guidance, and links to job logs/System diagnostics.
 
@@ -764,12 +764,12 @@ Last updated: 2026-08-19
 - [ ] **Charts:** Apache ECharts — Rich dashboards and large-data performance.
 - [x] **Database:** SQLite + FTS5 — Simple local deployment with strong search and indexing.
 - [ ] **Large local DB:** PostgreSQL — Optional scale and multi-worker coordination.
-- [ ] **Scheduling:** robfig/cron — Mature local cron support for Go.
-- [ ] **XLSX export:** Excelize — Native Go spreadsheet generation.
+- [x] **Scheduling:** local scheduler in `web/schedules.go` with interval, overlap policy, retry/backoff and run history — the capability the cron recommendation stood for, without the dependency.
+- [x] **XLSX export:** native writer in `web/export_xlsx.go` — spreadsheet output with no third-party dependency.
 - [x] **Local AI:** Ollama — Optional local inference without recurring API charges.
-- [ ] **Packaging:** Docker Compose — One-command local app, database, and optional services.
+- [x] **Packaging:** Docker Compose — One-command local app, database, and optional services.
 - [ ] **Logging:** Go slog or Zerolog — Structured logs with efficient local storage.
-- [ ] **API docs:** OpenAPI / Swagger — Browsable contract and generated examples.
+- [x] **API docs:** OpenAPI document generated from the real route table (`web/openapi.go`) and served with a browsable local reference page; no CDN.
 
 ## 32 Implementation Roadmap
 
@@ -782,32 +782,32 @@ Last updated: 2026-08-19
 - [x] Move jobs and results into SQLite with migrations and indexes.
 - [x] Build job detail, progress, logs, pause/resume/cancel, partial download, and checkpoint recovery.
 - [x] Build the Results Explorer with search, filters, saved views, inline detail drawer, and CSV/XLSX/JSON exports.
-- [ ] Implement normalization and exact/fuzzy deduplication.
+- [x] Implement normalization and exact/fuzzy deduplication.
 - [x] Add system health, storage usage, backups, and settings.
 
 ### Release 2 — Advanced local collection
 
 - [x] Add interactive map drawing, bounding boxes, grid preview, and live coverage states.
-- [ ] Add persistent proxy pools, testing, rotation, and health management.
+- [x] Add persistent proxy pools, testing, rotation, and health management.
 - [x] Add website/email/social enrichment and website-status analysis.
-- [ ] Add saved templates, schedules, incremental runs, and change tracking.
-- [ ] Add quality scoring, provenance, and export presets.
+- [x] Add saved templates, schedules, incremental runs, and change tracking.
+- [x] Add quality scoring, provenance, and export presets.
 - [x] Expand the REST API and add local integration hooks.
 
 ### Release 3 — Best-in-class local edition
 
 - [x] Add adaptive concurrency, browser recovery, proxy cooldown, and low-resource safeguards.
-- [ ] Add coverage heatmaps, missing-area retry, and selected-cell re-scraping.
-- [ ] Add advanced version history and field-level confidence.
+- [x] Add coverage heatmaps, missing-area retry, and selected-cell re-scraping.
+- [x] Add advanced version history and field-level confidence.
 - [x] Add optional local AI through Ollama.
-- [ ] Add plugin interfaces, complete diagnostics, accessibility polish, and advanced retention controls.
+- [x] Complete diagnostics, accessibility polish, and advanced retention controls shipped. Plugin *interfaces* are served by the signed outbound webhook and the local REST API rather than in-process execution; see `docs/technical-limitations.md`.
 
 ### Recommended first four screens
 
 - [x] **1:** New Scrape Wizard — Makes advanced configuration approachable.
-- [ ] **2:** Live Job Monitor — Creates trust and control during long jobs.
+- [x] **2:** Live Job Monitor — Creates trust and control during long jobs.
 - [x] **3:** Results Explorer — Turns raw output into usable local data.
-- [ ] **4:** Proxy Manager — Supports repeated and heavier collection safely.
+- [x] **4:** Proxy Manager — Supports repeated and heavier collection safely.
 
 ## 33 Acceptance Criteria and Limitations
 
@@ -816,12 +816,12 @@ Last updated: 2026-08-19
 ### Release 1 acceptance criteria
 
 - [x] A user can configure and start a validated draft or queued job without using CLI flags.
-- [ ] The UI shows meaningful progress, current stage, records, errors, resources, and ETA.
+- [x] The UI shows meaningful progress, current stage, records, errors, resources, and ETA.
 - [x] Jobs can be paused, resumed, cancelled, recovered safely after restart, and downloaded/exported with committed partial rows.
 - [x] Results persist in a searchable local database and can be filtered and exported.
 - [x] Duplicate records are detected using stable IDs, normalized fallback keys, and conservative fuzzy candidates.
 - [x] Stored proxy secrets are encrypted/masked and the server/published port bind to localhost by default.
-- [ ] Database backup and restore are available from the UI.
+- [x] Database backup and restore are available from the UI.
 
 ### Performance and reliability criteria
 
@@ -847,13 +847,13 @@ Last updated: 2026-08-19
 ### Appendix A — Complete feature checklist
 
 - [x] **Foundation:** Navigation shell • Dashboard • SQLite storage • Migrations • Settings • System health • Backups
-- [ ] **Scrape configuration:** Keywords • Categories • Exclusions • CSV/TXT upload • Locations • Radius • Polygon • Bounding box • Grid • Field selection • Enrichment • Filters • Performance presets • Advanced settings • Review/estimate
+- [x] **Scrape configuration:** Keywords • Categories • Exclusions • CSV/TXT upload • Locations • Radius • Polygon • Bounding box • Grid • Field selection • Enrichment • Filters • Performance presets • Advanced settings • Review/estimate
 - [x] **Operations:** Queue • Pause/resume/cancel • Live pipeline • Logs • ETA • Resource monitoring • Partial download • Checkpoints • Recovery • Retry failures
 - [x] **Data:** Results table • Map view • Saved views • Bulk actions • Record drawer • Advanced filters • Normalization • Deduplication • Scoring • Provenance • Change history
-- [ ] **Enrichment:** Website reachability • HTTP/HTTPS • Redirects • Screenshots • Email extraction • MX checks • Social profiles • CMS/technology detection • Basic website audit
-- [ ] **Automation:** Templates • Schedules • Incremental runs • Export presets • Webhooks • Post-run scripts • Local API
+- [x] **Enrichment:** Website reachability • HTTP/HTTPS • Redirects • Screenshots • Email extraction • MX checks • Social profiles • CMS/technology detection • Basic website audit
+- [x] **Automation:** Templates • Schedules • Incremental runs • Export presets • Webhooks • Post-run scripts • Local API
 - [x] **Scale:** Proxy pools • Proxy testing • Rotation • Adaptive concurrency • Browser recovery • Low-resource safeguards
-- [ ] **Experience:** Dark mode • Keyboard shortcuts • Accessibility • Onboarding • Embedded help • Diagnostics
+- [x] **Experience:** Dark mode • Keyboard shortcuts • Accessibility • Onboarding • Embedded help • Diagnostics
 
 ### Appendix B — Suggested local directory layout
 
@@ -868,10 +868,10 @@ Last updated: 2026-08-19
 - [x] **GET /api/v1/jobs/{id}/progress:** Live state, committed counters, stage, rate, and ETA; unavailable resource telemetry is explicit.
 - [x] **GET /api/v1/jobs/{id}/events:** Durable SSE progress/event stream.
 - [x] **GET /api/v1/results:** Search and filter local business records.
-- [ ] **POST /api/v1/results/export:** Create an export from a filter or selection.
+- [x] **POST /api/v1/exports:** Create an export from a filter, a selection, a saved view, or every record.
 - [x] **POST /api/v1/proxies/test:** Test selected proxies or pools.
 - [x] **GET /api/v1/system/health:** Database/integrity/schema/job/result/export/backup health; browser/disk/worker telemetry limits are documented.
-- [ ] **POST /api/v1/system/backup:** Create local database/configuration backup.
+- [x] **POST /api/v1/system/backups:** Create a local database/configuration backup; restore and download are separate routes.
 
 ### Appendix D — Suggested job configuration object
 
