@@ -1,5 +1,5 @@
 /* ===========================================================================
-   views/monitor.css — Job monitor and jobs list only.
+   views/monitor.css — Job monitor, benchmark report, and jobs list only.
    ---------------------------------------------------------------------------
    Owner: the job monitor page agent.
 
@@ -13,5 +13,262 @@
    space, radius, and duration must come from the tokens in app.css so the file
    stays correct in both themes.
 
+   Scoping convention used below:
+     .ops-*    live operations console  (pages/job_monitor.html)
+     .bench-*  benchmark report         (pages/benchmark.html)
+   Both prefixes are page-local, so nothing here can reach another view even
+   though every page loads this file.
+
    Loaded after app.css by templates/app/layout.html.
    =========================================================================== */
+
+/* ===========================================================================
+   OPERATIONS CONSOLE — pages/job_monitor.html
+   ===========================================================================
+   Page shape:
+     .ops-console
+       section.card.ops-hero        status header: identity, readouts,
+                                    progress, pipeline, run controls
+       .stat-grid                   live vitals (component from app.css)
+       .split-pane                  coverage + task table | run context
+       .split-pane                  logs | failure classes
+       details.card                 configuration snapshot
+   =========================================================================== */
+
+.ops-console { --stack-space: var(--space-5); }
+
+/* --- Status header ------------------------------------------------------- */
+.ops-hero { display: grid; overflow: hidden; }
+
+.ops-hero-top { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: var(--space-5) var(--space-7); padding: var(--space-5); }
+.ops-identity { display: grid; gap: var(--space-2); min-width: 0; }
+.ops-identity h2 { margin: 0; }
+.ops-identity-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-3); margin: 0; }
+.ops-identity-meta code { color: var(--text-faint); }
+
+/* Readout cluster: the numbers an operator scans first. Tabular numerals and a
+   fixed minimum width keep them from twitching as live values change. */
+.ops-readouts { display: flex; flex-wrap: wrap; gap: var(--space-4) var(--space-7); }
+.ops-readout { display: grid; align-content: start; gap: .1rem; min-width: 4.75rem; }
+.ops-readout b { color: var(--text); font-size: var(--text-xl); font-weight: var(--weight-bold); font-variant-numeric: tabular-nums; letter-spacing: var(--tracking-tighter); line-height: 1.15; }
+.ops-readout small { color: var(--text-muted); font-size: var(--text-2xs); }
+.ops-readout[data-emphasis="primary"] b { color: var(--primary); }
+.ops-readout[data-emphasis="danger"] b { color: var(--danger); }
+
+.ops-progress { display: grid; gap: var(--space-2); padding: 0 var(--space-5) var(--space-5); }
+.ops-progress-legend { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--space-2) var(--space-4); margin: 0; }
+.ops-progress-legend > span { min-width: 0; }
+.ops-current { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ops-current strong { color: var(--text); font-weight: var(--weight-semibold); }
+
+/* --- Pipeline stepper ----------------------------------------------------
+   A slim horizontal stepper, not a row of cards: the stage is context for the
+   progress bar above it, so it never competes with the readouts. */
+.ops-pipeline { display: flex; gap: var(--space-1); margin: 0; padding: var(--space-3) var(--space-5); border-top: 1px solid var(--border-subtle); list-style: none; }
+.ops-step { display: grid; align-content: start; gap: .1rem; min-width: 6.75rem; flex: 1 1 0; padding: var(--space-2) var(--space-3); border-radius: var(--radius-sm); background: var(--surface-muted); color: var(--text-faint); font-size: var(--text-2xs); }
+.ops-step b { color: inherit; font-size: var(--text-xs); font-weight: var(--weight-semibold); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ops-step span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ops-step[data-state="complete"] { background: var(--state-success-bg); color: var(--state-success-fg); }
+.ops-step[data-state="active"] { background: var(--state-info-bg); box-shadow: inset 0 0 0 1px var(--primary-border); color: var(--state-info-fg); }
+
+/* --- Run controls --------------------------------------------------------
+   Every control here maps to a route that exists: the lifecycle group posts to
+   /api/v1/jobs/{id}/{start,pause,resume,cancel,retry}; the tuning group posts
+   to /runtime, /concurrency, /proxy-pool, /retry-current. Controls the server
+   marks unavailable are not rendered at all. */
+.ops-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4); padding: var(--space-3) var(--space-5); border-top: 1px solid var(--border); border-radius: 0 0 var(--radius-md) var(--radius-md); background: var(--surface-muted); }
+.ops-control-group { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); min-width: 0; }
+.ops-control-group form { display: contents; }
+.ops-control { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+/* Three unrelated tuning controls sit in one strip, so each gets a hairline of
+   its own rather than dissolving into a single row of anonymous inputs. */
+.ops-control + .ops-control, .ops-control + form:not(.ops-control) { padding-left: var(--space-3); border-left: 1px solid var(--border); }
+.ops-control-label { color: var(--text-muted); font-size: var(--text-2xs); font-weight: var(--weight-bold); letter-spacing: var(--tracking-caps); text-transform: uppercase; white-space: nowrap; }
+.ops-control .select, .ops-control .input { width: auto; min-height: 1.75rem; font-size: var(--text-xs); }
+.ops-control .input[type="number"] { width: 4.25rem; }
+.ops-control-sep { width: 1px; min-height: 1.5rem; align-self: stretch; background: var(--border); }
+.ops-controls-note { margin: 0; color: var(--text-faint); font-size: var(--text-xs); }
+
+/* --- Coverage panel ------------------------------------------------------
+   Bound to GET /api/v1/jobs/{id}/coverage. The panel ships hidden and
+   app-monitor.js reveals it only for a usable payload, so a build without the
+   adaptive engine shows nothing rather than empty scaffolding. */
+.ops-coverage[hidden] { display: none; }
+.ops-coverage-totals { display: grid; grid-template-columns: repeat(auto-fit, minmax(5.25rem, 1fr)); gap: var(--space-3); padding: var(--space-4) var(--space-5); border-bottom: 1px solid var(--border-subtle); }
+.ops-total { display: grid; align-content: start; gap: .1rem; min-width: 0; }
+.ops-total b { color: var(--text); font-size: var(--text-lg); font-weight: var(--weight-bold); font-variant-numeric: tabular-nums; letter-spacing: var(--tracking-tight); line-height: 1.2; }
+.ops-total span { color: var(--text-muted); font-size: var(--text-2xs); }
+.ops-total[data-tone="danger"] b { color: var(--danger); }
+.ops-total[data-tone="warning"] b { color: var(--warning); }
+
+.ops-saturation { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); margin: 0; padding: var(--space-3) var(--space-5); border-bottom: 1px solid var(--border-subtle); color: var(--text-muted); font-size: var(--text-xs); }
+.ops-saturation strong { color: var(--text); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+
+/* --- Throughput chart ----------------------------------------------------
+   One inline <svg> drawn by app-monitor.js from the coverage trend. No chart
+   library is involved and nothing is fetched: the strict CSP forbids both. */
+.ops-chart-frame { display: grid; gap: var(--space-2); padding: var(--space-4) var(--space-5); border-bottom: 1px solid var(--border-subtle); }
+.ops-chart { display: block; width: 100%; height: 7.5rem; overflow: visible; }
+.ops-chart-grid { stroke: var(--border-subtle); stroke-width: 1; }
+.ops-chart-area { fill: var(--primary-soft); }
+.ops-chart-line { fill: none; stroke: var(--cell-running); stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.ops-chart-line[data-series="duplicates"] { stroke: var(--cell-paused); stroke-dasharray: 4 3; }
+.ops-chart-dot { fill: var(--cell-running); }
+.ops-chart-hit { fill: transparent; }
+.ops-chart-hit:hover { fill: var(--surface-hover); }
+.ops-chart-legend { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4); margin: 0; color: var(--text-muted); font-size: var(--text-xs); }
+.ops-chart-legend span { display: inline-flex; align-items: center; gap: var(--space-2); }
+.ops-swatch { width: .7rem; height: .2rem; flex: 0 0 auto; border-radius: var(--radius-pill); background: var(--cell-running); }
+.ops-swatch[data-series="duplicates"] { background: var(--cell-paused); }
+.ops-chart-peak { margin-left: auto; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+
+/* --- Task table ----------------------------------------------------------
+   Dense, sticky-headed, and scrolled inside its own box so a long plan never
+   pushes the run context off screen. */
+.ops-task-scroll { max-height: 28rem; border: 0; border-radius: 0; }
+/* Fixed layout so the counters keep their small, predictable columns and the
+   query column absorbs the slack instead of every column sharing it equally
+   and pushing "seconds" out of the panel. */
+.ops-tasks { table-layout: fixed; }
+.ops-tasks th, .ops-tasks td { padding-inline: var(--space-3); overflow: hidden; text-overflow: ellipsis; }
+.ops-tasks th.num, .ops-tasks td.num { padding-inline: var(--space-2); }
+.ops-tasks th:nth-child(2) { width: 4.75rem; }
+.ops-tasks th:nth-child(3) { width: 7rem; }
+.ops-tasks th:nth-child(4) { width: 6.25rem; }
+.ops-tasks th:nth-child(5) { width: 9rem; }
+.ops-tasks th:nth-child(6), .ops-tasks th:nth-child(7),
+.ops-tasks th:nth-child(8), .ops-tasks th:nth-child(9) { width: 3.75rem; }
+.ops-task-query { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ops-tasks tbody td { white-space: nowrap; }
+.ops-tasks tbody td:last-child { padding-right: var(--space-4); }
+/* The confidence column only exists once the coverage endpoint reports it, so
+   it is laid out but collapsed until a payload actually carries the field. */
+.ops-tasks [data-col="confidence"] { display: none; }
+.ops-tasks[data-confidence="true"] [data-col="confidence"] { display: table-cell; }
+.ops-confidence { display: inline-flex; align-items: center; gap: var(--space-2); }
+.ops-confidence-track { width: 2.75rem; height: .3rem; overflow: hidden; border-radius: var(--radius-pill); background: var(--surface-sunken); }
+.ops-confidence-fill { display: block; width: var(--meter, 0%); height: 100%; border-radius: inherit; background: var(--cell-completed); }
+.ops-confidence[data-tone="warning"] .ops-confidence-fill { background: var(--cell-partial); }
+.ops-confidence[data-tone="danger"] .ops-confidence-fill { background: var(--cell-failed); }
+
+/* --- Run context aside ---------------------------------------------------- */
+.ops-aside { --stack-space: var(--space-4); }
+.ops-facts { display: grid; gap: var(--space-2); margin: 0; }
+.ops-fact { display: grid; grid-template-columns: minmax(6rem, 8rem) minmax(0, 1fr); align-items: baseline; gap: var(--space-3); }
+.ops-fact dt { color: var(--text-muted); font-size: var(--text-xs); }
+.ops-fact dd { margin: 0; overflow-wrap: anywhere; color: var(--text); font-size: var(--text-sm); font-weight: var(--weight-medium); font-variant-numeric: tabular-nums; }
+/* An unreported value is an absence. These selectors exist only because the
+   surrounding rules are more specific than .empty-inline on its own. */
+.ops-fact dd.empty-inline,
+.ops-current strong.empty-inline,
+.ops-console .stat-value.empty-inline,
+.ops-readout b.empty-inline { color: var(--text-faint); font-weight: var(--weight-regular); }
+.ops-readout b.empty-inline,
+.ops-console .stat-value.empty-inline { font-size: var(--text-sm); letter-spacing: 0; }
+.ops-console .stat-value.empty-inline { line-height: 1.9; }
+
+/* --- Failure classes ------------------------------------------------------ */
+.ops-failures[hidden] { display: none; }
+.ops-failure-list { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.ops-failure { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-1) var(--space-3); padding: var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--surface-muted); }
+.ops-failure b { min-width: 0; overflow: hidden; color: var(--text); font-size: var(--text-sm); font-weight: var(--weight-semibold); text-overflow: ellipsis; white-space: nowrap; }
+.ops-failure small { grid-column: 1 / -1; overflow-wrap: anywhere; color: var(--text-muted); font-size: var(--text-xs); }
+
+/* --- Logs ----------------------------------------------------------------- */
+.ops-log-toolbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-2) var(--space-3); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border); }
+.ops-log-toolbar .field { flex: 1 1 11rem; min-width: 0; }
+.ops-log-toolbar .field:first-child { flex: 2 1 16rem; }
+.ops-log-toolbar .check-row { align-items: center; }
+/* Grows with the log rather than reserving a fixed slab of black for a run
+   that only ever wrote three lines. */
+.ops-console .log-viewer { height: auto; min-height: 8rem; max-height: 22rem; border-radius: 0 0 var(--radius-md) var(--radius-md); }
+/* A localised timestamp needs more than the shared 6.5rem column, and wrapping
+   every entry's time over two lines doubles the height of the whole log. */
+.ops-console .log-line { grid-template-columns: 10.5rem 5.5rem minmax(0, 1fr); gap: var(--space-3); }
+.ops-console .log-line time { white-space: nowrap; }
+
+/* --- Configuration snapshot ------------------------------------------------ */
+.ops-config > summary { padding: var(--space-3) var(--space-5); color: var(--text); font-size: var(--text-sm); font-weight: var(--weight-semibold); cursor: pointer; }
+.ops-config[open] > summary { border-bottom: 1px solid var(--border); }
+
+@media (max-width: 78rem) {
+    .ops-hero-top { grid-template-columns: minmax(0, 1fr); }
+    .ops-pipeline { overflow-x: auto; overscroll-behavior-x: contain; }
+}
+
+@media (max-width: 56rem) {
+    .ops-fact { grid-template-columns: minmax(0, 1fr); gap: 0; }
+}
+
+/* ===========================================================================
+   BENCHMARK REPORT — pages/benchmark.html
+   ===========================================================================
+   Page shape:
+     .bench-report
+       .bench-identity   one dense evidence bar, not a card of long labels
+       .stat-grid        headline evidence strip
+       section.card …    yield, saturation, failures, proxies, distributions
+   =========================================================================== */
+
+.bench-report { --stack-space: var(--space-5); }
+
+.bench-identity { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-6); padding: var(--space-3) var(--space-5); }
+.bench-fact { display: grid; align-content: start; gap: .05rem; min-width: 0; }
+/* Direct child only: the value below may itself contain a <span> (the inline
+   empty state), which must not inherit the label's uppercase treatment. */
+.bench-fact > span { color: var(--text-muted); font-size: var(--text-2xs); font-weight: var(--weight-bold); letter-spacing: var(--tracking-caps); text-transform: uppercase; }
+.bench-fact > b { overflow-wrap: anywhere; color: var(--text); font-size: var(--text-sm); font-weight: var(--weight-semibold); font-variant-numeric: tabular-nums; }
+/* Unrecorded evidence reads as an absence, never as a headline value. */
+.bench-fact b .empty-inline, .bench-value .empty-inline { font-weight: var(--weight-regular); }
+.bench-identity-actions { margin-left: auto; }
+
+/* --- Compare affordance ---------------------------------------------------
+   Bound to GET /api/v1/benchmark/compare. The strip renders only when the
+   workspace has another recorded run to compare against, so a single-run
+   workspace never sees a dead control. */
+.bench-compare[hidden] { display: none; }
+.bench-compare-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-2) var(--space-3); }
+.bench-compare-form .field { flex: 1 1 16rem; min-width: 0; }
+.bench-deltas[hidden] { display: none; }
+.bench-deltas { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: var(--space-3); padding: var(--space-4) var(--space-5); border-top: 1px solid var(--border-subtle); }
+.bench-delta { display: grid; align-content: start; gap: .1rem; min-width: 0; }
+.bench-delta b { font-size: var(--text-lg); font-weight: var(--weight-bold); font-variant-numeric: tabular-nums; letter-spacing: var(--tracking-tight); }
+.bench-delta span { color: var(--text-muted); font-size: var(--text-2xs); }
+.bench-delta[data-trend="up"] b { color: var(--success); }
+.bench-delta[data-trend="down"] b { color: var(--danger); }
+.bench-delta[data-trend="flat"] b { color: var(--text-muted); }
+
+/* --- Dense key/value evidence --------------------------------------------- */
+.bench-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr)); gap: var(--space-2); margin: 0; }
+.bench-kv > div { display: grid; align-content: start; gap: .1rem; min-width: 0; padding: var(--space-3); border-radius: var(--radius-sm); background: var(--surface-muted); }
+.bench-key { color: var(--text-muted); font-size: var(--text-2xs); }
+.bench-value { overflow-wrap: anywhere; color: var(--text); font-size: var(--text-md); font-weight: var(--weight-semibold); font-variant-numeric: tabular-nums; }
+
+/* --- Ratio cell: the number leads, the bar reinforces it ------------------- */
+.bench-ratio { display: inline-grid; grid-template-columns: 3.1rem 3.5rem; align-items: center; gap: var(--space-2); }
+.bench-ratio > span { font-variant-numeric: tabular-nums; text-align: right; }
+.bench-ratio-track { height: .3rem; overflow: hidden; border-radius: var(--radius-pill); background: var(--surface-sunken); }
+.bench-ratio-fill { display: block; width: var(--meter, 0%); height: 100%; border-radius: inherit; background: var(--primary); }
+
+/* --- Distribution rows ----------------------------------------------------- */
+.bench-dist { display: grid; gap: var(--space-2); margin: 0; }
+.bench-dist-row { display: grid; grid-template-columns: minmax(5.5rem, 9rem) minmax(0, 1fr) 3.25rem; align-items: center; gap: var(--space-3); font-size: var(--text-sm); }
+.bench-dist-row > span:last-child { color: var(--text-muted); font-size: var(--text-xs); font-variant-numeric: tabular-nums; text-align: right; }
+.bench-dist-track { height: .45rem; overflow: hidden; border-radius: var(--radius-pill); background: var(--surface-sunken); }
+.bench-dist-fill { display: block; width: var(--meter, 0%); height: 100%; border-radius: inherit; background: var(--primary); }
+.bench-dist-row[data-tone="success"] .bench-dist-fill { background: var(--success); }
+.bench-dist-row[data-tone="warning"] .bench-dist-fill { background: var(--warning); }
+.bench-dist-row[data-tone="danger"] .bench-dist-fill { background: var(--danger); }
+.bench-dist-row[data-tone="special"] .bench-dist-fill { background: var(--purple); }
+
+.bench-table-scroll { max-height: 24rem; border: 0; border-radius: 0; }
+.bench-sample { display: block; max-width: 26rem; overflow: hidden; color: var(--text-muted); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
+
+/* Saturation trend chart. Same inline-SVG treatment as the console. */
+.bench-chart-frame { display: grid; gap: var(--space-2); padding: var(--space-4) var(--space-5); border-bottom: 1px solid var(--border-subtle); }
+.bench-chart { display: block; width: 100%; height: 8rem; overflow: visible; }
+
+@media (max-width: 56rem) {
+    .bench-dist-row { grid-template-columns: minmax(0, 1fr) 3.25rem; }
+    .bench-dist-track { grid-column: 1 / -1; }
+}
