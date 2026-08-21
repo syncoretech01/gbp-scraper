@@ -5,7 +5,7 @@
 {{define "app/page-actions"}}<div class="page-actions"><a class="button" href="/app/scrapes/new">Preview in New Scrape</a></div>{{end}}
 
 {{define "app/content"}}
-<div class="section-stack">
+<div class="section-stack" data-settings-workspace data-csrf-token="{{.CSRFToken}}">
     {{if .Page.Notice}}<div class="notice notice-success" role="status"><div><strong>{{.Page.Notice}}</strong></div></div>{{end}}
     <form class="section-stack" action="/api/v1/settings" method="post">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">

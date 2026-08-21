@@ -5,6 +5,43 @@
     if (!workspace) return;
     const csrf = workspace.dataset.csrfToken || "";
 
+    // The quick-start card shows one language at a time. Every panel is in the
+    // document, so the page still works — and stays copyable — without script.
+    const exampleBlock = workspace.querySelector("[data-example-block]");
+    if (exampleBlock) exampleBlock.addEventListener("click", (event) => {
+        const tab = event.target.closest("[data-example-tab]");
+        if (!tab) return;
+        const language = tab.dataset.exampleTab;
+        exampleBlock.querySelectorAll("[data-example-tab]").forEach((option) => {
+            option.setAttribute("aria-selected", option.dataset.exampleTab === language ? "true" : "false");
+        });
+        exampleBlock.querySelectorAll("[data-example-panel]").forEach((panel) => {
+            panel.hidden = panel.dataset.examplePanel !== language;
+        });
+    });
+
+    // Filtering the generated reference is a local text match over the method,
+    // path, and purpose of each row; groups with no visible row are hidden so
+    // the page never shows an empty heading.
+    const reference = workspace.querySelector("[data-reference]");
+    const referenceFilter = workspace.querySelector("[data-reference-filter]");
+    if (reference && referenceFilter) referenceFilter.addEventListener("input", () => {
+        const needle = referenceFilter.value.trim().toLowerCase();
+        let visible = 0;
+        reference.querySelectorAll("[data-reference-group]").forEach((group) => {
+            let shown = 0;
+            group.querySelectorAll("[data-reference-row]").forEach((row) => {
+                const match = !needle || (row.dataset.referenceText || "").toLowerCase().includes(needle);
+                row.hidden = !match;
+                if (match) shown += 1;
+            });
+            group.hidden = shown === 0;
+            visible += shown;
+        });
+        const empty = reference.querySelector("[data-reference-empty]");
+        if (empty) empty.hidden = visible !== 0;
+    });
+
     async function request(endpoint, options) {
         const settings = Object.assign({ credentials: "same-origin", headers: {} }, options || {});
         settings.headers = Object.assign({ Accept: "application/json", "X-CSRF-Token": csrf }, settings.headers || {});

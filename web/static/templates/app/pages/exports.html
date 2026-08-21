@@ -1,7 +1,7 @@
 {{define "app/page/exports"}}{{template "app/layout" .}}{{end}}
 
 {{define "app/content"}}
-<div class="section-stack">
+<div class="section-stack" data-export-workspace>
     {{if .Page.Notice}}<div class="notice notice-success" role="status"><div><strong>{{.Page.Notice}}</strong></div></div>{{end}}
 
     {{if .Page.Presets}}

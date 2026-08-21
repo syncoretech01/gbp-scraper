@@ -9,20 +9,34 @@ type apiWorkspacePageData struct {
 	BaseURL               string
 	AuthenticationSummary string
 	ExposedBeyondLoopback bool
-	Endpoints             []apiEndpointView
+	Groups                []apiGroupView
+	OperationCount        int
+	Examples              []codeExample
 	APIKeys               []APIKeyRecord
 	Integrations          []IntegrationRecord
 	Deliveries            []IntegrationDelivery
 	EventNames            []string
 	RequestLogs           []APIRequestLog
 	RateLimit             int64
+	SpecVersion           string
+	APIVersion            string
 	Notice                string
+}
+
+// apiGroupView is one collapsible endpoint-group section on the reference page.
+type apiGroupView struct {
+	Name       string
+	Slug       string
+	Operations []apiEndpointView
 }
 
 type apiEndpointView struct {
 	Method      string
 	Path        string
 	Description string
+	Anchor      string
+	Mutating    bool
+	Examples    []codeExample
 }
 
 // maximumRenderedDeliveries bounds the delivery history table on the page.
@@ -37,34 +51,20 @@ func (s *Server) apiWorkspacePage(w http.ResponseWriter, r *http.Request) {
 	if r.TLS != nil {
 		scheme = "https"
 	}
+	baseURL := scheme + "://" + host
 	activity, _ := s.appActivity(r)
 	page := apiWorkspacePageData{
-		BaseURL:               scheme + "://" + host,
+		BaseURL:               baseURL,
 		AuthenticationSummary: "Loopback-compatible API keys with read-only and full-access permissions",
 		ExposedBeyondLoopback: wildcardBind(s.srv.Addr),
 		RateLimit:             s.apiRateLimit.Load(),
+		SpecVersion:           openAPIVersion,
+		APIVersion:            localAPIVersion,
 		Notice:                strings.TrimSpace(r.URL.Query().Get("notice")),
-		Endpoints: []apiEndpointView{
-			{Method: "GET", Path: "/api/v1/jobs", Description: "List jobs"},
-			{Method: "POST", Path: "/api/v1/jobs", Description: "Create a validated job"},
-			{Method: "GET", Path: "/api/v1/jobs/{id}", Description: "Read a job and its configuration"},
-			{Method: "POST", Path: "/api/v1/jobs/{id}/pause", Description: "Pause at a safe worker boundary"},
-			{Method: "POST", Path: "/api/v1/jobs/{id}/resume", Description: "Resume a paused job"},
-			{Method: "POST", Path: "/api/v1/jobs/{id}/cancel", Description: "Cancel and retain committed results"},
-			{Method: "GET", Path: "/api/v1/jobs/{id}/events", Description: "Stream lifecycle events with SSE"},
-			{Method: "GET", Path: "/api/v1/jobs/{id}/download", Description: "Download current compatible CSV"},
-			{Method: "GET", Path: "/api/v1/results", Description: "Search and filter normalized businesses"},
-			{Method: "GET", Path: "/api/v1/results/{id}", Description: "Read details, provenance and versions"},
-			{Method: "POST", Path: "/api/v1/exports", Description: "Create a filtered, selected, saved-view, or full export"},
-			{Method: "GET", Path: "/api/v1/exports/{id}", Description: "Read export status and verified parts"},
-			{Method: "POST", Path: "/api/v1/exports/{id}/repeat", Description: "Repeat the exact export configuration"},
-			{Method: "GET", Path: "/api/v1/integrations", Description: "List safe local integration metadata"},
-			{Method: "GET", Path: "/api/v1/system/health", Description: "Read database and workspace health"},
-			{Method: "POST", Path: "/api/v1/system/backups", Description: "Create a verified local SQLite backup"},
-			{Method: "GET", Path: "/api/v1/ai/status", Description: "Check the optional loopback-only Ollama connection"},
-			{Method: "POST", Path: "/api/v1/ai/assist", Description: "Run a bounded structured task on an enabled local model"},
-		},
+		Groups:                apiReferenceGroups(baseURL),
+		Examples:              localAPIExamples(resultsSearchOperation(), baseURL),
 	}
+	page.OperationCount = len(localAPICatalogue())
 	page.APIKeys, _ = s.svc.ListAPIKeys(r.Context(), 100)
 	page.Integrations, _ = s.svc.ListIntegrations(r.Context(), false, maximumIntegrations)
 	page.Deliveries, _ = s.svc.ListIntegrationDeliveries(r.Context(), "", maximumRenderedDeliveries)
@@ -82,60 +82,52 @@ func (s *Server) apiWorkspacePage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) apiOpenAPI(w http.ResponseWriter, _ *http.Request) {
-	paths := map[string]any{
-		"/api/v1/jobs": map[string]any{
-			"get":  map[string]any{"summary": "List jobs", "responses": map[string]any{"200": map[string]string{"description": "Jobs"}}},
-			"post": map[string]any{"summary": "Create job", "responses": map[string]any{"201": map[string]string{"description": "Created"}}},
-		},
-		"/api/v1/jobs/{id}": map[string]any{
-			"get": map[string]any{"summary": "Get job", "responses": map[string]any{"200": map[string]string{"description": "Job"}}},
-		},
-		"/api/v1/jobs/{id}/events": map[string]any{
-			"get": map[string]any{"summary": "Stream job events", "responses": map[string]any{"200": map[string]string{"description": "text/event-stream"}}},
-		},
-		"/api/v1/results": map[string]any{
-			"get": map[string]any{"summary": "Search normalized results", "responses": map[string]any{"200": map[string]string{"description": "Results"}}},
-		},
-		"/api/v1/exports": map[string]any{
-			"get":  map[string]any{"summary": "List export history", "responses": map[string]any{"200": map[string]string{"description": "Exports"}}},
-			"post": map[string]any{"summary": "Create a configurable local export", "responses": map[string]any{"201": map[string]string{"description": "Created"}}},
-		},
-		"/api/v1/exports/{id}": map[string]any{
-			"get":    map[string]any{"summary": "Get export status and parts", "responses": map[string]any{"200": map[string]string{"description": "Export"}}},
-			"delete": map[string]any{"summary": "Delete export files and history", "responses": map[string]any{"200": map[string]string{"description": "Deleted"}}},
-		},
-		"/api/v1/integrations": map[string]any{
-			"get":  map[string]any{"summary": "List local integrations", "responses": map[string]any{"200": map[string]string{"description": "Integrations"}}},
-			"post": map[string]any{"summary": "Create a webhook, watch-folder, or explicitly enabled command hook", "responses": map[string]any{"201": map[string]string{"description": "Created"}}},
-		},
-		"/api/v1/api-keys": map[string]any{
-			"get":  map[string]any{"summary": "List API-key metadata", "responses": map[string]any{"200": map[string]string{"description": "API keys"}}},
-			"post": map[string]any{"summary": "Create an API key (token returned once)", "responses": map[string]any{"201": map[string]string{"description": "Created"}}},
-		},
-		"/api/v1/system/health": map[string]any{
-			"get": map[string]any{"summary": "Read local health", "responses": map[string]any{"200": map[string]string{"description": "Health"}}},
-		},
-		"/api/v1/ai/status": map[string]any{
-			"get": map[string]any{"summary": "Check optional local Ollama status", "responses": map[string]any{"200": map[string]string{"description": "Local AI status"}}},
-		},
-		"/api/v1/ai/assist": map[string]any{
-			"post": map[string]any{"summary": "Run a bounded structured local-AI task", "responses": map[string]any{"200": map[string]string{"description": "Structured result"}}},
-		},
+// apiReferenceGroups renders the generated catalogue for the browsable page,
+// attaching the four language examples to every operation.
+func apiReferenceGroups(baseURL string) []apiGroupView {
+	groups := localAPIGroups()
+	views := make([]apiGroupView, 0, len(groups))
+	for _, group := range groups {
+		view := apiGroupView{Name: group.Name, Slug: anchorSlug(group.Name)}
+		for _, operation := range group.Operations {
+			view.Operations = append(view.Operations, apiEndpointView{
+				Method:      operation.Method,
+				Path:        operation.Path,
+				Description: operation.Summary,
+				Anchor:      operation.OperationID(),
+				Mutating:    operation.Mutating(),
+				Examples:    localAPIExamples(operation, baseURL),
+			})
+		}
+		views = append(views, view)
 	}
-	renderJSON(w, http.StatusOK, map[string]any{
-		"openapi": "3.1.0",
-		"info": map[string]string{
-			"title":       "Google Maps Scraper Local API",
-			"version":     "1.0.0",
-			"description": "Loopback-first API. Local keys support read-only or full access; mutating same-origin browser requests also require CSRF.",
-		},
-		"servers": []map[string]string{{"url": "/"}},
-		"components": map[string]any{"securitySchemes": map[string]any{
-			"bearerAuth": map[string]string{"type": "http", "scheme": "bearer"},
-			"apiKey":     map[string]string{"type": "apiKey", "in": "header", "name": "X-API-Key"},
-		}},
-		"security": []map[string][]string{{"bearerAuth": {}}, {"apiKey": {}}},
-		"paths":    paths,
-	})
+
+	return views
+}
+
+// resultsSearchOperation is the operation shown in the quick-start card: the
+// one call an operator almost always makes first.
+func resultsSearchOperation() localAPIOperation {
+	for _, operation := range localAPICatalogue() {
+		if operation.Method == http.MethodGet && operation.Path == "/api/v1/results" {
+			return operation
+		}
+	}
+
+	return localAPIOperation{Group: "Results", Method: http.MethodGet, Path: "/api/v1/results", Summary: "Search results"}
+}
+
+// anchorSlug turns a group name into a stable DOM identifier.
+func anchorSlug(value string) string {
+	var builder strings.Builder
+	for _, character := range strings.ToLower(value) {
+		switch {
+		case character >= 'a' && character <= 'z', character >= '0' && character <= '9':
+			builder.WriteRune(character)
+		default:
+			builder.WriteByte('-')
+		}
+	}
+
+	return strings.Trim(builder.String(), "-")
 }
