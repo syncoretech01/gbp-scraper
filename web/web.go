@@ -291,6 +291,11 @@ func wildcardBind(addr string) bool {
 }
 
 func (s *Server) Start(ctx context.Context) error {
+	// Local automation subscribers are told about terminal jobs. The watcher
+	// claims each delivery durably, so it is safe to start unconditionally and
+	// costs nothing when no integration subscribes.
+	go s.watchTerminalJobEvents(ctx)
+
 	go func() {
 		<-ctx.Done()
 

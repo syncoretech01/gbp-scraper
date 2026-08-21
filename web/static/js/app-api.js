@@ -74,23 +74,47 @@
     });
 
     const integrationForm = workspace.querySelector("[data-integration-form]");
-    if (integrationForm) integrationForm.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        try {
-            await withBusy(submitControl(integrationForm, event), () => request(integrationForm.action, { method: "POST", body: new FormData(integrationForm) }));
-            window.location.reload();
-        } catch (error) { report(error); }
-    });
+
+    // Only the fields that belong to the selected destination stay visible, so
+    // a webhook never shows a database DSN and the form cannot be submitted
+    // with contradictory configuration.
+    function syncIntegrationKind() {
+        if (!integrationForm) return;
+        const picker = integrationForm.querySelector("[data-integration-kind]");
+        const kind = picker ? picker.value : "webhook";
+        integrationForm.querySelectorAll("[data-integration-field]").forEach((group) => {
+            group.hidden = group.dataset.integrationField !== kind;
+        });
+    }
+
+    if (integrationForm) {
+        syncIntegrationKind();
+        integrationForm.addEventListener("change", (event) => {
+            if (event.target.matches("[data-integration-kind]")) syncIntegrationKind();
+        });
+        integrationForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            try {
+                await withBusy(submitControl(integrationForm, event), () => request(integrationForm.action, { method: "POST", body: new FormData(integrationForm) }));
+                window.location.reload();
+            } catch (error) { report(error); }
+        });
+    }
 
     workspace.addEventListener("click", async (event) => {
         const key = event.target.closest("[data-api-key-toggle]");
-        const integration = event.target.closest("[data-integration-delete]");
+        const remove = event.target.closest("[data-integration-delete]");
+        const test = event.target.closest("[data-integration-test]");
         try {
             if (key) {
                 await withBusy(key, () => request("/api/v1/api-keys/" + encodeURIComponent(key.dataset.keyId) + "/" + key.dataset.apiKeyToggle, { method: "POST" }));
                 window.location.reload();
-            } else if (integration && window.confirm("Delete this local integration?")) {
-                await withBusy(integration, () => request("/api/v1/integrations/" + encodeURIComponent(integration.dataset.integrationId), { method: "DELETE" }));
+            } else if (test) {
+                await withBusy(test, () => request("/api/v1/integrations/" + encodeURIComponent(test.dataset.integrationId) + "/test", { method: "POST" }));
+                if (window.GMapsApp) window.GMapsApp.toast("Signed test delivery sent.", "success");
+                window.location.reload();
+            } else if (remove && window.confirm("Delete this local integration? Earlier delivery history is removed with it.")) {
+                await withBusy(remove, () => request("/api/v1/integrations/" + encodeURIComponent(remove.dataset.integrationId), { method: "DELETE" }));
                 window.location.reload();
             }
         } catch (error) { report(error); }

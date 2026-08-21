@@ -12,6 +12,8 @@ type apiWorkspacePageData struct {
 	Endpoints             []apiEndpointView
 	APIKeys               []APIKeyRecord
 	Integrations          []IntegrationRecord
+	Deliveries            []IntegrationDelivery
+	EventNames            []string
 	RequestLogs           []APIRequestLog
 	RateLimit             int64
 	Notice                string
@@ -22,6 +24,9 @@ type apiEndpointView struct {
 	Path        string
 	Description string
 }
+
+// maximumRenderedDeliveries bounds the delivery history table on the page.
+const maximumRenderedDeliveries = 50
 
 func (s *Server) apiWorkspacePage(w http.ResponseWriter, r *http.Request) {
 	host := r.Host
@@ -62,6 +67,8 @@ func (s *Server) apiWorkspacePage(w http.ResponseWriter, r *http.Request) {
 	}
 	page.APIKeys, _ = s.svc.ListAPIKeys(r.Context(), 100)
 	page.Integrations, _ = s.svc.ListIntegrations(r.Context(), false, maximumIntegrations)
+	page.Deliveries, _ = s.svc.ListIntegrationDeliveries(r.Context(), "", maximumRenderedDeliveries)
+	page.EventNames = integrationEventNames()
 	page.RequestLogs, _ = s.svc.ListAPIRequestLogs(r.Context(), 50)
 
 	s.renderAppPage(w, "api", appPageData{
