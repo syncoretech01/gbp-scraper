@@ -267,87 +267,136 @@ func (engine *coverageEngine) overlapsCoveredZIPLocked(candidate prospect.ZIPAre
 	return false
 }
 
-// claimParentExpansionLocked reports whether this parent ZIP may still seed
-// neighbour expansions, and records the claim.
+// parentExpansionSpentLocked reports whether this parent ZIP has already
+// spent budget on its neighbourhood.
 //
 // A plan is a synonym x ZIP cross product, so one productive ZIP completes
 // once per synonym. Without this guard each of those completions spends its
 // own slice of the shared budget on the same neighbourhood, which is the
 // duplicate work the coverage audit set out to remove. Callers hold
 // engine.mu.
-func (engine *coverageEngine) claimParentExpansionLocked(parentZIP string) bool {
+func (engine *coverageEngine) parentExpansionSpentLocked(parentZIP string) bool {
+	_, spent := engine.blindspot.expandedParents[parentZIP]
+
+	return spent
+}
+
+// claimParentExpansionLocked records that this parent ZIP has spent budget on
+// its neighbourhood. It is called only when a neighbour task is actually
+// funded, so a parent whose candidates lost the work ranking keeps its claim
+// for a later completion. Callers hold engine.mu.
+func (engine *coverageEngine) claimParentExpansionLocked(parentZIP string) {
 	if engine.blindspot.expandedParents == nil {
 		engine.blindspot.expandedParents = make(map[string]struct{})
 	}
 
-	if _, spent := engine.blindspot.expandedParents[parentZIP]; spent {
-		return false
-	}
-
 	engine.blindspot.expandedParents[parentZIP] = struct{}{}
-
-	return true
 }
 
-// refineLocked gives one truncated cell a bounded second look before any
-// budget goes to its neighbours: a query whose feed was cut off has unseen
-// businesses inside the cell, so widening the search first would compound
-// the blind spot.
+// refinementBaseZoom is the zoom a further refinement of this task would
+// tighten. A plan task starts from the job's configured zoom; a refinement
+// starts from the zoom recorded in its own durable payload, which makes the
+// chain depth recoverable after a restart. A payload written before zooms
+// were recorded is treated conservatively as one step in already.
+func refinementBaseZoom(task web.JobTask, planZoom int) int {
+	if !strings.HasPrefix(task.Origin, web.CoverageRefinementOriginPrefix) {
+		return planZoom
+	}
+
+	var payload expansionTaskPayload
+	if err := json.Unmarshal(task.Payload, &payload); err != nil || payload.Zoom <= 0 {
+		return planZoom + coverageRefinementZoomStep
+	}
+
+	return payload.Zoom
+}
+
+// refinementDepthOf is how many tighter passes this task already represents:
+// 0 for an operator plan query, 1 for its first refinement, and so on. It is
+// derived from the task's durable payload rather than from run state, so a
+// restarted process cannot restart the chain.
+func refinementDepthOf(task web.JobTask, planZoom int) int {
+	if !strings.HasPrefix(task.Origin, web.CoverageRefinementOriginPrefix) {
+		return 0
+	}
+
+	base := refinementBaseZoom(task, planZoom)
+	if planZoom < 1 || base <= planZoom {
+		return 1
+	}
+
+	return (base - planZoom + coverageRefinementZoomStep - 1) / coverageRefinementZoomStep
+}
+
+// refinementCandidateLocked offers a bounded tighter re-cover of one
+// truncated cell as fundable work.
 //
-// The refinement re-queries the same ZIP at a tighter zoom, centred on the
+// A query whose feed was cut off has unseen businesses inside the cell, so
+// the candidate re-queries the same ZIP at a tighter zoom centred on the
 // ZIP's own centroid. That is the cheapest correct refinement the current
 // engine supports: it needs no change to gmaps, adds no concurrency, and
-// spends the same MaxExpansions budget neighbour expansions draw on.
-// Callers hold engine.mu.
-func (engine *coverageEngine) refineLocked(
+// draws on the same MaxExpansions budget neighbour expansions do — which is
+// why planAppendedWorkLocked ranks the two against each other rather than
+// funding either automatically.
+//
+// A refinement may itself be refined, but only up to
+// coverageMaxRefinementDepth and only while the evidence still justifies it:
+// the previous pass must have been cut off at the cap again AND still have
+// returned net-new at or above the expansion floor. A stubbornly capped cell
+// that has stopped paying therefore cannot start a chain. Callers hold
+// engine.mu.
+func (engine *coverageEngine) refinementCandidateLocked(
 	task web.JobTask,
 	checkpoint web.JobTaskCheckpoint,
-	decision *coverageDecision,
-) {
+) (coverageWorkCandidate, bool) {
 	if !checkpoint.Truncated {
-		return
+		return coverageWorkCandidate{}, false
 	}
 
-	if engine.options.MaxExpansions <= 0 || engine.expansionsAdded >= engine.options.MaxExpansions {
-		return
+	depth := refinementDepthOf(task, engine.blindspot.planZoom)
+	if depth >= coverageMaxRefinementDepth {
+		return coverageWorkCandidate{}, false
 	}
 
-	// One bounded pass per cell: a refinement is never itself refined, so a
-	// stubbornly capped cell cannot start a chain.
-	if strings.HasPrefix(task.Origin, web.CoverageRefinementOriginPrefix) {
-		return
-	}
-
-	if engine.blindspot.refinedTasks == nil {
-		engine.blindspot.refinedTasks = make(map[string]int)
+	// Chaining is earned, never automatic: a second pass has to have kept
+	// paying before it may buy a third.
+	if depth > 0 && coverageNetNewRows(checkpoint) < int64(engine.options.ExpansionMinNewOrDefault()) {
+		return coverageWorkCandidate{}, false
 	}
 
 	if engine.blindspot.refinedTasks[task.Key] >= coverageMaxRefinementsPerTask {
-		return
+		return coverageWorkCandidate{}, false
 	}
 
 	synonym, zip, ok := web.SplitGBPQuery(task.Query)
 	if !ok {
-		return
+		return coverageWorkCandidate{}, false
 	}
 
-	zoom := refinementZoom(engine.blindspot.planZoom)
+	zoom := refinementZoom(refinementBaseZoom(task, engine.blindspot.planZoom))
 	if zoom == 0 {
-		return
+		return coverageWorkCandidate{}, false
 	}
 
 	area, found := engine.zipAreaLocked(zip)
 	if !found {
-		return
+		return coverageWorkCandidate{}, false
 	}
 
-	definition := refinementTaskDefinition(engine.jobID, synonym, area, zoom, engine.nextSequence)
+	return coverageWorkCandidate{
+		kind:  coverageWorkRefinement,
+		score: expectedRefinementYield(checkpoint),
+		build: func(sequence int) web.JobTaskDefinition {
+			return refinementTaskDefinition(engine.jobID, synonym, area, zoom, sequence)
+		},
+		onFund: func() {
+			if engine.blindspot.refinedTasks == nil {
+				engine.blindspot.refinedTasks = make(map[string]int)
+			}
 
-	engine.nextSequence++
-	engine.expansionsAdded++
-	engine.blindspot.refinedTasks[task.Key]++
-
-	decision.refinements = append(decision.refinements, definition)
+			engine.blindspot.refinedTasks[task.Key]++
+		},
+	}, true
 }
 
 // refinementTaskDefinition builds the durable description of one refinement

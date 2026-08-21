@@ -286,11 +286,18 @@ type CoverageTrendPoint struct {
 }
 
 // CoverageReport is the full coverage readback for one job.
+//
+// The four original keys (totals, saturation, by_query, trend) keep their
+// exact names, shapes and meanings. Confidence is additive: a consumer that
+// does not know about it simply ignores the key.
 type CoverageReport struct {
 	Totals     CoverageTotals       `json:"totals"`
 	Saturation CoverageSaturation   `json:"saturation"`
 	ByQuery    []CoverageQueryRow   `json:"by_query"`
 	Trend      []CoverageTrendPoint `json:"trend"`
+	// Confidence rates every covered cell from the same durable evidence
+	// the rest of the report is built from. It never triggers scraping.
+	Confidence CoverageConfidence `json:"confidence"`
 }
 
 // ProxyTaskStatInput records one finished task against the proxy it ran
@@ -649,6 +656,8 @@ func buildCoverageReport(options *CoverageOptions, rows []CoverageTaskRow) Cover
 	report.Saturation.WindowSamples = evidence.Samples
 	report.Saturation.SuccessfulSamples = evidence.Successful
 	report.Saturation.EmptySamples = evidence.Empty
+
+	report.Confidence = buildCoverageConfidence(options, rows, report.Saturation)
 
 	return report
 }

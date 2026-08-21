@@ -434,12 +434,23 @@ func wizardCoverageOptions(r *http.Request) (*CoverageOptions, error) {
 	ratioValue := strings.TrimSpace(r.FormValue("coverage_min_new_ratio"))
 	expansionsValue := strings.TrimSpace(r.FormValue("coverage_max_expansions"))
 	minNewValue := strings.TrimSpace(r.FormValue("coverage_expansion_min_new"))
+	// An explicit zero-yield choice is a tri-state: present and on, present
+	// and off, or absent (follow AutoStop). The hidden companion field is
+	// what distinguishes "the operator unticked it" from "the form has no
+	// such control at all".
+	emptyWindowChoice := strings.TrimSpace(r.FormValue("coverage_stop_on_empty_window_set"))
+	emptyWindowValue := r.FormValue("coverage_stop_on_empty_window") == "on"
 
-	if !autoStop && windowValue == "" && ratioValue == "" && expansionsValue == "" && minNewValue == "" {
+	if !autoStop && windowValue == "" && ratioValue == "" &&
+		expansionsValue == "" && minNewValue == "" && emptyWindowChoice == "" {
 		return nil, nil
 	}
 
 	options := &CoverageOptions{AutoStop: autoStop}
+
+	if emptyWindowChoice != "" {
+		options.StopOnEmptyWindow = &emptyWindowValue
+	}
 
 	if windowValue != "" {
 		window, err := strconv.Atoi(windowValue)

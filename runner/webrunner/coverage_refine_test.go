@@ -280,12 +280,24 @@ func TestCoverageEngineDeclinesRefinementsItCannotJustify(t *testing.T) {
 			point:   truncated,
 		},
 		{
-			name:    "a refinement is never itself refined",
+			name:    "a refinement already at the maximum chain depth",
 			options: web.CoverageOptions{MaxExpansions: 4},
 			zoom:    15,
 			task: web.JobTask{
-				Key: "ref-1", Query: "dentist in Alpha IL 60001",
-				Origin: web.CoverageRefinementOriginPrefix + "60001",
+				Key: "ref-deep", Query: "dentist in Alpha IL 60001",
+				Origin:  web.CoverageRefinementOriginPrefix + "60001",
+				Payload: refinementPayload(t, 15+2*coverageRefinementZoomStep),
+			},
+			point: truncated,
+		},
+		{
+			name:    "a refinement that stopped paying",
+			options: web.CoverageOptions{MaxExpansions: 4, ExpansionMinNew: 50},
+			zoom:    15,
+			task: web.JobTask{
+				Key: "ref-poor", Query: "dentist in Alpha IL 60001",
+				Origin:  web.CoverageRefinementOriginPrefix + "60001",
+				Payload: refinementPayload(t, 15+coverageRefinementZoomStep),
 			},
 			point: truncated,
 		},
@@ -627,10 +639,11 @@ func TestCoverageExpansionIgnoresRowsAnotherQueryAlreadyFound(t *testing.T) {
 		t.Fatalf("expansions = %d, want 0 for a query that found nothing new", len(decision.expansions))
 	}
 
-	// The same rows count, with genuinely new ground, still expands.
+	// Genuinely new ground still expands: three of this query's four rows
+	// were businesses the workspace had never seen.
 	productive := engine.recordCompletion(
 		web.JobTask{Key: "t-productive", Query: "dentist in Gamma IL 60003"},
-		web.JobTaskCheckpoint{RowsAdded: 20, RowsReplaced: 17},
+		web.JobTaskCheckpoint{RowsAdded: 4, RowsReplaced: 1},
 	)
 	if len(productive.expansions) == 0 {
 		t.Fatal("a query with three genuinely new rows earned no expansion")
