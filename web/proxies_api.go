@@ -33,7 +33,12 @@ type proxyTestReport struct {
 	MaskedURL string `json:"masked_url"`
 	Status    string `json:"status"`
 	LatencyMS *int64 `json:"latency_ms,omitempty"`
-	Error     string `json:"error,omitempty"`
+	// ExitIP is only ever the address the test genuinely observed, and
+	// ExitIPSource records how it was determined. See web/proxies_probe.go.
+	ExitIP       string `json:"exit_ip,omitempty"`
+	ExitIPSource string `json:"exit_ip_source,omitempty"`
+	Country      string `json:"country,omitempty"`
+	Error        string `json:"error,omitempty"`
 }
 
 func (s *Server) registerProxyTestRoutes(mux *http.ServeMux) {
@@ -89,13 +94,16 @@ func (s *Server) apiTestProxies(w http.ResponseWriter, r *http.Request) {
 		result := checkProxyAccess(r.Context(), secret)
 		report.Status = result.Status
 		report.LatencyMS = result.LatencyMS
+		report.ExitIP = result.ExitIP
+		report.ExitIPSource = result.ExitIPSource
+		report.Country = result.Country
 		report.Error = result.Error
 
 		if saveErr := s.svc.RecordProxyTest(r.Context(), proxy.ID, result); saveErr != nil {
 			report.Error = strings.TrimSpace(report.Error + " (result not saved)")
 		}
 
-		if result.Status == "healthy" {
+		if result.Status == ProxyStatusHealthy {
 			healthy++
 		}
 

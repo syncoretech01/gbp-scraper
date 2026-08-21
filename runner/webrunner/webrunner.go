@@ -41,6 +41,9 @@ type webrunner struct {
 	// resolveProxyPlanForTest lets tests supply a proxy plan without a real
 	// encrypted pool; production always goes through the service.
 	resolveProxyPlanForTest func(context.Context, string) (web.ProxyPlan, error)
+	// browsers caches the local browser-process census that adaptive
+	// performance reads before it lets a run take capacity back.
+	browsers browserCensus
 }
 
 type mateRunner interface {

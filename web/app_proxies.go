@@ -9,10 +9,10 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gosom/google-maps-scraper/web/jobruntime"
-	xproxy "golang.org/x/net/proxy"
 )
 
 const (
@@ -42,13 +42,59 @@ type proxyRowView struct {
 	Protocol     string
 	Enabled      bool
 	Status       string
+	StatusClass  string
 	Latency      string
+	ExitIP       string
+	ExitIPHint   string
+	Country      string
 	SuccessCount int64
 	FailureCount int64
 	BlockCount   int64
 	UsageCount   int64
 	LastSuccess  string
+	LastUsed     string
 	Cooldown     string
+}
+
+// proxyStatusClass maps a proxy status onto a badge state the shared
+// component library already defines, so a new status shows the right severity
+// without adding a page-level colour.
+func proxyStatusClass(status string) string {
+	switch status {
+	case ProxyStatusHealthy:
+		return "healthy"
+	case ProxyStatusSlow, ProxyStatusRateLimited:
+		return "warning"
+	case ProxyStatusBlocked, ProxyStatusOffline, ProxyStatusAuthentication:
+		return "failed"
+	case ProxyStatusCoolingDown:
+		return "paused"
+	default:
+		return "unknown"
+	}
+}
+
+// exitIPHint explains, in the operator's language, how far an exit address can
+// be trusted. The interface must never present a gateway entry address as a
+// confirmed exit.
+func exitIPHint(source string) string {
+	switch source {
+	case ExitIPSourceSOCKS5Bind:
+		return "reported by the SOCKS5 server as its outbound address"
+	case ExitIPSourceEndpoint:
+		return "endpoint this host connected to; the exit only for a single-hop proxy"
+	default:
+		return ""
+	}
+}
+
+// missingLabel keeps empty proxy evidence readable instead of blank.
+func missingLabel(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+
+	return value
 }
 
 func (s *Server) proxiesPage(w http.ResponseWriter, r *http.Request) {
@@ -70,12 +116,17 @@ func (s *Server) proxiesPage(w http.ResponseWriter, r *http.Request) {
 			EnabledCount: pool.EnabledCount, HealthyCount: pool.HealthyCount,
 		})
 	}
+	now := time.Now().UTC()
 	for _, proxy := range proxies {
 		page.Proxies = append(page.Proxies, proxyRowView{
 			ID: proxy.ID, PoolName: proxy.PoolName, MaskedURL: proxy.MaskedURL, Protocol: proxy.Protocol,
-			Enabled: proxy.Enabled, Status: proxy.Status, Latency: optionalMilliseconds(proxy.LatencyMS),
+			Enabled: proxy.Enabled, Status: proxy.EffectiveStatus(now), StatusClass: proxyStatusClass(proxy.EffectiveStatus(now)),
+			Latency: optionalMilliseconds(proxy.LatencyMS),
+			ExitIP: missingLabel(proxy.ExitIP, "not reported"), ExitIPHint: exitIPHint(proxy.ExitIPSource),
+			Country:      missingLabel(proxy.Country, "unknown"),
 			SuccessCount: proxy.SuccessCount, FailureCount: proxy.FailureCount, BlockCount: proxy.BlockCount,
 			UsageCount: proxy.UsageCount, LastSuccess: optionalTimeLabel(proxy.LastSuccessAt),
+			LastUsed: optionalTimeLabel(proxy.LastUsedAt),
 			Cooldown: optionalTimeLabel(proxy.CooldownUntil),
 		})
 	}
@@ -155,6 +206,45 @@ func (s *Server) testProxy(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/app/proxies?notice=Proxy+test+completed", http.StatusSeeOther)
 }
 
+// proxyExitObservation collects the addresses one proxy test actually
+// observed. It is written from the dialler goroutine and read after the
+// request finishes, so it is guarded.
+type proxyExitObservation struct {
+	mu       sync.Mutex
+	bound    string
+	endpoint string
+}
+
+func (observation *proxyExitObservation) record(bound, endpoint string) {
+	observation.mu.Lock()
+	defer observation.mu.Unlock()
+
+	if bound != "" {
+		observation.bound = bound
+	}
+
+	if endpoint != "" {
+		observation.endpoint = endpoint
+	}
+}
+
+// exitIP reports the best exit address the test measured and how it was
+// determined, so the interface can label it honestly.
+func (observation *proxyExitObservation) exitIP() (address, source string) {
+	observation.mu.Lock()
+	defer observation.mu.Unlock()
+
+	if observation.bound != "" {
+		return observation.bound, ExitIPSourceSOCKS5Bind
+	}
+
+	if observation.endpoint != "" {
+		return observation.endpoint, ExitIPSourceEndpoint
+	}
+
+	return "", ""
+}
+
 func checkProxyAccess(parent context.Context, secret string) ProxyTestResult {
 	checkedAt := time.Now().UTC()
 	result := ProxyTestResult{Status: "offline", CheckedAt: checkedAt}
@@ -165,23 +255,32 @@ func checkProxyAccess(parent context.Context, secret string) ProxyTestResult {
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.DisableKeepAlives = true
+	observation := &proxyExitObservation{}
 	switch proxyURL.Scheme {
 	case "http", "https":
 		transport.Proxy = http.ProxyURL(proxyURL)
+		// The proxy endpoint is the only address an HTTP CONNECT tunnel
+		// exposes locally; the protocol carries no outbound-address field.
+		baseDialer := &net.Dialer{Timeout: 8 * time.Second}
+		transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+			conn, dialErr := baseDialer.DialContext(ctx, network, address)
+			if dialErr == nil {
+				observation.record("", endpointAddress(conn.RemoteAddr()))
+			}
+
+			return conn, dialErr
+		}
 	case "socks5":
-		var auth *xproxy.Auth
-		if proxyURL.User != nil {
-			password, _ := proxyURL.User.Password()
-			auth = &xproxy.Auth{User: proxyURL.User.Username(), Password: password}
-		}
-		dialer, dialErr := xproxy.SOCKS5("tcp", proxyURL.Host, auth, &net.Dialer{Timeout: 8 * time.Second})
-		if dialErr != nil {
-			result.Error = jobruntime.RedactString(dialErr.Error())
-			return result
-		}
 		transport.Proxy = nil
-		transport.DialContext = func(_ context.Context, network, address string) (net.Conn, error) {
-			return dialer.Dial(network, address)
+		transport.DialContext = func(ctx context.Context, _, address string) (net.Conn, error) {
+			conn, bound, dialErr := dialSOCKS5(ctx, proxyURL, address)
+			if dialErr != nil {
+				return nil, dialErr
+			}
+
+			observation.record(bound, endpointAddress(conn.RemoteAddr()))
+
+			return conn, nil
 		}
 	default:
 		result.Error = "unsupported proxy protocol"
@@ -195,16 +294,22 @@ func checkProxyAccess(parent context.Context, secret string) ProxyTestResult {
 		return result
 	}
 	request.Header.Set("User-Agent", "Mozilla/5.0 (compatible; GoogleMapsScraperLocal/1.0)")
-	client := &http.Client{Transport: transport, CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+	// Every hop is remembered so the country Google served the request as can
+	// be read from the chain without a geolocation lookup.
+	visited := []string{request.URL.String()}
+	client := &http.Client{Transport: transport, CheckRedirect: func(next *http.Request, via []*http.Request) error {
 		if len(via) >= 5 {
 			return errors.New("too many redirects")
 		}
+		visited = append(visited, next.URL.String())
+
 		return nil
 	}}
 	started := time.Now()
 	response, err := client.Do(request)
 	latency := time.Since(started).Milliseconds()
 	result.LatencyMS = &latency
+	result.ExitIP, result.ExitIPSource = observation.exitIP()
 	transport.CloseIdleConnections()
 	if err != nil {
 		result.Error = jobruntime.RedactString(err.Error())
@@ -214,6 +319,10 @@ func checkProxyAccess(parent context.Context, secret string) ProxyTestResult {
 		return result
 	}
 	defer response.Body.Close()
+	if response.Request != nil && response.Request.URL != nil {
+		visited = append(visited, response.Request.URL.String())
+	}
+	result.Country = googleCountryHint(visited...)
 	switch {
 	case response.StatusCode == http.StatusProxyAuthRequired:
 		result.Status = "authentication-failed"

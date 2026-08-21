@@ -413,6 +413,11 @@ func classifyTaskFailure(err error) string {
 	message := strings.ToLower(err.Error())
 
 	switch {
+	// A refusal by the platform is checked first: it is the one class whose
+	// remedy is less parallelism rather than a retry, and adaptive
+	// performance measures its rate from exactly this classification.
+	case isBlockedFailure(message):
+		return "blocked"
 	case strings.Contains(message, "browser"), strings.Contains(message, "playwright"),
 		strings.Contains(message, "target closed"), strings.Contains(message, "driver"),
 		strings.Contains(message, "chromium"):
@@ -444,6 +449,10 @@ func taskFailureBackoff(failureKind string, attempts int) time.Duration {
 	var backoff time.Duration
 
 	switch failureKind {
+	case "blocked":
+		// A blocked attempt needs the platform to forget the run, not a fast
+		// retry, so it waits longest of every class.
+		backoff = 60 * time.Second * time.Duration(attempts)
 	case "browser-failure":
 		backoff = 20 * time.Second * time.Duration(attempts)
 	case "proxy-failure":

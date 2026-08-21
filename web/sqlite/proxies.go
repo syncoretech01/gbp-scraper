@@ -25,6 +25,14 @@ import (
 
 const proxyKeyFilename = ".proxy-master-key"
 
+// Cooling-down windows keep a temporarily unusable exit out of rotation
+// without disabling it. A block costs longer than a rate limit because the
+// platform has to forget the exit rather than just its recent request rate.
+const (
+	rateLimitedCooldown = 15 * time.Minute
+	blockedCooldown     = 45 * time.Minute
+)
+
 func (repo *repo) ListProxyPools(ctx context.Context) ([]web.ProxyPoolRecord, error) {
 	rows, err := repo.db.QueryContext(ctx,
 		"SELECT proxy_pools.id, proxy_pools.name, proxy_pools.strategy, "+
@@ -58,9 +66,10 @@ func (repo *repo) ListProxyPools(ctx context.Context) ([]web.ProxyPoolRecord, er
 
 func (repo *repo) ListProxies(ctx context.Context, poolID string) ([]web.ProxyRecord, error) {
 	statement := "SELECT proxies.id, proxy_pools.id, proxy_pools.name, proxies.url_masked, proxies.protocol, " +
-		"proxies.enabled, proxies.status, proxies.latency_ms, proxies.success_count, proxies.failure_count, " +
+		"proxies.enabled, proxies.status, proxies.latency_ms, proxies.exit_ip, proxies.exit_ip_source, " +
+		"proxies.country, proxies.success_count, proxies.failure_count, " +
 		"proxies.block_count, proxies.usage_count, proxies.last_success_at, proxies.last_failure_at, " +
-		"proxies.cooldown_until, proxies.created_at, proxies.updated_at " +
+		"proxies.last_used_at, proxies.cooldown_until, proxies.created_at, proxies.updated_at " +
 		"FROM proxies JOIN proxy_pool_members ON proxy_pool_members.proxy_id = proxies.id " +
 		"JOIN proxy_pools ON proxy_pools.id = proxy_pool_members.pool_id"
 	args := []any{}
@@ -91,8 +100,7 @@ func (repo *repo) ImportProxyPool(
 	strategy string,
 	values []string,
 ) (web.ProxyPoolRecord, int, error) {
-	if strategy != "round_robin" && strategy != "random" && strategy != "fastest" &&
-		strategy != "lowest_failure" && strategy != "sticky_query" && strategy != "sticky_cell" {
+	if !supportedProxyStrategy(strategy) {
 		return web.ProxyPoolRecord{}, 0, fmt.Errorf("unsupported proxy strategy")
 	}
 	key, err := repo.loadProxyKey()
@@ -203,17 +211,7 @@ func (repo *repo) ResolveProxyPool(ctx context.Context, id string) ([]string, er
 		"AND (proxies.cooldown_until IS NULL OR proxies.cooldown_until <= ?) " +
 		"AND proxies.status NOT IN ('blocked','authentication-failed','offline') ORDER BY "
 
-	query := queryPrefix + "proxies.id"
-	switch strategy {
-	// sticky_query and sticky_cell keep the deterministic id order so the
-	// task pool's hashed assignment is stable across resolves.
-	case "random":
-		query = queryPrefix + "random()"
-	case "fastest":
-		query = queryPrefix + "CASE WHEN proxies.latency_ms IS NULL THEN 1 ELSE 0 END, proxies.latency_ms, proxies.id"
-	case "lowest_failure":
-		query = queryPrefix + "proxies.failure_count, proxies.block_count, proxies.id"
-	}
+	query := queryPrefix + proxyStrategyOrder(strategy)
 	rows, err := repo.db.QueryContext(ctx, query, id, time.Now().UTC().Unix())
 	if err != nil {
 		return nil, fmt.Errorf("resolve proxy pool: %w", err)
@@ -236,10 +234,50 @@ func (repo *repo) ResolveProxyPool(ctx context.Context, id string) ([]string, er
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	// The usage clock is what makes least-recently-used rotation possible: a
+	// resolve is the moment a proxy is handed to a run, so it is also the
+	// moment the proxy stops being the least recently used one.
+	usedAt := time.Now().UTC().Unix()
 	for _, proxyID := range ids {
-		_, _ = repo.db.ExecContext(ctx, "UPDATE proxies SET usage_count = usage_count + 1 WHERE id = ?", proxyID)
+		_, _ = repo.db.ExecContext(
+			ctx,
+			"UPDATE proxies SET usage_count = usage_count + 1, last_used_at = ? WHERE id = ?",
+			usedAt, proxyID,
+		)
 	}
 	return values, nil
+}
+
+// supportedProxyStrategy reports whether a pool may be stored with one
+// rotation strategy. Every strategy the specification lists is accepted.
+func supportedProxyStrategy(strategy string) bool {
+	switch strategy {
+	case "round_robin", "random", "fastest", "lowest_failure",
+		"least_recently_used", "sticky_query", "sticky_cell":
+		return true
+	default:
+		return false
+	}
+}
+
+// proxyStrategyOrder returns the ORDER BY clause one rotation strategy needs.
+// Sticky strategies keep the deterministic identifier order so the task pool's
+// hashed assignment stays stable between resolves, and round robin does the
+// same because the pool itself walks the list in order.
+func proxyStrategyOrder(strategy string) string {
+	switch strategy {
+	case "random":
+		return "random()"
+	case "fastest":
+		return "CASE WHEN proxies.latency_ms IS NULL THEN 1 ELSE 0 END, proxies.latency_ms, proxies.id"
+	case "lowest_failure":
+		return "proxies.failure_count, proxies.block_count, proxies.id"
+	case "least_recently_used":
+		// A proxy that has never been used sorts first, then the oldest use.
+		return "CASE WHEN proxies.last_used_at IS NULL THEN 0 ELSE 1 END, proxies.last_used_at, proxies.id"
+	default:
+		return "proxies.id"
+	}
 }
 
 // ResolveProxyPlan returns the pool's usable proxies together with its
@@ -335,30 +373,38 @@ func (repo *repo) RecordProxyTest(ctx context.Context, id string, result web.Pro
 	if result.LatencyMS != nil {
 		latency = *result.LatencyMS
 	}
-	success := result.Status == "healthy" || result.Status == "slow"
-	blocked := result.Status == "blocked" || result.Status == "rate-limited"
+	success := result.Status == web.ProxyStatusHealthy || result.Status == web.ProxyStatusSlow
+	blocked := result.Status == web.ProxyStatusBlocked || result.Status == web.ProxyStatusRateLimited
 	var cooldown any
-	if result.Status == "rate-limited" {
-		cooldown = result.CheckedAt.Add(15 * time.Minute).Unix()
+	// A rate-limited or blocked exit needs the platform to forget it, so both
+	// cool down rather than being retried immediately. A block costs longer.
+	switch result.Status {
+	case web.ProxyStatusRateLimited:
+		cooldown = result.CheckedAt.Add(rateLimitedCooldown).Unix()
+	case web.ProxyStatusBlocked:
+		cooldown = result.CheckedAt.Add(blockedCooldown).Unix()
 	}
-	update := "UPDATE proxies SET status = ?, latency_ms = ?, exit_ip = ?, country = ?, " +
+	update := "UPDATE proxies SET status = ?, latency_ms = ?, exit_ip = ?, exit_ip_source = ?, country = ?, " +
 		"success_count = success_count + ?, failure_count = failure_count + ?, block_count = block_count + ?, " +
 		"last_success_at = CASE WHEN ? THEN ? ELSE last_success_at END, " +
 		"last_failure_at = CASE WHEN ? THEN last_failure_at ELSE ? END, cooldown_until = ?, updated_at = ? WHERE id = ?"
 	resultSQL, err := tx.ExecContext(ctx, update,
-		result.Status, latency, result.ExitIP, result.Country, boolInt(success), boolInt(!success), boolInt(blocked),
+		result.Status, latency, result.ExitIP, result.ExitIPSource, result.Country,
+		boolInt(success), boolInt(!success), boolInt(blocked),
 		success, result.CheckedAt.Unix(), success, result.CheckedAt.Unix(), cooldown, result.CheckedAt.Unix(), id,
 	)
 	if err := requireProxyResult(resultSQL, err); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx,
-		"INSERT INTO proxy_health(proxy_id, status, latency_ms, exit_ip, country, error, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		id, result.Status, latency, result.ExitIP, result.Country, result.Error, result.CheckedAt.Unix(),
+		"INSERT INTO proxy_health(proxy_id, status, latency_ms, exit_ip, exit_ip_source, country, error, checked_at) "+
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		id, result.Status, latency, result.ExitIP, result.ExitIPSource, result.Country,
+		result.Error, result.CheckedAt.Unix(),
 	); err != nil {
 		return err
 	}
-	if result.Status == "authentication-failed" || result.Status == "offline" {
+	if result.Status == web.ProxyStatusAuthentication || result.Status == web.ProxyStatusOffline {
 		if _, err := tx.ExecContext(ctx,
 			"UPDATE proxies SET enabled = CASE WHEN failure_count >= 3 THEN 0 ELSE enabled END WHERE id = ?",
 			id,
@@ -545,12 +591,13 @@ type proxyScanner interface {
 func scanProxy(scanner proxyScanner) (web.ProxyRecord, error) {
 	var proxy web.ProxyRecord
 	var enabled int
-	var latency, lastSuccess, lastFailure, cooldown sql.NullInt64
+	var latency, lastSuccess, lastFailure, lastUsed, cooldown sql.NullInt64
 	var createdAt, updatedAt int64
 	if err := scanner.Scan(
 		&proxy.ID, &proxy.PoolID, &proxy.PoolName, &proxy.MaskedURL, &proxy.Protocol,
-		&enabled, &proxy.Status, &latency, &proxy.SuccessCount, &proxy.FailureCount,
-		&proxy.BlockCount, &proxy.UsageCount, &lastSuccess, &lastFailure, &cooldown,
+		&enabled, &proxy.Status, &latency, &proxy.ExitIP, &proxy.ExitIPSource,
+		&proxy.Country, &proxy.SuccessCount, &proxy.FailureCount,
+		&proxy.BlockCount, &proxy.UsageCount, &lastSuccess, &lastFailure, &lastUsed, &cooldown,
 		&createdAt, &updatedAt,
 	); err != nil {
 		return web.ProxyRecord{}, err
@@ -559,6 +606,7 @@ func scanProxy(scanner proxyScanner) (web.ProxyRecord, error) {
 	proxy.LatencyMS = nullIntPointer(latency)
 	proxy.LastSuccessAt = nullTimePointer(lastSuccess)
 	proxy.LastFailureAt = nullTimePointer(lastFailure)
+	proxy.LastUsedAt = nullTimePointer(lastUsed)
 	proxy.CooldownUntil = nullTimePointer(cooldown)
 	proxy.CreatedAt = time.Unix(createdAt, 0).UTC()
 	proxy.UpdatedAt = time.Unix(updatedAt, 0).UTC()

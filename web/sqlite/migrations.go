@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	currentSchemaVersion           = 13
+	currentSchemaVersion           = 17
 	migrationChecksumSchemaVersion = 4
 )
 
@@ -1180,6 +1180,41 @@ var schemaMigrations = []schemaMigration{
 			ON job_benchmark_snapshots(captured_at DESC, job_id)`,
 		},
 	},
+	{
+		// Reserved for the enrichment/quality/performance group.
+		version: 17,
+		name:    "proxy-rotation-listing-keys-and-error-screenshots",
+		statements: []string{
+			// Least-recently-used rotation needs a usage clock. NULL means the
+			// proxy has never been handed out, which sorts first so a fresh
+			// proxy is preferred over one already used.
+			`ALTER TABLE proxies ADD COLUMN last_used_at INTEGER`,
+			`CREATE INDEX IF NOT EXISTS idx_proxies_last_used ON proxies(last_used_at, id)`,
+			// How the recorded exit IP was determined. An HTTP CONNECT tunnel
+			// exposes only the endpoint it dialled, while SOCKS5 can report the
+			// address it bound for the outbound connection, so the value is
+			// stored beside the address instead of being implied.
+			`ALTER TABLE proxies ADD COLUMN exit_ip_source TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE proxy_health ADD COLUMN exit_ip_source TEXT NOT NULL DEFAULT ''`,
+			// A failed audit may also carry a screenshot; it is stored beside
+			// the homepage capture so both remain independently viewable.
+			`ALTER TABLE website_audits ADD COLUMN error_screenshot_path TEXT NOT NULL DEFAULT ''`,
+			// Durable listing identities per job. The scrape deduper is an
+			// in-memory hash set, so a restart previously re-visited every
+			// listing an interrupted run had already discovered. Persisting
+			// the keys makes deduplication state survive a restart, and the
+			// same rows are the durable record of the listing IDs a job has
+			// already seen.
+			`CREATE TABLE IF NOT EXISTS job_listing_keys (
+				job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+				key_hash TEXT NOT NULL,
+				created_at INTEGER NOT NULL,
+				PRIMARY KEY(job_id, key_hash)
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_job_listing_keys_job
+			ON job_listing_keys(job_id, created_at)`,
+		},
+	},
 }
 
 func migrateDatabase(db *sql.DB, path string) error {
@@ -1403,29 +1438,54 @@ func validateMigrationMetadata(db *sql.DB, version int) error {
 	}
 	defer rows.Close()
 
-	want := 1
+	// The recorded history must match the declared migration list exactly, in
+	// order. It is compared against that list rather than against a 1..N run
+	// because version numbers are reserved per work stream, so the declared
+	// list may legitimately contain gaps.
+	declared := declaredMigrationsThrough(version)
+	applied := 0
+
 	for rows.Next() {
-		var applied int
-		if err := rows.Scan(&applied); err != nil {
+		var recorded int
+		if err := rows.Scan(&recorded); err != nil {
 			return fmt.Errorf("scan migration metadata: %w", err)
 		}
 
-		if applied != want || applied > version {
-			return fmt.Errorf("database migration metadata is inconsistent at version %d", applied)
+		if applied >= len(declared) || recorded != declared[applied].version || recorded > version {
+			return fmt.Errorf("database migration metadata is inconsistent at version %d", recorded)
 		}
 
-		want++
+		applied++
 	}
 
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read migration metadata: %w", err)
 	}
 
-	if want-1 != version {
-		return fmt.Errorf("database migration metadata ends at version %d, expected %d", want-1, version)
+	if applied != len(declared) {
+		return fmt.Errorf(
+			"database migration metadata records %d migrations, expected %d for schema version %d",
+			applied, len(declared), version,
+		)
 	}
 
 	return nil
+}
+
+// declaredMigrationsThrough returns the migrations this application declares up
+// to and including one schema version.
+func declaredMigrationsThrough(version int) []schemaMigration {
+	declared := make([]schemaMigration, 0, len(schemaMigrations))
+
+	for _, migration := range schemaMigrations {
+		if migration.version > version {
+			break
+		}
+
+		declared = append(declared, migration)
+	}
+
+	return declared
 }
 
 func migrationChecksum(migration schemaMigration) string {
@@ -1483,19 +1543,17 @@ func validateMigrationChecksums(db *sql.DB, version int) error {
 		return fmt.Errorf("database migration checksum metadata is missing for schema version %d", version)
 	}
 
+	declared := declaredMigrationsThrough(version)
+
 	var count int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migration_checksums`).Scan(&count); err != nil {
 		return fmt.Errorf("count migration checksums: %w", err)
 	}
-	if count != version {
-		return fmt.Errorf("database migration checksums contain %d entries, expected %d", count, version)
+	if count != len(declared) {
+		return fmt.Errorf("database migration checksums contain %d entries, expected %d", count, len(declared))
 	}
 
-	for _, migration := range schemaMigrations {
-		if migration.version > version {
-			break
-		}
-
+	for _, migration := range declared {
 		var name, checksum string
 		err := db.QueryRow(
 			`SELECT name, checksum FROM schema_migration_checksums WHERE version = ?`,

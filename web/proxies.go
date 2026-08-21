@@ -32,24 +32,56 @@ type ProxyRecord struct {
 	Enabled       bool
 	Status        string
 	LatencyMS     *int64
+	ExitIP        string
+	ExitIPSource  string
+	Country       string
 	SuccessCount  int64
 	FailureCount  int64
 	BlockCount    int64
 	UsageCount    int64
 	LastSuccessAt *time.Time
 	LastFailureAt *time.Time
+	LastUsedAt    *time.Time
 	CooldownUntil *time.Time
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 }
 
+// EffectiveStatus is the status an operator should see. A proxy inside its
+// cooling-down window reports that rather than the status that started the
+// window, because it is temporarily out of rotation rather than broken.
+func (record ProxyRecord) EffectiveStatus(now time.Time) string {
+	if record.CooldownUntil != nil && record.CooldownUntil.After(now) {
+		return ProxyStatusCoolingDown
+	}
+
+	return record.Status
+}
+
+// Proxy health statuses. They are the complete taxonomy the specification
+// calls for; cooling-down is derived from the cooldown window rather than
+// stored, so it clears itself when the window expires.
+const (
+	ProxyStatusUnknown        = "unknown"
+	ProxyStatusHealthy        = "healthy"
+	ProxyStatusSlow           = "slow"
+	ProxyStatusRateLimited    = "rate-limited"
+	ProxyStatusBlocked        = "blocked"
+	ProxyStatusAuthentication = "authentication-failed"
+	ProxyStatusOffline        = "offline"
+	ProxyStatusCoolingDown    = "cooling-down"
+)
+
 type ProxyTestResult struct {
 	Status    string
 	LatencyMS *int64
 	ExitIP    string
-	Country   string
-	Error     string
-	CheckedAt time.Time
+	// ExitIPSource records how ExitIP was determined so the interface never
+	// claims a gateway entry address is the exit. See web/proxies_probe.go.
+	ExitIPSource string
+	Country      string
+	Error        string
+	CheckedAt    time.Time
 }
 
 // ProxyPlan is what the task pool needs to assign proxies to tasks: the
