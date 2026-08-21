@@ -44,6 +44,16 @@ type coverageEngine struct {
 	zipAreas func() []prospect.ZIPArea
 	zipIndex map[string]prospect.ZIPArea
 
+	// cellYield records the cumulative net-new of every ZIP cell the plan
+	// has covered, which is what the marginal-unique-yield expansion gate
+	// judges. See coverage_rank.go.
+	cellYield map[string]coverageCellYield
+	// expansionProbes and expansionProbeNetNew measure what neighbour
+	// expansions have actually paid this run, so the ranking can price
+	// further ones from evidence rather than from a prior.
+	expansionProbes      int
+	expansionProbeNetNew int64
+
 	// blindspot holds the discovery blind-spot guards: truncated-cell
 	// refinement and adjacent-ZIP overlap. See coverage_refine.go.
 	blindspot coverageBlindspotState
@@ -179,64 +189,60 @@ func (engine *coverageEngine) record(
 		return decision
 	}
 
-	// A truncated cell is refined before any budget reaches its neighbours:
-	// widening the search while the current cell is still cut off would
-	// compound the blind spot rather than close it.
-	engine.refineLocked(task, checkpoint, &decision)
-	engine.expandLocked(task, checkpoint, &decision)
+	// Every successful attempt is yield evidence, whether it was a plan
+	// query or an engine probe: the expansion gate and the work ranking are
+	// both priced from it.
+	engine.recordYieldLocked(task, checkpoint)
+
+	// Refinements and neighbour expansions draw on one budget, so they are
+	// ranked against each other by expected marginal unique yield rather
+	// than funded in a fixed order. See planAppendedWorkLocked.
+	engine.planAppendedWorkLocked(task, checkpoint, &decision)
 
 	return decision
 }
 
-// expandLocked appends nearest-neighbour tasks for a productive GBP-shaped
-// task, within the job's expansion budget. Callers hold engine.mu.
-func (engine *coverageEngine) expandLocked(
+// expansionCandidatesLocked offers the nearest unexplored neighbours of a
+// productive GBP-shaped cell as fundable work, nearest first. It builds
+// nothing durable: the ranking in planAppendedWorkLocked decides which
+// candidates are actually paid for out of the shared budget. Callers hold
+// engine.mu.
+func (engine *coverageEngine) expansionCandidatesLocked(
 	task web.JobTask,
 	checkpoint web.JobTaskCheckpoint,
 	decision *coverageDecision,
-) {
-	if engine.options.MaxExpansions <= 0 || engine.expansionsAdded >= engine.options.MaxExpansions {
-		return
-	}
-
-	if coverageNetNewRows(checkpoint) < int64(engine.options.ExpansionMinNewOrDefault()) {
-		return
-	}
-
+) []coverageWorkCandidate {
 	synonym, parentZIP, ok := web.SplitGBPQuery(task.Query)
 	if !ok {
-		return
+		return nil
 	}
 
-	if engine.zipIndex == nil {
-		areas := engine.zipAreas()
-		engine.zipIndex = make(map[string]prospect.ZIPArea, len(areas))
-
-		for _, area := range areas {
-			engine.zipIndex[area.ZIP] = area
-		}
+	if !engine.expansionWarrantedLocked(parentZIP) {
+		return nil
 	}
 
-	parent, found := engine.zipIndex[parentZIP]
+	parent, found := engine.zipAreaLocked(parentZIP)
 	if !found {
-		return
+		return nil
 	}
 
 	// The parent ZIP itself is covered by definition, even when its query
 	// was not parsed at seed time.
 	engine.known[parentZIP] = struct{}{}
 
-	// One neighbourhood per parent ZIP, however many synonyms cross it.
-	if !engine.claimParentExpansionLocked(parentZIP) {
-		return
+	// One neighbourhood per parent ZIP, however many synonyms cross it. The
+	// claim is only spent when a neighbour is actually funded, so a parent
+	// whose candidates lose the ranking keeps its chance.
+	if engine.parentExpansionSpentLocked(parentZIP) {
+		return nil
 	}
 
-	type candidate struct {
+	type neighbour struct {
 		area     prospect.ZIPArea
 		distance float64
 	}
 
-	candidates := make([]candidate, 0, 64)
+	neighbours := make([]neighbour, 0, 64)
 
 	for _, area := range engine.zipAreas() {
 		if area.State != parent.State || area.ZIP == parent.ZIP {
@@ -253,52 +259,71 @@ func (engine *coverageEngine) expandLocked(
 			continue
 		}
 
-		candidates = append(candidates, candidate{
+		neighbours = append(neighbours, neighbour{
 			area:     area,
 			distance: haversineKM(parent.Latitude, parent.Longitude, area.Latitude, area.Longitude),
 		})
 	}
 
-	if len(candidates) == 0 {
-		return
+	if len(neighbours) == 0 {
+		return nil
 	}
 
-	sort.Slice(candidates, func(a, b int) bool {
-		if candidates[a].distance == candidates[b].distance {
-			return candidates[a].area.ZIP < candidates[b].area.ZIP
+	sort.Slice(neighbours, func(a, b int) bool {
+		if neighbours[a].distance == neighbours[b].distance {
+			return neighbours[a].area.ZIP < neighbours[b].area.ZIP
 		}
 
-		return candidates[a].distance < candidates[b].distance
+		return neighbours[a].distance < neighbours[b].distance
 	})
-
-	budget := engine.options.MaxExpansions - engine.expansionsAdded
-	if budget > coverageExpansionBatch {
-		budget = coverageExpansionBatch
-	}
-
-	if budget > len(candidates) {
-		budget = len(candidates)
-	}
 
 	decision.parentZIP = parentZIP
 
-	// Candidates are re-checked as the batch fills: two neighbours can each
+	score := engine.expectedExpansionYieldLocked(coverageNetNewRows(checkpoint))
+	separation := engine.zipSeparationFloorLocked()
+	chosen := make([]prospect.ZIPArea, 0, coverageExpansionBatch)
+	candidates := make([]coverageWorkCandidate, 0, coverageExpansionBatch)
+
+	// Neighbours are re-checked as the batch fills: two of them can each
 	// clear the parent yet nearly coincide with each other.
-	for _, chosen := range candidates {
-		if len(decision.expansions) >= budget {
+	for _, offered := range neighbours {
+		if len(candidates) >= coverageExpansionBatch {
 			break
 		}
 
-		if engine.overlapsCoveredZIPLocked(chosen.area) {
+		if coverageZIPTooClose(chosen, offered.area, separation) {
 			continue
 		}
 
-		definition := expansionTaskDefinition(engine.jobID, synonym, parentZIP, chosen.area, engine.nextSequence)
-		engine.nextSequence++
-		engine.expansionsAdded++
-		engine.known[chosen.area.ZIP] = struct{}{}
-		decision.expansions = append(decision.expansions, definition)
+		area := offered.area
+		chosen = append(chosen, area)
+
+		candidates = append(candidates, coverageWorkCandidate{
+			kind:  coverageWorkExpansion,
+			score: score,
+			build: func(sequence int) web.JobTaskDefinition {
+				return expansionTaskDefinition(engine.jobID, synonym, parentZIP, area, sequence)
+			},
+			onFund: func() {
+				engine.known[area.ZIP] = struct{}{}
+				engine.claimParentExpansionLocked(parentZIP)
+			},
+		})
 	}
+
+	return candidates
+}
+
+// coverageZIPTooClose reports whether a candidate sits inside the separation
+// floor of any ZIP already picked for this batch.
+func coverageZIPTooClose(picked []prospect.ZIPArea, candidate prospect.ZIPArea, separation float64) bool {
+	for _, area := range picked {
+		if haversineKM(area.Latitude, area.Longitude, candidate.Latitude, candidate.Longitude) < separation {
+			return true
+		}
+	}
+
+	return false
 }
 
 // expansionTaskPayload is the durable, restart-safe description of one
