@@ -322,5 +322,9 @@
 @media (max-width: 88rem) {
     .dashboard .dash-command { grid-template-columns: minmax(0, 1fr); }
     .dashboard .dash-results-link { display: none; }
-    .dashboard .dash-campaign-col { max-width: 14rem; }
+    .dashboard .dash-campaign-col { min-width: 11rem; max-width: 12rem; }
+    /* Tightening the gutters keeps every campaign column on screen instead of
+       pushing the actions past the card edge. */
+    .dashboard .data-table th,
+    .dashboard .data-table td { padding-inline: var(--space-3); }
 }
