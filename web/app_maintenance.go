@@ -42,6 +42,17 @@ type systemPageData struct {
 	ActivePages    int64
 	WebsiteQueue   int64
 	ProxyStatus    string
+	BrowserProfile string
+	Directories    []systemDirectoryView
+}
+
+// systemDirectoryView is one configurable storage directory with its measured
+// size and the retention rule that applies to it.
+type systemDirectoryView struct {
+	Label     string
+	Path      string
+	Size      string
+	Retention string
 }
 
 type systemStorageView struct {
@@ -73,6 +84,7 @@ type systemBackupView struct {
 	Size          string
 	Checksum      string
 	CreatedAt     string
+	Encrypted     bool
 }
 
 func (s *Server) systemPage(w http.ResponseWriter, r *http.Request) {
@@ -159,6 +171,8 @@ func (s *Server) buildSystemPage(r *http.Request) (systemPageData, appActivity, 
 			page.ScanDetail += " (bounded scan truncated)"
 		}
 	}
+	page.Directories = s.systemDirectoryViews(diagnosticContext, storage)
+	page.BrowserProfile = s.browserProfileSize()
 	for _, backup := range backups {
 		page.Backups = append(page.Backups, systemBackupView{
 			ID:            backup.ID,
@@ -168,10 +182,85 @@ func (s *Server) buildSystemPage(r *http.Request) (systemPageData, appActivity, 
 			Size:          humanBytes(backup.FileSize),
 			Checksum:      shortChecksum(backup.Checksum),
 			CreatedAt:     backup.CreatedAt.Format(time.RFC3339),
+			Encrypted:     backup.Encrypted,
 		})
 	}
 
 	return page, activity, nil
+}
+
+// systemDirectoryViews pairs every configurable storage directory with its
+// measured size and the retention rule that actually governs it, so an
+// operator can see what each directory costs and what will reclaim it.
+func (s *Server) systemDirectoryViews(ctx context.Context, storage workspaceStorageSnapshot) []systemDirectoryView {
+	preferences := defaultStoragePreferences()
+	if values, err := s.svc.LoadSettings(ctx); err == nil {
+		preferences = storagePreferencesFromMap(values)
+	}
+	ageRule := "Age-based cleanup disabled"
+	if preferences.AutomaticCleanupDays > 0 {
+		ageRule = fmt.Sprintf("Cleanable after %d days", preferences.AutomaticCleanupDays)
+	}
+	capRule := "No storage cap"
+	if preferences.MaximumStorageGB > 0 {
+		capRule = fmt.Sprintf("Oldest files pruned above %d GB", preferences.MaximumStorageGB)
+	}
+
+	return []systemDirectoryView{
+		{
+			Label: "Database", Path: ".", Size: humanBytes(s.databaseBytes(ctx)),
+			Retention: "Never deleted by retention or cleanup",
+		},
+		{
+			Label: "Exports", Path: preferences.ExportsDirectory, Size: humanBytes(storage.ExportsBytes),
+			Retention: ageRule + " (unregistered files only); " + capRule,
+		},
+		{
+			Label: "Screenshots", Path: preferences.ScreenshotsDirectory, Size: humanBytes(storage.ScreenshotsBytes),
+			Retention: ageRule,
+		},
+		{
+			Label: "Logs", Path: preferences.LogsDirectory, Size: humanBytes(storage.LogsBytes),
+			Retention: ageRule,
+		},
+		{
+			Label: "Backups", Path: preferences.BackupsDirectory, Size: humanBytes(storage.BackupsBytes),
+			Retention: fmt.Sprintf("Newest %d manual backups retained; pre-migration copies never pruned", preferences.BackupCount),
+		},
+		{
+			Label: "Map tile cache", Path: "map-tiles", Size: humanBytes(storage.CacheBytes),
+			Retention: "Cleared on demand from Safe maintenance",
+		},
+		{
+			Label: "Browser profiles", Path: browserProfileDirectory, Size: s.browserProfileSize(),
+			Retention: "Cleared on demand; holds cookies and site data from visited pages",
+		},
+		{
+			Label: "Temporary files", Path: preferences.TemporaryDirectory, Size: humanBytes(storage.TemporaryBytes),
+			Retention: ageRule,
+		},
+	}
+}
+
+// browserProfileSize measures the reusable browser-profile cache.
+func (s *Server) browserProfileSize() string {
+	root, err := safeDataPath(s.svc.dataFolder, browserProfileDirectory)
+	if err != nil {
+		return humanBytes(0)
+	}
+	size, _ := directorySize(root)
+
+	return humanBytes(size)
+}
+
+// databaseBytes reports the live database file size for the directory table.
+func (s *Server) databaseBytes(ctx context.Context) int64 {
+	snapshot, err := s.svc.MaintenanceSnapshot(ctx)
+	if err != nil {
+		return 0
+	}
+
+	return snapshot.DatabaseBytes
 }
 
 func directorySize(root string) (int64, error) {
@@ -233,10 +322,28 @@ func (s *Server) apiSystemBackup(w http.ResponseWriter, r *http.Request) {
 	if !s.requireCSRF(w, r) {
 		return
 	}
+	if err := parseBoundedRequestForm(w, r, maximumBackupPassphrase*2); err != nil {
+		renderLocalAPIError(w, http.StatusUnprocessableEntity, "invalid_backup_request", "Could not read the backup options")
+		return
+	}
+	passphrase := r.FormValue("passphrase")
+	if passphrase != "" {
+		if err := validateBackupPassphrase(passphrase); err != nil {
+			renderLocalAPIError(w, http.StatusUnprocessableEntity, "invalid_passphrase", err.Error())
+			return
+		}
+	}
 	record, err := s.svc.CreateDatabaseBackup(r.Context())
 	if err != nil {
 		renderSystemActionError(w, "Database backup failed")
 		return
+	}
+	if passphrase != "" {
+		record, err = s.encryptRegisteredBackup(r.Context(), record, passphrase)
+		if err != nil {
+			renderSystemActionError(w, "The backup was created but could not be encrypted; it was removed")
+			return
+		}
 	}
 	if strings.Contains(r.Header.Get("Accept"), "application/json") {
 		renderJSON(w, http.StatusCreated, localAPIEnvelope{Data: record})
@@ -504,6 +611,25 @@ func (s *Server) downloadSystemBackup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "backup not found", http.StatusNotFound)
 		return
 	}
+
+	// An encrypted container can be downloaded as ciphertext for offsite
+	// storage, or decrypted here when the operator supplies the passphrase.
+	// The passphrase only ever arrives in a POST body: a query string would
+	// end up in browser history and in the local request log.
+	if r.Method == http.MethodPost {
+		if !s.requireCSRF(w, r) {
+			return
+		}
+		if err := parseBoundedRequestForm(w, r, maximumBackupPassphrase*2); err != nil {
+			http.Error(w, "invalid request", http.StatusUnprocessableEntity)
+			return
+		}
+		if passphrase := r.FormValue("passphrase"); passphrase != "" {
+			s.writeDecryptedBackup(w, record, path, passphrase)
+			return
+		}
+	}
+
 	file, err := os.Open(path)
 	if err != nil {
 		http.Error(w, "backup file unavailable", http.StatusNotFound)
@@ -511,8 +637,58 @@ func (s *Server) downloadSystemBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	w.Header().Set("Content-Type", "application/vnd.sqlite3")
-	w.Header().Set("Content-Disposition", "attachment; filename=\"gmaps-backup-"+record.ID+".db\"")
+	contentType := "application/vnd.sqlite3"
+	name := "gmaps-backup-" + record.ID + ".db"
+	if backupFileEncrypted(path) {
+		contentType = "application/octet-stream"
+		name = "gmaps-backup-" + record.ID + ".db.gmsbak"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", "attachment; filename=\""+name+"\"")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_, _ = io.Copy(w, file)
+}
+
+// writeDecryptedBackup streams the plaintext of an encrypted container. It
+// writes the response headers only after the first chunk authenticates, so a
+// wrong passphrase produces a clean error rather than a truncated download.
+func (s *Server) writeDecryptedBackup(w http.ResponseWriter, record BackupRecord, path, passphrase string) {
+	if !backupFileEncrypted(path) {
+		http.Error(w, "this backup is not encrypted", http.StatusConflict)
+		return
+	}
+	buffered := &bufferedBackupWriter{writer: w, record: record}
+	if err := decryptBackupTo(buffered, path, passphrase); err != nil {
+		if buffered.started {
+			// Headers are already committed; the connection is closed by the
+			// truncated body, which is the only signal left.
+			return
+		}
+		status := http.StatusUnprocessableEntity
+		if errors.Is(err, ErrBackupPassphrase) {
+			status = http.StatusForbidden
+		}
+		http.Error(w, jobruntime.RedactString(err.Error()), status)
+		return
+	}
+}
+
+// bufferedBackupWriter defers the download headers until the first
+// authenticated plaintext byte arrives.
+type bufferedBackupWriter struct {
+	writer  http.ResponseWriter
+	record  BackupRecord
+	started bool
+}
+
+func (writer *bufferedBackupWriter) Write(value []byte) (int, error) {
+	if !writer.started {
+		writer.started = true
+		writer.writer.Header().Set("Content-Type", "application/vnd.sqlite3")
+		writer.writer.Header().Set("Content-Disposition",
+			"attachment; filename=\"gmaps-backup-"+writer.record.ID+".db\"")
+		writer.writer.Header().Set("X-Content-Type-Options", "nosniff")
+	}
+
+	return writer.writer.Write(value)
 }

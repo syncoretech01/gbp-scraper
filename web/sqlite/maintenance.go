@@ -140,7 +140,7 @@ func (repo *repo) ListDatabaseBackups(ctx context.Context, limit int) ([]web.Bac
 		limit = 100
 	}
 	rows, err := repo.db.QueryContext(ctx,
-		"SELECT id, kind, state, relative_path, schema_version, file_size, checksum, "+
+		"SELECT id, kind, state, relative_path, schema_version, file_size, checksum, encrypted, "+
 			"created_at, finished_at, error FROM backups ORDER BY created_at DESC, id DESC LIMIT ?",
 		limit,
 	)
@@ -166,11 +166,44 @@ func (repo *repo) ListDatabaseBackups(ctx context.Context, limit int) ([]web.Bac
 
 func (repo *repo) GetDatabaseBackup(ctx context.Context, id string) (web.BackupRecord, error) {
 	row := repo.db.QueryRowContext(ctx,
-		"SELECT id, kind, state, relative_path, schema_version, file_size, checksum, "+
+		"SELECT id, kind, state, relative_path, schema_version, file_size, checksum, encrypted, "+
 			"created_at, finished_at, error FROM backups WHERE id = ?",
 		id,
 	)
 	return scanBackupRecord(row)
+}
+
+// MarkBackupEncrypted records that a registered backup file was rewritten as
+// an encrypted container. Passing an empty checksum removes the registration
+// entirely, which is how a failed encryption cleans up after itself rather
+// than leaving a row pointing at a file that is no longer there.
+func (repo *repo) MarkBackupEncrypted(ctx context.Context, id, checksum string, size int64) error {
+	now := time.Now().UTC()
+
+	if checksum == "" {
+		if _, err := repo.db.ExecContext(ctx, "DELETE FROM backups WHERE id = ?", id); err != nil {
+			return fmt.Errorf("remove unencryptable backup: %w", err)
+		}
+
+		return nil
+	}
+
+	if _, err := repo.db.ExecContext(ctx,
+		"UPDATE backups SET checksum = ?, file_size = ?, encrypted = 1 WHERE id = ?",
+		checksum, size, id,
+	); err != nil {
+		return fmt.Errorf("record encrypted backup: %w", err)
+	}
+
+	if _, err := repo.db.ExecContext(ctx,
+		"INSERT INTO audit_logs(action, entity_type, entity_id, details, created_at) "+
+			"VALUES ('backup_encrypted', 'backup', ?, '{}', ?)",
+		id, now.Unix(),
+	); err != nil {
+		return fmt.Errorf("audit encrypted backup: %w", err)
+	}
+
+	return nil
 }
 
 type backupScanner interface {
@@ -183,7 +216,7 @@ func scanBackupRecord(scanner backupScanner) (web.BackupRecord, error) {
 	var finishedAt sql.NullInt64
 	if err := scanner.Scan(
 		&record.ID, &record.Kind, &record.State, &record.RelativePath,
-		&record.SchemaVersion, &record.FileSize, &record.Checksum,
+		&record.SchemaVersion, &record.FileSize, &record.Checksum, &record.Encrypted,
 		&createdAt, &finishedAt, &record.Error,
 	); err != nil {
 		return web.BackupRecord{}, fmt.Errorf("read database backup: %w", err)

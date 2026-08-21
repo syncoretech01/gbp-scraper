@@ -5,7 +5,7 @@
 {{define "app/page-actions"}}
 <div class="page-actions">
     <form action="/api/v1/system/integrity" method="post"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button" type="submit">Run integrity check</button></form>
-    <form action="/api/v1/system/backups" method="post"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button button-primary" type="submit">Create verified backup</button></form>
+    <form class="inline-form" action="/api/v1/system/backups" method="post"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><label class="field-inline" for="backup-passphrase">Encrypt with</label><input class="input" id="backup-passphrase" name="passphrase" type="password" minlength="12" maxlength="512" autocomplete="new-password" placeholder="Optional passphrase"><button class="button button-primary" type="submit">Create verified backup</button></form>
 </div>
 {{end}}
 
@@ -37,8 +37,8 @@
     </section>
 
     <section class="card" aria-labelledby="storage-title">
-        <div class="card-header"><div><h2 id="storage-title">Workspace storage</h2><p>Contained configured directories; business results and database backups are never cleanup targets</p></div></div>
-        <div class="card-body"><div class="estimate"><div><span>Exports</span><strong>{{.Page.Storage.Exports}}</strong></div><div><span>Screenshots</span><strong>{{.Page.Storage.Screenshots}}</strong></div><div><span>Logs</span><strong>{{.Page.Storage.Logs}}</strong></div><div><span>Backups</span><strong>{{.Page.Storage.Backups}}</strong></div><div><span>Map cache</span><strong>{{.Page.Storage.Cache}}</strong></div><div><span>Temporary</span><strong>{{.Page.Storage.Temporary}}</strong></div></div></div>
+        <div class="card-header"><div><h2 id="storage-title">Storage directories</h2><p>Every configurable directory with its measured size and the retention rule that governs it. Business results, the database, and pre-migration copies are never cleanup targets. Change any path in <a href="/app/settings">Settings</a>.</p></div><code>{{.Page.ScanDetail}}</code></div>
+        <div class="table-wrap"><table class="data-table"><thead><tr><th scope="col">Directory</th><th scope="col">Path</th><th scope="col" class="num">Size</th><th scope="col">Retention</th></tr></thead><tbody>{{range .Page.Directories}}<tr><td>{{.Label}}</td><td><code>{{.Path}}</code></td><td class="num">{{.Size}}</td><td>{{.Retention}}</td></tr>{{end}}</tbody></table></div>
     </section>
 
     <section class="grid grid-2">
@@ -49,7 +49,10 @@
             <form action="/api/v1/system/jobs/stop-all" method="post" data-confirm="Request a safe stop for every queued or active job?"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button" type="submit">Stop all jobs safely</button></form>
             <form action="/api/v1/system/artifacts/cleanup" method="post" class="inline-form" data-confirm="Delete only old unregistered files from the selected contained artifact directory?"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><label>Clean <select class="select" name="kind"><option value="screenshots">screenshots</option><option value="exports">unregistered exports</option><option value="logs">logs</option><option value="temporary">temporary files</option></select></label><label>older than <input class="input" type="number" min="1" max="3650" name="retention_days" value="30"> days</label><button class="button" type="submit">Clean old artifacts</button></form>
             <div class="table-actions"><a class="button" href="/api/v1/system/diagnostics/download" download>Export redacted diagnostics</a><button class="button" type="button" data-system-update-info>Offline update info</button></div><p class="field-hint" data-system-update-output></p>
-            <p class="field-hint">Restore and process restart remain explicit Docker/offline operations. Stop the container, preserve the current database, and replace it with a verified downloaded backup; preserve <code>.proxy-master-key</code> alongside encrypted proxy records.</p>
+            <form action="/api/v1/system/browser-profiles/clear" method="post" data-confirm="Delete the reusable browser profiles? Cookies and site data collected while scraping are removed and the next run starts cold."><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button" type="submit">Clear browser profiles ({{.Page.BrowserProfile}})</button></form>
+            <form action="/api/v1/system/worker/recycle" method="post" data-confirm="Recycle the local workers? Every active job is paused at its next safe boundary and resumed from its durable checkpoint."><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button" type="submit">Recycle workers</button></form>
+            <p class="field-hint">Recycling pauses each active job at a safe boundary, which tears its browser workers down, then resumes it from the stored checkpoint. No committed result is discarded and no process is started for you.</p>
+            <p class="field-hint">A full process restart stays an explicit Docker operation. Prepare a restore below to prove a backup is usable and stage it; then stop the container, replace <code>jobs.db</code> with the staged file, and keep <code>.proxy-master-key</code> in place.</p>
         </div></article>
     </section>
 
@@ -60,7 +63,7 @@
 
     <section class="card" aria-labelledby="backups-title">
         <div class="card-header"><div><h2 id="backups-title">Verified backups</h2><p>Checksums and schema versions are retained in SQLite</p></div></div>
-        {{if .Page.Backups}}<div class="table-wrap"><table class="data-table"><thead><tr><th>Created</th><th>Kind</th><th>State</th><th>Schema</th><th>Size</th><th>SHA-256</th><th>Action</th></tr></thead><tbody>{{range .Page.Backups}}<tr><td>{{.CreatedAt}}</td><td>{{.Kind}}</td><td><span class="status status-{{.State}}">{{.State}}</span></td><td>v{{.SchemaVersion}}</td><td>{{.Size}}</td><td><code>{{.Checksum}}</code></td><td><a class="button button-small" href="/api/v1/system/backups/{{.ID}}/download" download>Download</a></td></tr>{{end}}</tbody></table></div>{{else}}<div class="empty-state"><div><strong>No registered backups</strong><span>Create a verified backup before important maintenance or configuration changes.</span></div></div>{{end}}
+        {{if .Page.Backups}}<div class="table-wrap"><table class="data-table"><thead><tr><th>Created</th><th>Kind</th><th>State</th><th>Schema</th><th>Size</th><th>SHA-256</th><th>Protection</th><th>Actions</th></tr></thead><tbody>{{range .Page.Backups}}<tr><td>{{.CreatedAt}}</td><td>{{.Kind}}</td><td><span class="status status-{{.State}}">{{.State}}</span></td><td>v{{.SchemaVersion}}</td><td>{{.Size}}</td><td><code>{{.Checksum}}</code></td><td>{{if .Encrypted}}<span class="badge badge-success">AES-256-GCM</span>{{else}}<span class="badge">plain</span>{{end}}</td><td><div class="table-actions"><a class="button button-small" href="/api/v1/system/backups/{{.ID}}/download" download>Download</a>{{if .Encrypted}}<form class="inline-form" action="/api/v1/system/backups/{{.ID}}/download" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><input class="input" name="passphrase" type="password" minlength="12" maxlength="512" autocomplete="off" placeholder="Passphrase" aria-label="Backup passphrase"><button class="button button-small" type="submit">Download decrypted</button></form>{{end}}<form action="/api/v1/system/backups/{{.ID}}/restore" method="post" data-confirm="Verify this backup and stage it for an offline restore? A fresh safety copy of the live database is taken first and nothing is overwritten."><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-small" type="submit">Prepare restore</button></form></div></td></tr>{{end}}</tbody></table></div>{{else}}<div class="empty-state"><div><strong>No registered backups</strong><span>Create a verified backup before important maintenance or configuration changes.</span></div></div>{{end}}
     </section>
 </div>
 {{end}}

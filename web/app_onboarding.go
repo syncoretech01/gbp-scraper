@@ -40,7 +40,9 @@ func (s *Server) onboardingPage(w http.ResponseWriter, r *http.Request) {
 		{Label: "Data directory", State: healthState(directoryExists(s.svc.dataFolder)), Message: s.svc.dataFolder},
 		onboardingDiskCheck(r.Context(), s.svc.dataFolder),
 		{Label: "HTTP binding", State: healthState(!wildcardBind(s.srv.Addr)), Message: s.srv.Addr},
-		{Label: "Docker browser", State: "info", Message: "Chromium and Playwright are installed and checked by the Docker image build; use Run live self-test to verify Maps access."},
+		onboardingBrowserCheck(),
+		s.onboardingProxyCheck(r.Context()),
+		{Label: "Internet access", State: "info", Message: "Checked on demand so the first-run page never reaches the network by itself; use Run live self-test."},
 	}
 	if summary := settings["onboarding.self_test"]; summary != "" {
 		checks = append(checks, onboardingCheck{Label: "Last live self-test", State: settings["onboarding.self_test_state"], Message: summary})
@@ -59,6 +61,52 @@ func (s *Server) onboardingPage(w http.ResponseWriter, r *http.Request) {
 			Notice:   strings.TrimSpace(r.URL.Query().Get("notice")),
 		},
 	})
+}
+
+// onboardingBrowserCheck reuses the System self-test's Playwright probe so the
+// first-run checklist reports the same driver state the diagnostics page does,
+// rather than an unconditional "installed by Docker" claim.
+func onboardingBrowserCheck() onboardingCheck {
+	check := browserRuntimeCheck(time.Now())
+	state := "warning"
+	if check.State == "passed" {
+		state = "success"
+	}
+
+	return onboardingCheck{Label: "Browser runtime", State: state, Message: check.Message}
+}
+
+// onboardingProxyCheck reports the optional proxy configuration without
+// touching the network: a first-run page must never dial out by itself.
+func (s *Server) onboardingProxyCheck(ctx context.Context) onboardingCheck {
+	proxies, err := s.svc.ListProxies(ctx, "")
+	if err != nil {
+		return onboardingCheck{
+			Label:   "Proxies (optional)",
+			State:   "info",
+			Message: "No local proxy storage is configured; scrapes use the direct connection",
+		}
+	}
+	enabled := 0
+	for _, proxy := range proxies {
+		if proxy.Enabled {
+			enabled++
+		}
+	}
+	if enabled == 0 {
+		return onboardingCheck{
+			Label:   "Proxies (optional)",
+			State:   "info",
+			Message: "No enabled proxies; scrapes use the direct connection. Add a pool later from the Proxies page.",
+		}
+	}
+
+	return onboardingCheck{
+		Label: "Proxies (optional)",
+		State: "success",
+		Message: fmt.Sprintf("%d of %d stored proxies enabled; credentials are tested by the live self-test",
+			enabled, len(proxies)),
+	}
 }
 
 func healthState(ok bool) string {
@@ -161,8 +209,26 @@ func (s *Server) runOnboardingSelfTest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	messages = append(messages, "disk: "+diskCheck.Message)
+
+	// The browser driver is reported from the same probe the System self-test
+	// uses; a missing driver is a warning because it is installed on the first
+	// scrape rather than a hard failure now.
+	browser := browserRuntimeCheck(time.Now())
+	if browser.State != "passed" && state == "success" {
+		state = "warning"
+	}
+	messages = append(messages, "browser: "+browser.Message)
+
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
+
+	// Internet access is checked separately from Maps so a blocked Maps
+	// endpoint is not reported as a missing internet connection.
+	internet := s.runReachabilityCheck(ctx, "internet_reachable", internetReachabilityTarget)
+	if internet.State != "passed" {
+		state = "error"
+	}
+	messages = append(messages, "internet: "+internet.Message)
 	request, _ := http.NewRequestWithContext(ctx, http.MethodHead, "https://www.google.com/maps?hl=en", http.NoBody)
 	response, requestErr := (&http.Client{Timeout: 10 * time.Second}).Do(request)
 	if requestErr != nil {
