@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -48,11 +49,23 @@ type settingsPageData struct {
 	Quality     QualityRuleSet
 	Preferences appPreferences
 	Storage     storagePreferences
+	Directories []systemDirectoryView
+	Privacy     privacyStatus
 	LocalAI     localAISettings
 	ProxyPools  []proxyPoolOption
 	DataFolder  string
 	Theme       string
 	Notice      string
+}
+
+// privacyStatus reports the live state of the privacy guarantees rather than
+// restating them, so an operator can tell whether telemetry is actually off in
+// this process and which secrets are actually encrypted at rest.
+type privacyStatus struct {
+	TelemetryDisabled bool
+	TelemetrySource   string
+	EncryptedSecrets  []string
+	BrowserProfiles   string
 }
 
 type appPreferences struct {
@@ -234,6 +247,41 @@ func (s *Server) loadScrapeDefaults(r *http.Request) scrapeDefaults {
 	return scrapeSettingsFromMap(values)
 }
 
+// telemetryEnvironmentVariable is the upstream switch the scraper reads once,
+// at start-up, to decide whether any usage event is ever sent.
+const telemetryEnvironmentVariable = "DISABLE_TELEMETRY"
+
+// privacyStatus reports what is actually true in this process rather than what
+// the shipped Compose file happens to set: a workspace started by hand without
+// the variable is told so instead of being reassured.
+func (s *Server) privacyStatus(ctx context.Context) privacyStatus {
+	status := privacyStatus{
+		TelemetryDisabled: os.Getenv(telemetryEnvironmentVariable) == "1",
+		BrowserProfiles:   s.browserProfileSize(),
+	}
+	if status.TelemetryDisabled {
+		status.TelemetrySource = telemetryEnvironmentVariable + "=1 is set for this process"
+	} else {
+		status.TelemetrySource = telemetryEnvironmentVariable +
+			" is not set to 1 for this process; set it in the environment to disable usage events"
+	}
+
+	status.EncryptedSecrets = []string{
+		"Proxy URLs and passwords (AES-256-GCM under .proxy-master-key)",
+		"Integration webhook secrets and database credentials (same local key)",
+	}
+	if s.svc.SupportsEncryptedBackups() {
+		status.EncryptedSecrets = append(status.EncryptedSecrets,
+			"Database backups, when a passphrase is given (AES-256-GCM, scrypt-derived)")
+	}
+	if settings, err := s.svc.LoadSettings(ctx); err == nil && settings[authPasswordSettingKey] != "" {
+		status.EncryptedSecrets = append(status.EncryptedSecrets,
+			"The local access password (stored only as a salted hash, never recoverable)")
+	}
+
+	return status
+}
+
 func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
 	values, err := s.svc.LoadSettings(r.Context())
 	if err != nil {
@@ -258,6 +306,10 @@ func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	storage, storageErr := s.workspaceStorageUsage(r.Context())
+	if storageErr != nil {
+		storage = workspaceStorageSnapshot{}
+	}
 	s.renderAppPage(w, "settings", appPageData{
 		Title:     "Settings",
 		Subtitle:  "Choose defaults applied to every newly configured local scrape.",
@@ -270,6 +322,8 @@ func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
 			Quality:     qualityRules,
 			Preferences: appPreferencesFromMap(values),
 			Storage:     storagePreferencesFromMap(values),
+			Directories: s.systemDirectoryViews(r.Context(), storage),
+			Privacy:     s.privacyStatus(r.Context()),
 			LocalAI:     localAISettingsFromMap(values),
 			ProxyPools:  proxyOptions,
 			DataFolder:  s.svc.dataFolder,
