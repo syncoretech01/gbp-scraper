@@ -93,6 +93,27 @@ func (s *Server) apiJobEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// jobEventDTO is the streamed shape of one lifecycle event. It embeds JobEvent
+// so every historical field keeps its name and position, and adds the two
+// values the console cannot derive on its own: the operator-facing log level
+// and the link to whatever the event happened to. Classification stays on the
+// server so the stream, the rendered page, and the downloaded log file can
+// never disagree about what a line is.
+type jobEventDTO struct {
+	JobEvent
+
+	Level     string `json:"level"`
+	TargetURL string `json:"target_url,omitempty"`
+}
+
+func newJobEventDTO(jobID string, event JobEvent) jobEventDTO {
+	return jobEventDTO{
+		JobEvent:  event,
+		Level:     classifyJobLogLevel(event),
+		TargetURL: jobLogTarget(jobID, event),
+	}
+}
+
 func (s *Server) writeAvailableEvents(r *http.Request, w http.ResponseWriter, jobID string, after *int64) error {
 	events, err := s.svc.EventsAfter(r.Context(), jobID, *after, jobEventBatchSize)
 	if err != nil {
@@ -104,7 +125,7 @@ func (s *Server) writeAvailableEvents(r *http.Request, w http.ResponseWriter, jo
 			continue
 		}
 
-		if err := writeSSE(w, event.ID, event.Type, event); err != nil {
+		if err := writeSSE(w, event.ID, event.Type, newJobEventDTO(jobID, event)); err != nil {
 			return err
 		}
 

@@ -96,15 +96,36 @@ type jobsPageJob struct {
 }
 
 type jobMonitorPageData struct {
-	Job             jobMonitorJob
-	QueueNotice     string
-	Pipeline        []jobPipelineStep
-	Checkpoint      jobCheckpointView
-	ProxyPools      []jobProxyPoolView
-	Logs            []jobLogView
-	LogQuery        string
+	Job         jobMonitorJob
+	QueueNotice string
+	Pipeline    []jobPipelineStep
+	Checkpoint  jobCheckpointView
+	ProxyPools  []jobProxyPoolView
+	Logs        []jobLogView
+	LogQuery    string
+	// LogLevels is generated from web.JobLogLevels, so the severity filter can
+	// never offer a class that classifyJobLogLevel does not produce.
+	LogLevels   []appSelectOption
+	LogSeverity string
+	// LogAutoscroll keeps the "follow live" preference across a filter submit,
+	// which is a form round trip and would otherwise reset it every time.
+	LogAutoscroll   bool
 	CanDownloadLogs bool
 	HasResources    bool
+}
+
+// jobLogLevelOptions renders the severity filter, marking the active level.
+func jobLogLevelOptions() []appSelectOption {
+	options := make([]appSelectOption, 0, len(JobLogLevels))
+	for _, level := range JobLogLevels {
+		label := strings.ReplaceAll(level, "-", " ")
+		options = append(options, appSelectOption{
+			Value: level,
+			Label: strings.ToUpper(label[:1]) + label[1:],
+		})
+	}
+
+	return options
 }
 
 type jobMonitorJob struct {
@@ -151,10 +172,24 @@ type jobMonitorJob struct {
 	WorkerConcurrency string
 	DatabaseWrites    string
 	// ProxyPoolLabel names the pool this job routes through together with its
-	// stored health counts. Per-job proxy success and block rates are not
-	// recorded anywhere, so the monitor states pool health instead of
-	// printing a rate the workspace cannot substantiate.
-	ProxyPoolLabel       string
+	// stored health counts, and BlockRate is this job's own refusal rate,
+	// measured from its durable proxy-failure, rate-limit, and captcha events
+	// against the tasks that finished.
+	ProxyPoolLabel string
+	BlockRate      string
+	// Queries and Cells describe the plan this run executed: how many distinct
+	// searches were generated and how many grid cells they covered. Cells is a
+	// string because "no grid cells recorded" is a real answer for a radius
+	// search, and a zero there would read as a failure.
+	Queries        int64
+	Cells          string
+	SocialProfiles int64
+	// Retries, Warnings, and Errors are run-wide totals for the job-detail
+	// readout, taken from whichever of the runtime row, the task plan, and the
+	// event log has the most evidence.
+	Retries              int64
+	Warnings             int64
+	Errors               int64
 	QuerySummary         string
 	LocationSummary      string
 	Depth                int
@@ -183,6 +218,11 @@ type jobPipelineStep struct {
 	Label  string
 	Detail string
 	State  string
+	// Metrics are the named per-stage measurements the specification lists for
+	// this stage. They are built in web/job_pipeline_view.go from durable
+	// evidence only, so a stage that has not run says so instead of showing a
+	// zero that reads as a result.
+	Metrics []jobPipelineMetric
 }
 
 type jobCheckpointView struct {
@@ -612,7 +652,6 @@ func (s *Server) buildJobMonitorPage(r *http.Request, id string) (jobMonitorPage
 				(runtime.State == jobruntime.StatePartial || runtime.State == jobruntime.StateFailed) &&
 				canApplyControl(runtime, jobruntime.ControlRestart),
 		},
-		Pipeline:        buildPipeline(runtime),
 		CanDownloadLogs: lifecycleAvailable,
 		Checkpoint: jobCheckpointView{
 			Available:      false,
@@ -621,11 +660,16 @@ func (s *Server) buildJobMonitorPage(r *http.Request, id string) (jobMonitorPage
 			RemainingTasks: remaining,
 			Version:        "not available",
 		},
-		LogQuery: strings.TrimSpace(r.URL.Query().Get("log_q")),
+		LogQuery:    strings.TrimSpace(r.URL.Query().Get("log_q")),
+		LogLevels:   jobLogLevelOptions(),
+		LogSeverity: strings.ToLower(strings.TrimSpace(r.URL.Query().Get("severity"))),
+		// Following the tail is the default; only an explicit unchecked box in
+		// a submitted filter form turns it off.
+		LogAutoscroll: !r.URL.Query().Has("log_q") || r.URL.Query().Get("log_autoscroll") != "",
 	}
 
 	if lifecycleAvailable {
-		logs, logErr := s.monitorLogs(r.Context(), job.ID, page.LogQuery, r.URL.Query().Get("severity"))
+		logs, logErr := s.monitorLogs(r.Context(), job.ID, page.LogQuery, page.LogSeverity)
 		if logErr != nil && !errors.Is(logErr, ErrLifecycleNotFound) {
 			return jobMonitorPageData{}, logErr
 		}
@@ -642,7 +686,9 @@ func (s *Server) buildJobMonitorPage(r *http.Request, id string) (jobMonitorPage
 		return jobMonitorPageData{}, versionErr
 	}
 
-	if execution, executionErr := s.svc.GetJobExecution(r.Context(), job.ID); executionErr == nil {
+	var execution JobExecutionSnapshot
+	if snapshot, executionErr := s.svc.GetJobExecution(r.Context(), job.ID); executionErr == nil {
+		execution = snapshot
 		page.Job.TasksTotal = execution.Tasks.Total
 		page.Job.TasksComplete = execution.Tasks.Completed
 		page.Job.TasksFailed = execution.Tasks.Failed
@@ -730,7 +776,62 @@ func (s *Server) buildJobMonitorPage(r *http.Request, id string) (jobMonitorPage
 		return jobMonitorPageData{}, executionErr
 	}
 
+	// Per-stage evidence is optional capability: a repository without it keeps
+	// the pipeline, which then reports "not reported yet" for the metrics that
+	// need durable joins rather than inventing them.
+	var facts JobPipelineFacts
+	hasFacts := false
+	if loaded, factsErr := s.svc.JobPipelineFacts(r.Context(), job.ID); factsErr == nil {
+		facts, hasFacts = loaded, true
+	} else if !errors.Is(factsErr, ErrJobPipelineFactsUnsupported) {
+		return jobMonitorPageData{}, factsErr
+	}
+
+	page.Pipeline = buildPipeline(jobPipelineInput{
+		Job:        job,
+		Runtime:    runtime,
+		Stats:      stats,
+		Execution:  execution,
+		Facts:      facts,
+		HasFacts:   hasFacts,
+		RawRecords: rawRecords,
+	})
+	applyJobDetailCounters(&page, runtime, execution, facts, hasFacts)
+
 	return page, nil
+}
+
+// applyJobDetailCounters fills the job-detail readouts the specification names
+// alongside the pipeline: planned cells, retries, warnings, and errors. Each
+// one prefers the durable evidence over the live worker frame, because a
+// worker that has stopped no longer republishes its counters.
+func applyJobDetailCounters(
+	page *jobMonitorPageData,
+	runtime JobRuntime,
+	execution JobExecutionSnapshot,
+	facts JobPipelineFacts,
+	hasFacts bool,
+) {
+	page.Job.Retries = max(execution.Tasks.Retries, execution.Progress.Retries)
+	page.Job.Warnings = runtime.Warnings
+	page.Job.Errors = runtime.Errors
+	page.Job.Cells = notReported
+
+	if !hasFacts {
+		return
+	}
+
+	page.Job.Retries = max(page.Job.Retries, facts.Retries)
+	page.Job.Warnings = max(page.Job.Warnings, facts.Warnings)
+	page.Job.Errors = max(page.Job.Errors, facts.Errors)
+	page.Job.Queries = facts.QueriesPlanned
+	page.Job.SocialProfiles = facts.WithSocial
+	page.Job.BlockRate = fmt.Sprintf("%.1f%% (%d blocks)", facts.BlockRatePercent(), facts.BlockEvents())
+	if facts.CellsPlanned > 0 {
+		page.Job.Cells = strconv.FormatInt(facts.CellsPlanned, 10)
+	} else {
+		page.Job.Cells = "no grid cells recorded"
+	}
 }
 
 func (s *Server) jobLogsDownload(w http.ResponseWriter, r *http.Request) {
@@ -1235,54 +1336,6 @@ func safeJobConfigJSON(job Job) (string, error) {
 	return string(encoded), nil
 }
 
-func buildPipeline(runtime JobRuntime) []jobPipelineStep {
-	stages := []struct {
-		stage jobruntime.Stage
-		label string
-	}{
-		{jobruntime.StagePreparingQueries, "Preparing queries"},
-		{jobruntime.StageGeneratingGrid, "Generating grid"},
-		{jobruntime.StageSearchingMaps, "Searching Maps"},
-		{jobruntime.StageExtractingDetails, "Extracting details"},
-		{jobruntime.StageCrawlingWebsites, "Crawling websites"},
-		{jobruntime.StageExtractingContacts, "Extracting contacts"},
-		{jobruntime.StageDeduplicating, "Deduplicating"},
-		{jobruntime.StageSavingExporting, "Saving/exporting"},
-	}
-
-	active := 0
-	for index, stage := range stages {
-		if stage.stage == runtime.Stage {
-			active = index
-			break
-		}
-	}
-
-	steps := make([]jobPipelineStep, 0, len(stages))
-	for index, stage := range stages {
-		state := "pending"
-		detail := "Waiting"
-		switch {
-		case runtime.State == jobruntime.StateCompleted:
-			state, detail = "complete", "Completed"
-		case index < active:
-			state, detail = "complete", "Completed"
-		case index == active && runtime.State == jobruntime.StatePaused:
-			state, detail = "paused", "Paused"
-		case index == active && runtime.State == jobruntime.StateFailed:
-			state, detail = "failed", "Stopped with an error"
-		case index == active && runtime.State.Active():
-			state, detail = "active", currentTaskLabel(runtime)
-		case index == active && runtime.State == jobruntime.StatePartial:
-			state, detail = "partial", "Stopped with partial results"
-		}
-
-		steps = append(steps, jobPipelineStep{Order: index, Label: stage.label, Detail: detail, State: state})
-	}
-
-	return steps
-}
-
 func (s *Server) monitorLogs(
 	ctx context.Context,
 	jobID string,
@@ -1298,21 +1351,24 @@ func (s *Server) monitorLogs(
 	severity = strings.ToLower(strings.TrimSpace(severity))
 	logs := make([]jobLogView, 0, len(events))
 	for _, event := range events {
-		if query != "" && !strings.Contains(strings.ToLower(event.Message+" "+event.Type), query) {
+		// The search covers the redacted context too, so an operator can find
+		// every line about one query, cell, or task key.
+		haystack := strings.ToLower(event.Message + " " + event.Type + " " + event.Context)
+		if query != "" && !strings.Contains(haystack, query) {
 			continue
 		}
-		level := strings.TrimSpace(event.Severity)
-		if level == "" || level == "info" {
-			level = "information"
-		}
+
+		level := classifyJobLogLevel(event)
 		if severity != "" && !strings.EqualFold(level, severity) {
 			continue
 		}
+
 		logs = append(logs, jobLogView{
 			OccurredAtISO: event.OccurredAt.UTC().Format(time.RFC3339),
 			OccurredAt:    formatDate(event.OccurredAt),
 			Severity:      level,
 			Message:       event.Message,
+			TargetURL:     jobLogTarget(jobID, event),
 		})
 	}
 

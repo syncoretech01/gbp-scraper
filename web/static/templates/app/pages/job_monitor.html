@@ -152,14 +152,35 @@ scrolls past the status header.
         {{end}}
     </section>
 
+    {{/* ----------------------------------------------------------------- STAGE DETAIL
+    The stepper above is the index; this is the evidence. Each stage carries the
+    metrics the specification names for it, and any value the worker has not
+    published reads as "not reported yet" rather than as a zero result. */}}
+    <section class="card card-flush ops-stages" aria-labelledby="ops-stages-title">
+        <div class="card-header">
+            <div><h2 id="ops-stages-title">Pipeline stages</h2><p>What each stage measured, from the durable task plan, the redacted event log, and the committed result file</p></div>
+        </div>
+        <div class="card-body ops-stage-grid">
+            {{range .Page.Pipeline}}
+            <article class="ops-stage" data-pipeline-detail data-pipeline-order="{{.Order}}" data-state="{{.State}}">
+                <p class="ops-stage-head"><b>{{.Label}}</b><span class="ops-stage-state">{{.Detail}}</span></p>
+                <dl class="ops-stage-metrics">
+                    {{range .Metrics}}<div class="ops-stage-metric"><dt>{{.Label}}</dt><dd>{{.Value}}</dd></div>{{end}}
+                </dl>
+            </article>
+            {{end}}
+        </div>
+    </section>
+
     {{/* ---------------------------------------------------------------- LIVE VITALS */}}
     <section class="stat-grid" style="--stat-min: 9.5rem" aria-label="Live counters">
         <article class="stat stat-compact"><p class="stat-label">Rows collected</p><p class="stat-value num" data-progress-field="records">{{.Page.Job.RawRecords}}</p><p class="stat-meta">{{.Page.Job.CommittedRows}} committed to the result file</p></article>
         <article class="stat stat-compact"><p class="stat-label">Unique businesses</p><p class="stat-value num" data-progress-field="unique">{{.Page.Job.UniqueRecords}}</p><p class="stat-meta">{{.Page.Job.Duplicates}} duplicate matches merged</p></article>
-        <article class="stat stat-compact"><p class="stat-label">Emails found</p><p class="stat-value num" data-progress-field="emails">{{.Page.Job.Emails}}</p><p class="stat-meta">{{.Page.Job.Websites}} websites crawled</p></article>
-        <article class="stat stat-compact"><p class="stat-label">Retried attempts</p><p class="stat-value num" data-progress-field="tasks-retries">0</p><p class="stat-meta">attempts returned to the queue</p></article>
+        <article class="stat stat-compact"><p class="stat-label">Emails found</p><p class="stat-value num" data-progress-field="emails">{{.Page.Job.Emails}}</p><p class="stat-meta">{{.Page.Job.Websites}} websites &middot; {{.Page.Job.SocialProfiles}} social profiles</p></article>
+        <article class="stat stat-compact"><p class="stat-label">Retried attempts</p><p class="stat-value num" data-progress-field="tasks-retries">{{.Page.Job.Retries}}</p><p class="stat-meta">attempts returned to the queue</p></article>
+        <article class="stat stat-compact"><p class="stat-label">Warnings and errors</p><p class="stat-value num" data-job-warnings>{{.Page.Job.Warnings}}</p><p class="stat-meta"><span class="num" data-job-errors>{{.Page.Job.Errors}}</span> errors recorded in the event log</p></article>
         <article class="stat stat-compact"><p class="stat-label">Workers</p><p class="stat-value metric-value-small num" data-progress-field="worker-concurrency">{{.Page.Job.WorkerConcurrency}}</p><p class="stat-meta">effective against requested concurrency</p></article>
-        <article class="stat stat-compact"><p class="stat-label">Network route</p><p class="stat-value metric-value-small" data-metric-value>{{.Page.Job.ProxyPoolLabel}}</p><p class="stat-meta">pool health from the last stored test</p></article>
+        <article class="stat stat-compact"><p class="stat-label">Network route</p><p class="stat-value metric-value-small" data-metric-value>{{.Page.Job.ProxyPoolLabel}}</p><p class="stat-meta">block rate <span data-job-block-rate>{{if .Page.Job.BlockRate}}{{.Page.Job.BlockRate}}{{else}}not reported yet{{end}}</span></p></article>
     </section>
 
     {{/* ---------------------------------------------------------------- PLAN + CONTEXT */}}
@@ -213,17 +234,21 @@ scrolls past the status header.
             <section class="card" id="job-logs" aria-labelledby="job-logs-title">
                 <div class="card-header">
                     <div><h2 id="job-logs-title">Job logs</h2><p>Human-readable, redacted lifecycle events</p></div>
-                    {{if .Page.CanDownloadLogs}}<div class="card-actions"><a class="button button-sm" href="/api/v1/jobs/{{.Page.Job.ID}}/logs?format=text" download data-endpoint="/api/v1/jobs/{{.Page.Job.ID}}/logs?format=text">Download logs</a></div>{{end}}
+                    <div class="card-actions">
+                        <button class="button button-sm" type="button" data-log-copy>Copy details</button>
+                        {{if .Page.CanDownloadLogs}}<a class="button button-sm" href="/api/v1/jobs/{{.Page.Job.ID}}/logs?format=text" download data-endpoint="/api/v1/jobs/{{.Page.Job.ID}}/logs?format=text">Download logs</a>{{end}}
+                    </div>
                 </div>
                 <form class="ops-log-toolbar" action="/app/jobs/{{.Page.Job.ID}}" method="get">
                     <div class="field"><label for="log-search">Search logs</label><input class="input input-sm" id="log-search" name="log_q" type="search" value="{{.Page.LogQuery}}" placeholder="Message, query, cell, or record"></div>
-                    <div class="field"><label for="log-severity">Severity</label><select class="select input-sm" id="log-severity" name="severity"><option value="">All</option><option value="information">Information</option><option value="warning">Warning</option><option value="rate-limit">Rate limit</option><option value="proxy-failure">Proxy failure</option><option value="browser-failure">Browser failure</option><option value="website-timeout">Website timeout</option><option value="parsing-failure">Parsing failure</option><option value="duplicate">Duplicate</option><option value="maximum-runtime">Maximum runtime</option><option value="system-error">System error</option></select></div>
-                    <label class="check-row"><input name="log_autoscroll" type="checkbox" checked><span>Follow live</span></label>
+                    <div class="field"><label for="log-severity">Severity</label><select class="select input-sm" id="log-severity" name="severity"><option value="">All</option>{{range .Page.LogLevels}}<option value="{{.Value}}"{{if eq .Value $.Page.LogSeverity}} selected{{end}}>{{.Label}}</option>{{end}}</select></div>
+                    <label class="check-row"><input name="log_autoscroll" type="checkbox" value="1" data-log-autoscroll{{if .Page.LogAutoscroll}} checked{{end}}><span>Follow live</span></label>
                     <button class="button button-sm" type="submit" data-endpoint="/app/jobs/{{.Page.Job.ID}}#job-logs">Filter</button>
                 </form>
                 <div class="log-viewer" data-log-viewer role="log" aria-live="polite" aria-relevant="additions text" tabindex="0">
-                    {{range .Page.Logs}}<div class="log-line log-{{.Severity}}"><time datetime="{{.OccurredAtISO}}">{{.OccurredAt}}</time><span>{{.Severity}}</span><span>{{.Message}}{{if .TargetURL}} <a href="{{.TargetURL}}">Open affected item</a>{{end}}</span></div>{{else}}<div class="log-line"><span></span><span>info</span><span>No log entries match the current filter.</span></div>{{end}}
+                    {{range .Page.Logs}}<div class="log-line log-{{.Severity}}" data-log-line data-log-level="{{.Severity}}"><time datetime="{{.OccurredAtISO}}">{{.OccurredAt}}</time><span class="log-level">{{.Severity}}</span><span>{{.Message}}{{if .TargetURL}} <a class="log-target" href="{{.TargetURL}}" data-endpoint="{{.TargetURL}}">Open affected item</a>{{end}}</span></div>{{else}}<div class="log-line"><span></span><span class="log-level">information</span><span>No log entries match the current filter.</span></div>{{end}}
                 </div>
+                <p class="t-caption ops-log-note" data-log-status role="status">Copy details puts every visible line on the clipboard as tab-separated text.</p>
             </section>
         </div>
 
@@ -235,6 +260,8 @@ scrolls past the status header.
                         <div class="ops-fact"><dt>Keyword</dt><dd data-progress-field="current-query">{{.Page.Job.CurrentKeyword}}</dd></div>
                         <div class="ops-fact"><dt>Location</dt><dd>{{.Page.Job.CurrentLocation}}</dd></div>
                         <div class="ops-fact"><dt>Grid cell</dt><dd data-progress-field="current-cell">{{.Page.Job.CurrentCell}}</dd></div>
+                        <div class="ops-fact"><dt>Places per minute</dt><dd data-progress-field="rate">{{.Page.Job.PlacesPerMinute}}</dd></div>
+                        <div class="ops-fact"><dt>Estimated completion</dt><dd data-progress-field="eta">{{.Page.Job.ETA}}</dd></div>
                         <div class="ops-fact"><dt>Website queue</dt><dd>{{.Page.Job.WebsiteQueue}}</dd></div>
                         <div class="ops-fact"><dt>Last checkpoint</dt><dd>{{.Page.Job.LastCheckpoint}}</dd></div>
                     </dl>
@@ -302,6 +329,8 @@ scrolls past the status header.
         <div class="card-body stack" style="--stack-space: var(--space-4)">
             <dl class="ops-facts">
                 <div class="ops-fact"><dt>Queries</dt><dd>{{.Page.Job.QuerySummary}}</dd></div>
+                <div class="ops-fact"><dt>Searches generated</dt><dd class="num" data-job-queries>{{.Page.Job.Queries}}</dd></div>
+                <div class="ops-fact"><dt>Geographic cells</dt><dd data-job-cells>{{.Page.Job.Cells}}</dd></div>
                 <div class="ops-fact"><dt>Geography</dt><dd>{{.Page.Job.LocationSummary}}</dd></div>
                 <div class="ops-fact"><dt>Depth / zoom / radius</dt><dd>{{.Page.Job.Depth}} / {{.Page.Job.Zoom}} / {{.Page.Job.Radius}}</dd></div>
                 <div class="ops-fact"><dt>Enrichment</dt><dd>{{.Page.Job.EnrichmentSummary}}</dd></div>
