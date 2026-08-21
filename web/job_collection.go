@@ -11,12 +11,21 @@ import (
 	"github.com/google/uuid"
 )
 
-// Volatile Maps fields are the ones a listing realistically changes between
-// rescans. IncrementalModeVolatile narrows a rescan's retained set to
+// volatileBusinessFields are the field names a listing realistically changes
+// between rescans. IncrementalModeVolatile narrows a rescan's retained set to
 // businesses whose stored record moved on one of them.
+//
+// These are the exact field_name values the workspace writes into
+// business_changes, not display labels: the import's version differ uses the
+// normalized snapshot's top-level JSON keys (phones, website, address,
+// category, review_count, review_rating, status, emails, and structured —
+// which carries opening hours and popular times), while the local website
+// audit writes website_status and website_final_url. Anything not on this list
+// is a change the mode deliberately ignores.
 var volatileBusinessFields = []string{
-	"phone", "website", "address", "primary_category", "categories",
-	"rating", "review_count", "open_hours", "business_status",
+	"phones", "website", "address", "category", "normalized_category",
+	"review_rating", "review_count", "status", "emails", "structured",
+	"website_status", "website_final_url",
 }
 
 // JobCollectionPlan explains, for one job, exactly what the workspace keeps
