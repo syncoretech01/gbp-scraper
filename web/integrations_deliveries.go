@@ -149,7 +149,7 @@ func (s *Server) runIntegrationDelivery(ctx context.Context, integrationID strin
 		claim.State = "failed"
 		claim.Message = redactedDeliveryMessage(err)
 	}
-	claim.Attempts = deliveryAttempts(claim.State)
+	claim.Attempts = deliveryAttempts(integration.Record.Kind, claim.State)
 	if completeErr := s.svc.CompleteIntegrationDelivery(context.WithoutCancel(ctx), claim); completeErr != nil {
 		log.Printf("integration delivery history was not recorded: %v", jobruntime.RedactString(completeErr.Error()))
 	}
@@ -158,11 +158,12 @@ func (s *Server) runIntegrationDelivery(ctx context.Context, integrationID strin
 	}
 }
 
-// deliveryAttempts reports how many requests a finished delivery made. A
-// success is one attempt by construction; a failure exhausted the retry budget
-// unless the receiver rejected it permanently, which the message records.
-func deliveryAttempts(state string) int {
-	if state == "failed" {
+// deliveryAttempts reports how many attempts a finished delivery made. Only a
+// webhook retries, so a failed file or database delivery is one attempt; a
+// failed webhook exhausted its retry budget unless the receiver rejected it
+// permanently, which the recorded message distinguishes.
+func deliveryAttempts(kind, state string) int {
+	if state == "failed" && kind == IntegrationWebhook {
 		return webhookMaximumAttempts
 	}
 

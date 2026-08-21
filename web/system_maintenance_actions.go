@@ -192,7 +192,7 @@ func (s *Server) apiSystemPrepareRestore(w http.ResponseWriter, r *http.Request)
 				record.SchemaVersion, snapshot.SchemaVersion))
 		return
 	}
-	checksum, size, err := checksumLocalFile(path)
+	checksum, _, err := checksumLocalFile(path)
 	if err != nil {
 		renderSystemActionError(w, "Could not read the backup file")
 		return
@@ -221,7 +221,7 @@ func (s *Server) apiSystemPrepareRestore(w http.ResponseWriter, r *http.Request)
 		Action: "restore_prepared", BackupID: record.ID,
 		SchemaVersion: record.SchemaVersion, LiveSchema: snapshot.SchemaVersion,
 		VerifiedPath: stagedPath, SafetyCopyPath: safety.RelativePath,
-		SafetyCopyBytes: size, Encrypted: encrypted,
+		SafetyCopyBytes: safety.FileSize, Encrypted: encrypted,
 		Instructions: "Stop the application, replace jobs.db with " + stagedPath +
 			" (deleting the -wal and -shm files beside it), keep .proxy-master-key in place, and start again. " +
 			"The safety copy of the current database is " + safety.RelativePath + ".",
