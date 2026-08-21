@@ -868,8 +868,10 @@ func assertCurrentSchema(t *testing.T, db *sql.DB) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migration_checksums`).Scan(&checksums); err != nil {
 		t.Fatalf("count migration checksums: %v", err)
 	}
-	if migrations != currentSchemaVersion || checksums != currentSchemaVersion {
-		t.Fatalf("migration rows = %d checksums = %d, want %d each", migrations, checksums, currentSchemaVersion)
+	// Reserved version numbers may leave gaps in the declared sequence, so the
+	// invariant is one recorded row and one checksum per declared migration.
+	if migrations != len(schemaMigrations) || checksums != len(schemaMigrations) {
+		t.Fatalf("migration rows = %d checksums = %d, want %d each", migrations, checksums, len(schemaMigrations))
 	}
 
 	var integrity string

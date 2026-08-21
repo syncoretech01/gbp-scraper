@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	currentSchemaVersion           = 13
+	currentSchemaVersion           = 15
 	migrationChecksumSchemaVersion = 4
 )
 
@@ -1180,6 +1180,19 @@ var schemaMigrations = []schemaMigration{
 			ON job_benchmark_snapshots(captured_at DESC, job_id)`,
 		},
 	},
+	{
+		// Reserved for the results/filters/dedup group.
+		version: 15,
+		name:    "results-core-columns",
+		statements: []string{
+			// The legacy CSV carries a user_reviews cell that the normalized
+			// schema had nowhere to keep, so the Results explorer could not
+			// offer the specification's "user reviews" reputation column.
+			// Additive and defaulted, so existing rows keep behaving exactly
+			// as they do today.
+			`ALTER TABLE businesses ADD COLUMN user_reviews TEXT NOT NULL DEFAULT '[]'`,
+		},
+	},
 }
 
 func migrateDatabase(db *sql.DB, path string) error {
@@ -1403,29 +1416,52 @@ func validateMigrationMetadata(db *sql.DB, version int) error {
 	}
 	defer rows.Close()
 
-	want := 1
+	// Version numbers are reserved per work stream, so the declared sequence
+	// may contain gaps. The invariant is therefore that the recorded set is
+	// exactly the declared set up to user_version, in order, with nothing
+	// skipped, repeated, or foreign.
+	expected := declaredMigrationVersions(version)
+	index := 0
+	last := 0
+
 	for rows.Next() {
 		var applied int
 		if err := rows.Scan(&applied); err != nil {
 			return fmt.Errorf("scan migration metadata: %w", err)
 		}
 
-		if applied != want || applied > version {
+		if index >= len(expected) || applied != expected[index] || applied > version {
 			return fmt.Errorf("database migration metadata is inconsistent at version %d", applied)
 		}
 
-		want++
+		last = applied
+		index++
 	}
 
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read migration metadata: %w", err)
 	}
 
-	if want-1 != version {
-		return fmt.Errorf("database migration metadata ends at version %d, expected %d", want-1, version)
+	if index != len(expected) {
+		return fmt.Errorf("database migration metadata ends at version %d, expected %d", last, version)
 	}
 
 	return nil
+}
+
+// declaredMigrationVersions lists the declared migration versions up to and
+// including throughVersion, in ascending order.
+func declaredMigrationVersions(throughVersion int) []int {
+	versions := make([]int, 0, len(schemaMigrations))
+	for _, migration := range schemaMigrations {
+		if migration.version > throughVersion {
+			break
+		}
+
+		versions = append(versions, migration.version)
+	}
+
+	return versions
 }
 
 func migrationChecksum(migration schemaMigration) string {
@@ -1487,8 +1523,8 @@ func validateMigrationChecksums(db *sql.DB, version int) error {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migration_checksums`).Scan(&count); err != nil {
 		return fmt.Errorf("count migration checksums: %w", err)
 	}
-	if count != version {
-		return fmt.Errorf("database migration checksums contain %d entries, expected %d", count, version)
+	if declared := len(declaredMigrationVersions(version)); count != declared {
+		return fmt.Errorf("database migration checksums contain %d entries, expected %d", count, declared)
 	}
 
 	for _, migration := range schemaMigrations {

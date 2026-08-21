@@ -100,6 +100,7 @@ type appResultCapabilities struct {
 	CanMerge         bool
 	CanDelete        bool
 	CanProspect      bool
+	CanEditFields    bool
 }
 
 type resultJobOption struct {
@@ -131,6 +132,29 @@ type appResultRow struct {
 	ProspectState      string
 	ProspectTierState  string
 	ProspectScoreLabel string
+	// The labels below back the specification's remaining core columns. They
+	// are display-ready so the template never has to format a value itself.
+	EmailsLabel           string
+	EmailCount            int
+	SocialLinks           []appSocialLink
+	SocialLabel           string
+	TechnologiesLabel     string
+	LastCheckedLabel      string
+	FirstSeenLabel        string
+	LastSeenLabel         string
+	RatingsBreakdownLabel string
+	UserReviewCount       int
+	PopularTimesLabel     string
+	CoordinatesLabel      string
+	ClaimedLabel          string
+}
+
+// appSocialLink is one detected social profile rendered as its own chip so the
+// Social column stays scannable instead of collapsing into one long URL.
+type appSocialLink struct {
+	Platform string
+	Label    string
+	URL      string
 }
 
 type appBusinessDetail struct {
@@ -381,6 +405,7 @@ func (s *Server) buildResultsPage(r *http.Request, search ResultSearch) (results
 			CanMerge:         s.duplicateReviewAvailable(),
 			CanDelete:        s.resultMutationAvailable(),
 			CanProspect:      s.svc.SupportsProspects(),
+			CanEditFields:    s.manualEditAvailable(),
 		},
 	}
 	flatFilters := search.Filters
@@ -953,20 +978,131 @@ func newAppResultRow(result BusinessResult) appResultRow {
 		prospectScore = strconv.FormatFloat(*result.ProspectScore, 'f', 0, 64)
 	}
 
-	return appResultRow{
-		BusinessResult:     result,
-		RatingLabel:        rating,
-		ReviewCountLabel:   reviews,
-		WebsiteState:       safeCSSState(websiteState),
-		ResponseTime:       responseTime,
-		QualityLabel:       strconv.FormatFloat(result.QualityScore, 'f', 0, 64),
-		ConfidenceLabel:    fmt.Sprintf("%.0f%%", result.Confidence*100),
-		UpdatedLabel:       appResultTime(result.UpdatedAt),
-		ScrapedLabel:       appResultTime(result.ScrapedAt),
-		ProspectState:      prospectStateClass(result.ProspectStatus),
-		ProspectTierState:  prospectStateClass(result.ProspectTier),
-		ProspectScoreLabel: prospectScore,
+	coordinates := ""
+	if result.Latitude != nil && result.Longitude != nil {
+		coordinates = fmt.Sprintf("%.6f, %.6f", *result.Latitude, *result.Longitude)
 	}
+	claimed := "not recorded"
+	if result.Claimed {
+		claimed = "claimed"
+	}
+	social := appSocialLinks(result.Social)
+	socialLabel := make([]string, 0, len(social))
+	for _, link := range social {
+		socialLabel = append(socialLabel, link.Label)
+	}
+
+	return appResultRow{
+		BusinessResult:        result,
+		RatingLabel:           rating,
+		ReviewCountLabel:      reviews,
+		WebsiteState:          safeCSSState(websiteState),
+		ResponseTime:          responseTime,
+		QualityLabel:          strconv.FormatFloat(result.QualityScore, 'f', 0, 64),
+		ConfidenceLabel:       fmt.Sprintf("%.0f%%", result.Confidence*100),
+		UpdatedLabel:          appResultTime(result.UpdatedAt),
+		ScrapedLabel:          appResultTime(result.ScrapedAt),
+		ProspectState:         prospectStateClass(result.ProspectStatus),
+		ProspectTierState:     prospectStateClass(result.ProspectTier),
+		ProspectScoreLabel:    prospectScore,
+		EmailsLabel:           strings.Join(result.Emails, ", "),
+		EmailCount:            len(result.Emails),
+		SocialLinks:           social,
+		SocialLabel:           strings.Join(socialLabel, ", "),
+		TechnologiesLabel:     strings.Join(result.Technologies, ", "),
+		LastCheckedLabel:      resultOptionalTimeLabel(result.LastCheckedAt),
+		FirstSeenLabel:        appResultTime(result.FirstSeenAt),
+		LastSeenLabel:         appResultTime(result.LastSeenAt),
+		RatingsBreakdownLabel: ratingsBreakdownLabel(result.ReviewsPerRating),
+		UserReviewCount:       jsonArrayLength(result.UserReviews),
+		PopularTimesLabel:     popularTimesLabel(result.PopularTimes),
+		CoordinatesLabel:      coordinates,
+		ClaimedLabel:          claimed,
+	}
+}
+
+// socialPlatformLabels names each stored platform key for display.
+var socialPlatformLabels = map[string]string{
+	"facebook":  "Facebook",
+	"instagram": "Instagram",
+	"linkedin":  "LinkedIn",
+	"x":         "X",
+	"youtube":   "YouTube",
+	"tiktok":    "TikTok",
+	"whatsapp":  "WhatsApp",
+}
+
+// appSocialLinks turns the stored per-platform profile URLs into ordered
+// display chips, skipping the platforms with no local evidence.
+func appSocialLinks(social BusinessSocial) []appSocialLink {
+	links := make([]appSocialLink, 0, len(SocialPlatforms()))
+	for _, platform := range SocialPlatforms() {
+		profileURL := social.URL(platform)
+		if profileURL == "" {
+			continue
+		}
+		links = append(links, appSocialLink{
+			Platform: platform,
+			Label:    socialPlatformLabels[platform],
+			URL:      profileURL,
+		})
+	}
+
+	return links
+}
+
+// ratingsBreakdownLabel renders the stored reviews_per_rating object as a
+// compact "5★ 120 · 4★ 30" summary. An unparsable or absent value renders as
+// an empty string so the column shows the usual missing-value dash.
+func ratingsBreakdownLabel(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	counts := map[string]json.Number{}
+	if err := json.Unmarshal([]byte(value), &counts); err != nil {
+		return ""
+	}
+	parts := make([]string, 0, len(counts))
+	for _, star := range []string{"5", "4", "3", "2", "1"} {
+		count, ok := counts[star]
+		if !ok {
+			continue
+		}
+		parts = append(parts, star+"★ "+count.String())
+	}
+
+	return strings.Join(parts, " · ")
+}
+
+// popularTimesLabel summarises the stored popular_times object by naming the
+// days it covers rather than printing a wall of numbers into a table cell.
+func popularTimesLabel(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	days := map[string]json.RawMessage{}
+	if err := json.Unmarshal([]byte(value), &days); err != nil {
+		return ""
+	}
+	if len(days) == 0 {
+		return ""
+	}
+
+	return fmt.Sprintf("%d day profile", len(days))
+}
+
+// jsonArrayLength counts the elements of a stored JSON array without decoding
+// their contents, so a large user-review cell costs one pass.
+func jsonArrayLength(value string) int {
+	if strings.TrimSpace(value) == "" {
+		return 0
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal([]byte(value), &items); err != nil {
+		return 0
+	}
+
+	return len(items)
 }
 
 // prospectStateClass converts a stored prospect taxonomy value (for example
