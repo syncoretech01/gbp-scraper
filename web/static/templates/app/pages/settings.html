@@ -1,6 +1,6 @@
 {{define "app/page/settings"}}{{template "app/layout" .}}{{end}}
 
-{{define "app/head"}}<script defer src="/static/js/app-prospects.js"></script>{{end}}
+{{define "app/head"}}<script defer src="/static/js/app-prospects.js"></script><script defer src="/static/js/app-ai.js"></script>{{end}}
 
 {{define "app/page-actions"}}<div class="page-actions"><a class="button" href="/app/scrapes/new">Preview in New Scrape</a></div>{{end}}
 
@@ -71,6 +71,27 @@
 
         <div class="form-actions"><button class="button button-primary" type="submit">Save settings</button></div>
     </form>
+
+    <section class="card ai-console" aria-labelledby="ai-console-title" data-ai-console data-csrf-token="{{.CSRFToken}}" data-ai-enabled="{{.Page.LocalAI.Enabled}}" hidden>
+        <div class="card-header"><div><h2 id="ai-console-title">Local AI assistant</h2><p>Optional helpers that run entirely on your own Ollama server. Every answer is a suggestion to review, never a verified fact, and nothing leaves this machine.</p></div><span class="badge" data-ai-state>Checking</span></div>
+        <div class="card-body section-stack">
+            <div class="grid grid-2">
+                <div class="field"><label for="ai-task">Assistant</label><select class="select" id="ai-task" data-ai-task>
+                    <option value="scrape_configuration">Turn a request into a scrape configuration</option>
+                    <option value="classify_business">Classify a business and its website quality</option>
+                    <option value="explain_quality">Explain a quality score</option>
+                    <option value="explain_duplicate">Explain a duplicate match</option>
+                    <option value="summarize_business">Summarize a business description</option>
+                    <option value="summarize_changes">Summarize a change history</option>
+                    <option value="suggest_coverage">Suggest missing cities, categories, or exclusions</option>
+                </select><span class="field-help" data-ai-task-help></span></div>
+                <div class="field"><label for="ai-context">Structured context (optional JSON)</label><textarea class="textarea" id="ai-context" rows="3" spellcheck="false" placeholder="{&#34;city&#34;:&#34;San Francisco&#34;}" data-ai-context></textarea><span class="field-help">Paste a record from Results or an export to give the model evidence to work from.</span></div>
+            </div>
+            <div class="field"><label for="ai-input">Request</label><textarea class="textarea" id="ai-input" rows="4" maxlength="16384" data-ai-input></textarea></div>
+            <div class="table-actions"><button class="button button-primary" type="button" data-ai-run>Ask the local model</button><button class="button" type="button" data-ai-clear>Clear</button></div>
+            <div class="ai-output" role="status" aria-live="polite" data-ai-output><p class="field-help">Answers appear here. Review every suggestion before acting on it.</p></div>
+        </div>
+    </section>
 
     <form class="card section-stack" action="/api/v1/security/password" method="post">
         <div class="card-header"><div><h2>Local access password</h2><p>Optional. When set, every page requires a sign-in and API requests require an API key. Sessions live in memory, so restarting the application signs everyone out.</p></div></div>
