@@ -19,7 +19,14 @@
 {{end}}
 
 {{define "app/content"}}
-<div class="card map-layout map-explorer"
+{{/*
+Coverage explorer. Two panes inside one fixed-height card: a scrolling control
+rail of collapsible sections on the left and a map stage on the right whose
+canvas is absolutely positioned so it always fills the pane exactly. app-map.js
+calls invalidateSize() whenever that pane resizes, so the tiles never leave a
+dead strip below the map.
+*/}}
+<div class="card coverage-explorer"
      data-map-explorer
      data-mode="{{.Page.Mode}}"
      data-area-id="{{.Page.AreaID}}"
@@ -31,66 +38,133 @@
      data-results-export-endpoint="/api/v1/maps/results/export"
      data-rescrape-endpoint="/api/v1/maps/cells/rescrape"
      data-tile-template="/api/v1/maps/tiles/{z}/{x}/{y}.png">
-    <aside class="map-panel section-stack" aria-label="Map controls">
-        <fieldset class="fieldset"><legend>View</legend><div class="segmented map-mode-switch"><input id="map-planning" name="mode" type="radio" value="planning" {{if eq .Page.Mode "planning"}}checked{{end}}><label for="map-planning">Planning</label><input id="map-live" name="mode" type="radio" value="live" {{if eq .Page.Mode "live"}}checked{{end}}><label for="map-live">Coverage</label><input id="map-results" name="mode" type="radio" value="results" {{if eq .Page.Mode "results"}}checked{{end}}><label for="map-results">Results</label></div></fieldset>
 
-        {{if .Page.CanSaveArea}}
-        <section class="map-control-section section-stack" aria-labelledby="saved-area-heading">
-            <div><strong id="saved-area-heading">Saved areas</strong><p class="field-hint">Areas are stored in the local SQLite database.</p></div>
-            <div class="field"><label for="map-area-select">Open area</label><div class="input-group"><select class="select" id="map-area-select" data-map-area-select><option value="">Unsaved area</option>{{range .Page.Areas}}<option value="{{.ID}}" {{if .Selected}}selected{{end}}>{{.Name}}</option>{{end}}</select><button class="button" type="button" data-action="load-area">Load</button></div></div>
-            <div class="field"><label for="map-area-name">Area name</label><input class="input" id="map-area-name" maxlength="120" value="{{.Page.AreaName}}" placeholder="San Francisco dental search" data-map-area-name></div>
-            <div class="map-control-actions"><button class="button button-primary" type="button" data-action="save-area">Save new</button><button class="button" type="button" data-action="update-area" {{if not .Page.AreaID}}disabled{{end}}>Update</button><button class="button" type="button" data-action="export-area" {{if not .Page.AreaID}}disabled{{end}}>Export</button><button class="button button-danger" type="button" data-action="delete-area" {{if not .Page.AreaID}}disabled{{end}}>Delete</button></div>
-            <div class="field"><label for="map-area-import">Import GeoJSON</label><input class="input" id="map-area-import" type="file" accept=".geojson,.json,application/geo+json,application/json" data-map-import><p class="field-hint">Polygon, MultiPolygon, rectangle/bbox, circle features, and FeatureCollections are supported (1 MiB maximum).</p></div>
-        </section>
-        {{else}}
-        <p class="notice notice-info">Area persistence is unavailable for this repository. Drawing and grid preview still work locally.</p>
-        {{end}}
+    <aside class="coverage-rail" aria-label="Map controls">
+        <div class="coverage-rail-head">
+            <p class="t-overline">View mode</p>
+            <div class="segmented coverage-modes" role="radiogroup" aria-label="Map view mode">
+                <input id="map-planning" name="mode" type="radio" value="planning" {{if eq .Page.Mode "planning"}}checked{{end}}><label for="map-planning">Planning</label>
+                <input id="map-live" name="mode" type="radio" value="live" {{if eq .Page.Mode "live"}}checked{{end}}><label for="map-live">Coverage</label>
+                <input id="map-results" name="mode" type="radio" value="results" {{if eq .Page.Mode "results"}}checked{{end}}><label for="map-results">Results</label>
+            </div>
+            <p class="coverage-mode-hint t-caption" data-map-mode-hint aria-live="polite">Draw or load an area, then preview the deterministic grid.</p>
+        </div>
 
-        <section class="map-control-section section-stack" aria-labelledby="geometry-heading">
-            <div><strong id="geometry-heading">Search area</strong><p class="field-hint">Draw a polygon, rectangle, or circle. Only one active area is used at a time.</p></div>
-            <div class="map-draw-actions" role="group" aria-label="Drawing tools"><button class="button button-small" type="button" data-action="draw-polygon">Draw polygon</button><button class="button button-small" type="button" data-action="draw-bbox">Draw rectangle</button><button class="button button-small" type="button" data-action="draw-circle">Draw circle</button></div>
-            <div class="field"><label for="map-place">Area label</label><input class="input" id="map-place" value="{{.Page.Place}}" placeholder="San Francisco, CA" autocomplete="off"><p class="field-hint">This is a label, not a paid geocoder. The precise area comes from the coordinates or drawing.</p></div>
-            <div class="grid grid-2"><div class="field"><label for="map-latitude">Latitude</label><input class="input" id="map-latitude" type="number" min="-90" max="90" step="any" value="{{.Page.Latitude}}" data-map-latitude></div><div class="field"><label for="map-longitude">Longitude</label><input class="input" id="map-longitude" type="number" min="-180" max="180" step="any" value="{{.Page.Longitude}}" data-map-longitude></div></div>
-            <div class="grid grid-2"><div class="field"><label for="map-radius">Radius (km)</label><input class="input" id="map-radius" type="number" min="0.001" max="500" step="0.1" value="{{.Page.RadiusKM}}" data-map-radius></div><div class="field"><label for="map-grid-cell">Grid cell (km)</label><input class="input" id="map-grid-cell" type="number" min="0.05" max="100" step="0.05" value="{{.Page.GridCellKM}}" data-map-cell-size></div></div>
-            <button class="button" type="button" data-action="apply-circle">Apply coordinate circle</button>
-            <div class="form-actions"><button class="button button-primary" type="button" data-action="preview-grid">Preview grid</button><button class="button" type="button" data-action="fit-area">Fit area</button></div>
-        </section>
+        <div class="coverage-rail-scroll">
+            {{if .Page.CanSaveArea}}
+            <details class="rail-section" data-rail-section {{if .Page.AreaID}}open{{end}}>
+                <summary class="rail-summary"><span class="rail-summary-title">Saved areas</span><span class="rail-summary-meta">{{len .Page.Areas}}</span>{{template "app/icon-chevron-down"}}</summary>
+                <div class="rail-body">
+                    <div class="field"><label for="map-area-select">Open area</label><div class="input-group"><select class="select" id="map-area-select" data-map-area-select><option value="">Unsaved area</option>{{range .Page.Areas}}<option value="{{.ID}}" {{if .Selected}}selected{{end}}>{{.Name}}</option>{{end}}</select><button class="button button-sm" type="button" data-action="load-area">Load</button></div></div>
+                    <div class="field"><label for="map-area-name">Area name</label><input class="input input-sm" id="map-area-name" maxlength="120" value="{{.Page.AreaName}}" placeholder="San Francisco dental search" data-map-area-name></div>
+                    <div class="rail-actions"><button class="button button-sm button-primary" type="button" data-action="save-area">Save new</button><button class="button button-sm" type="button" data-action="update-area" {{if not .Page.AreaID}}disabled{{end}}>Update</button><button class="button button-sm" type="button" data-action="export-area" {{if not .Page.AreaID}}disabled{{end}}>Export</button><button class="button button-sm button-danger" type="button" data-action="delete-area" {{if not .Page.AreaID}}disabled{{end}}>Delete</button></div>
+                    <div class="field"><label for="map-area-import">Import GeoJSON</label><input class="input file-input" id="map-area-import" type="file" accept=".geojson,.json,application/geo+json,application/json" data-map-import><p class="field-hint">Polygon, MultiPolygon, rectangle/bbox, circle features, and FeatureCollections are supported (1 MiB maximum).</p></div>
+                </div>
+            </details>
+            {{else}}
+            <div class="notice notice-info"><div><strong>Area persistence is unavailable</strong><p>Drawing and grid preview still work locally against this repository.</p></div></div>
+            {{end}}
 
-        <section class="map-control-section section-stack" aria-labelledby="grid-actions-heading">
-            <div><strong id="grid-actions-heading">Grid selection</strong><p class="field-hint">Click cells to select them. Removed cell IDs are saved with the area and remain deterministic when you preview again.</p></div>
-            <div class="map-control-actions"><button class="button button-small" type="button" data-action="remove-cells" disabled>Remove selected</button><button class="button button-small" type="button" data-action="restore-cells" disabled>Restore removed</button></div>
-        </section>
+            <details class="rail-section" data-rail-section open>
+                <summary class="rail-summary"><span class="rail-summary-title">Draw area</span><span class="rail-summary-meta" data-map-shape-label>none</span>{{template "app/icon-chevron-down"}}</summary>
+                <div class="rail-body">
+                    <div class="rail-actions" role="group" aria-label="Drawing tools"><button class="button button-sm" type="button" data-action="draw-polygon">Draw polygon</button><button class="button button-sm" type="button" data-action="draw-bbox">Draw rectangle</button><button class="button button-sm" type="button" data-action="draw-circle">Draw circle</button></div>
+                    <div class="field"><label for="map-place">Area label</label><input class="input input-sm" id="map-place" value="{{.Page.Place}}" placeholder="San Francisco, CA" autocomplete="off"><p class="field-hint">A label, not a paid geocoder. The precise area comes from the coordinates or the drawing.</p></div>
+                    <div class="rail-actions"><button class="button button-sm" type="button" data-action="fit-area">Fit area</button></div>
+                </div>
+            </details>
 
-        <section class="map-control-section section-stack" aria-labelledby="coverage-heading">
-            <div><strong id="coverage-heading">Live coverage and heatmap</strong><p class="field-hint">Coverage uses durable job tasks and committed source rows. Refresh at any time or enable polling while a job runs.</p></div>
-            <div class="map-control-actions"><button class="button button-small" type="button" data-action="load-coverage">Refresh coverage</button><label class="check"><input type="checkbox" data-map-live-refresh checked> Auto-refresh</label></div>
-            <div class="field"><label for="map-heatmap">Overlay</label><select class="select" id="map-heatmap" data-map-heatmap><option value="coverage">Coverage states</option><option value="density">Result density</option><option value="failed">Failed / blocked</option><option value="empty">Empty cells</option><option value="duplicates">Duplicate-heavy</option></select></div>
-            <div class="map-control-actions" role="group" aria-label="Coverage heat shading"><button class="button button-small map-heat-toggle" type="button" data-action="toggle-failed-heat" aria-pressed="false">Failed cells</button><button class="button button-small map-heat-toggle" type="button" data-action="toggle-empty-heat" aria-pressed="false">Empty cells</button><button class="button button-small map-heat-toggle" type="button" data-action="toggle-duplicate-heat" aria-pressed="false">Duplicate-heavy cells</button></div>
-            <p class="field-hint">Heat shading re-colours grid cells: deeper red means more failed or blocked tasks, amber marks completed cells with zero results, deeper purple means more duplicate rows were skipped or replaced at task checkpoints, and muted grey marks the remaining cells. The on-map legend spells out each colour.</p>
-            <div class="map-control-actions"><button class="button button-small" type="button" data-action="retry-cells" disabled>Retry failed / empty</button></div>
-            <div class="field"><label for="map-cell-keyword">New keyword in selected cells</label><div class="input-group"><input class="input" id="map-cell-keyword" maxlength="500" placeholder="emergency dentist" data-map-cell-keyword><button class="button button-small" type="button" data-action="keyword-cells" disabled>Queue</button></div></div>
-            {{if .Page.KeywordGroups}}<div class="field"><label for="map-keyword-group">Saved keyword group for selected cells</label><div class="input-group"><select class="select" id="map-keyword-group" data-map-keyword-group><option value="">Choose saved template</option>{{range .Page.KeywordGroups}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select><button class="button button-small" type="button" data-action="group-cells" disabled>Queue group</button></div></div>{{end}}
-        </section>
+            <details class="rail-section" data-rail-section>
+                <summary class="rail-summary"><span class="rail-summary-title">Coordinates</span><span class="rail-summary-meta num" data-map-centre-label>{{.Page.Latitude}}, {{.Page.Longitude}}</span>{{template "app/icon-chevron-down"}}</summary>
+                <div class="rail-body">
+                    <div class="rail-grid">
+                        <div class="field"><label for="map-latitude">Latitude</label><input class="input input-sm num" id="map-latitude" type="number" min="-90" max="90" step="any" value="{{.Page.Latitude}}" data-map-latitude></div>
+                        <div class="field"><label for="map-longitude">Longitude</label><input class="input input-sm num" id="map-longitude" type="number" min="-180" max="180" step="any" value="{{.Page.Longitude}}" data-map-longitude></div>
+                    </div>
+                    <div class="field"><label for="map-radius">Radius (km)</label><input class="input input-sm num" id="map-radius" type="number" min="0.001" max="500" step="0.1" value="{{.Page.RadiusKM}}" data-map-radius></div>
+                    <button class="button button-sm button-block" type="button" data-action="apply-circle">Apply coordinate circle</button>
+                </div>
+            </details>
 
-        <section class="map-control-section section-stack" aria-labelledby="result-marker-heading">
-            <div><strong id="result-marker-heading">Result markers</strong><p class="field-hint">Advanced filters in the current Results URL are propagated to this spatial query.</p></div>
-            <div class="field"><label for="map-job">Source job</label><select class="select" id="map-job" data-map-job><option value="">All jobs</option>{{range .Page.Jobs}}<option value="{{.ID}}" {{if .Selected}}selected{{end}}>{{.Name}} &mdash; {{.State}}</option>{{end}}</select></div>
-            <div class="field"><label for="map-filter">Search markers</label><div class="input-group"><input class="input" id="map-filter" type="search" value="{{.Page.Query}}" placeholder="Name, category, or address" data-map-query><button class="button" type="button" data-action="load-results">Load</button></div></div>
-            <div class="map-control-actions"><button class="button button-small map-heat-toggle" type="button" data-action="toggle-density-heat" aria-pressed="false">Heatmap</button><button class="button button-small" type="button" data-action="export-results-csv">Export area CSV</button><button class="button button-small" type="button" data-action="export-results-geojson">Export area GeoJSON</button></div>
-            <p class="field-hint">The heatmap aggregates the loaded result markers into buckets; darker blue means more results per bucket. Toggle it off to restore clustered markers.</p>
-        </section>
+            <details class="rail-section" data-rail-section open>
+                <summary class="rail-summary"><span class="rail-summary-title">Grid</span><span class="rail-summary-meta num" data-map-cell-count>{{.Page.Estimate.Cells}}</span>{{template "app/icon-chevron-down"}}</summary>
+                <div class="rail-body">
+                    <div class="field"><label for="map-grid-cell">Grid cell (km)</label><input class="input input-sm num" id="map-grid-cell" type="number" min="0.05" max="100" step="0.05" value="{{.Page.GridCellKM}}" data-map-cell-size></div>
+                    <button class="button button-sm button-primary button-block" type="button" data-action="preview-grid">Preview grid</button>
+                    <p class="field-hint">Click cells on the map to select them. Removed cell IDs are saved with the area and stay deterministic on the next preview.</p>
+                    <div class="rail-actions"><button class="button button-sm" type="button" data-action="remove-cells" disabled>Remove selected</button><button class="button button-sm" type="button" data-action="restore-cells" disabled>Restore removed</button></div>
+                </div>
+            </details>
 
-        <div class="estimate" aria-label="Grid estimate"><div><span class="field-hint">Cells</span><strong data-map-cell-count>{{.Page.Estimate.Cells}}</strong></div><div><span class="field-hint">Queries</span><strong>{{.Page.Estimate.Queries}}</strong></div><div><span class="field-hint">Tasks</span><strong>{{.Page.Estimate.Tasks}}</strong></div><div><span class="field-hint">Markers</span><strong data-map-marker-count>0</strong></div></div>
-        <p class="map-status field-hint" data-map-status role="status" aria-live="polite">Preparing local map…</p>
+            <details class="rail-section" data-rail-section data-mode-scope="live results" open>
+                <summary class="rail-summary"><span class="rail-summary-title">Source job</span><span class="rail-summary-meta">{{len .Page.Jobs}}</span>{{template "app/icon-chevron-down"}}</summary>
+                <div class="rail-body">
+                    <div class="field"><label for="map-job">Job</label><select class="select" id="map-job" data-map-job><option value="">All jobs</option>{{range .Page.Jobs}}<option value="{{.ID}}" {{if .Selected}}selected{{end}}>{{.Name}} &mdash; {{.State}}</option>{{end}}</select></div>
+                </div>
+            </details>
+
+            <details class="rail-section" data-rail-section data-mode-scope="planning live" open>
+                <summary class="rail-summary"><span class="rail-summary-title">Coverage</span><span class="rail-summary-meta" data-map-coverage-meta>evidence</span>{{template "app/icon-chevron-down"}}</summary>
+                <div class="rail-body">
+                    <div class="rail-actions"><button class="button button-sm" type="button" data-action="load-coverage">Refresh coverage</button><label class="switch"><input type="checkbox" data-map-live-refresh checked><span class="switch-track"></span><span>Auto-refresh</span></label></div>
+                    <div class="field"><label for="map-heatmap">Cell shading</label><select class="select" id="map-heatmap" data-map-heatmap><option value="coverage">Coverage states</option><option value="density">Result density</option><option value="failed">Failed / blocked</option><option value="empty">Empty cells</option><option value="duplicates">Duplicate saturation</option><option value="confidence" data-map-confidence-option hidden>Cell confidence</option></select></div>
+                    <div class="chip-group" role="group" aria-label="Coverage heat shading"><button class="chip" type="button" data-action="toggle-failed-heat" aria-pressed="false">Failed cells</button><button class="chip" type="button" data-action="toggle-empty-heat" aria-pressed="false">Empty cells</button><button class="chip" type="button" data-action="toggle-duplicate-heat" aria-pressed="false">Duplicate-heavy cells</button></div>
+                    <p class="field-hint">Heat shading re-colours grid cells: deeper red means more failed or blocked tasks, amber marks completed cells with zero results, deeper purple means more duplicate rows were skipped or replaced at task checkpoints, and muted grey marks the remaining cells. The on-map legend spells out each colour.</p>
+                    <div class="rail-actions"><button class="button button-sm" type="button" data-action="retry-cells" disabled>Retry failed / empty</button></div>
+                    <div class="field"><label for="map-cell-keyword">New keyword in selected cells</label><div class="input-group"><input class="input input-sm" id="map-cell-keyword" maxlength="500" placeholder="emergency dentist" data-map-cell-keyword><button class="button button-sm" type="button" data-action="keyword-cells" disabled>Queue</button></div></div>
+                    {{if .Page.KeywordGroups}}<div class="field"><label for="map-keyword-group">Saved keyword group</label><div class="input-group"><select class="select" id="map-keyword-group" data-map-keyword-group><option value="">Choose saved template</option>{{range .Page.KeywordGroups}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select><button class="button button-sm" type="button" data-action="group-cells" disabled>Queue group</button></div></div>{{end}}
+                </div>
+            </details>
+
+            <details class="rail-section" data-rail-section data-mode-scope="results" open>
+                <summary class="rail-summary"><span class="rail-summary-title">Result markers</span><span class="rail-summary-meta num" data-map-marker-count>0</span>{{template "app/icon-chevron-down"}}</summary>
+                <div class="rail-body">
+                    <div class="field"><label for="map-filter">Search markers</label><div class="input-group"><input class="input input-sm" id="map-filter" type="search" value="{{.Page.Query}}" placeholder="Name, category, or address" data-map-query><button class="button button-sm" type="button" data-action="load-results">Load</button></div><p class="field-hint">Advanced filters in the current Results URL are propagated to this spatial query.</p></div>
+                    <div class="chip-group" role="group" aria-label="Result overlays"><button class="chip" type="button" data-action="toggle-density-heat" aria-pressed="false">Heatmap</button></div>
+                    <p class="field-hint">The heatmap aggregates the loaded result markers into buckets; darker blue means more results per bucket. Toggle it off to restore clustered markers.</p>
+                    <div class="rail-actions"><button class="button button-sm" type="button" data-action="export-results-csv">Export area CSV</button><button class="button button-sm" type="button" data-action="export-results-geojson">Export area GeoJSON</button></div>
+                </div>
+            </details>
+        </div>
+
+        <div class="coverage-rail-foot">
+            <div class="coverage-stats" aria-label="Grid estimate">
+                <div class="coverage-stat"><span class="t-caption">Cells</span><strong class="num" data-map-cell-count>{{.Page.Estimate.Cells}}</strong></div>
+                <div class="coverage-stat"><span class="t-caption">Queries</span><strong class="num">{{.Page.Estimate.Queries}}</strong></div>
+                <div class="coverage-stat"><span class="t-caption">Tasks</span><strong class="num">{{.Page.Estimate.Tasks}}</strong></div>
+                <div class="coverage-stat"><span class="t-caption">Markers</span><strong class="num" data-map-marker-count>0</strong></div>
+            </div>
+            <p class="coverage-status" data-map-status role="status" aria-live="polite">Preparing local map&hellip;</p>
+        </div>
     </aside>
 
-    <section class="map-stage" aria-label="Interactive area, grid coverage, and results">
-        <div class="map-canvas map-leaflet" id="map-canvas" data-map-canvas tabindex="0" aria-label="Interactive map of the selected search area"></div>
-        <div class="map-unavailable" data-map-unavailable hidden><strong>Interactive map unavailable</strong><p>The geometry APIs still work, but the locally bundled map library could not start. Reload the page or inspect System diagnostics.</p></div>
+    <section class="coverage-stage" aria-label="Interactive area, grid coverage, and results">
+        <div class="coverage-map" id="map-canvas" data-map-canvas tabindex="0" aria-label="Interactive map of the selected search area"></div>
+        <div class="coverage-unavailable" data-map-unavailable hidden><strong>Interactive map unavailable</strong><p>The geometry APIs still work, but the locally bundled map library could not start. Reload the page or inspect System diagnostics.</p></div>
         {{/* The grid layer is removed in Results mode, so app-map.js hides this legend there rather than explaining colours that are not on screen. */}}
-        <div class="map-legend" data-map-coverage-legend aria-label="Coverage state legend"><span class="heat-legend-title">Grid cell state:</span><span><i class="legend-swatch cell-waiting"></i>Waiting</span><span><i class="legend-swatch cell-running"></i>Running</span><span><i class="legend-swatch cell-completed"></i>Completed</span><span><i class="legend-swatch cell-partial"></i>Partial</span><span><i class="legend-swatch cell-failed"></i>Failed / blocked</span><span><i class="legend-swatch cell-paused"></i>Paused</span></div>
-        <div class="map-legend map-heat-legend" data-map-heat-legend hidden aria-label="Heat layer legend" role="note"></div>
-        <noscript><div class="map-unavailable"><strong>JavaScript is required for the interactive map.</strong><p>Saved GeoJSON and normalized result data remain available through the local API.</p></div></noscript>
+        <details class="coverage-legend" data-map-legend open>
+            <summary class="coverage-legend-summary"><span>Legend</span>{{template "app/icon-chevron-down"}}</summary>
+            <div class="coverage-legend-body">
+                <div class="coverage-legend-group" data-map-coverage-legend aria-label="Coverage state legend">
+                    <p class="heat-legend-title t-overline">Grid cell state</p>
+                    <ul class="coverage-legend-list">
+                        <li><i class="legend-swatch cell-waiting"></i>Waiting</li>
+                        <li><i class="legend-swatch cell-running"></i>Running</li>
+                        <li><i class="legend-swatch cell-completed"></i>Completed</li>
+                        <li><i class="legend-swatch cell-partial"></i>Partial</li>
+                        <li><i class="legend-swatch cell-failed"></i>Failed / blocked</li>
+                        <li><i class="legend-swatch cell-paused"></i>Paused</li>
+                    </ul>
+                </div>
+                <div class="coverage-legend-group" data-map-saturation-legend hidden aria-label="Saturation legend">
+                    <p class="heat-legend-title t-overline" data-map-saturation-title>Saturation</p>
+                    <div class="coverage-ramp" data-map-saturation-ramp aria-hidden="true"></div>
+                    <p class="coverage-ramp-scale"><span>low</span><span class="num" data-map-saturation-max>0</span></p>
+                </div>
+                <div class="coverage-legend-group map-heat-legend" data-map-heat-legend hidden aria-label="Heat layer legend" role="note"></div>
+            </div>
+        </details>
+        <noscript><div class="coverage-unavailable"><strong>JavaScript is required for the interactive map.</strong><p>Saved GeoJSON and normalized result data remain available through the local API.</p></div></noscript>
     </section>
 
     <textarea id="map-initial-geojson" hidden>{{.Page.AreaGeoJSON}}</textarea>

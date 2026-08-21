@@ -17,3 +17,951 @@
 
    Loaded after app.css by templates/app/layout.html.
    =========================================================================== */
+
+/* ===========================================================================
+   1. COVERAGE EXPLORER  (/app/map)
+   ---------------------------------------------------------------------------
+   DOM contract — templates/app/pages/map.html:
+
+     .card.coverage-explorer[data-map-explorer][data-mode]
+       |- aside.coverage-rail
+       |    |- .coverage-rail-head        view-mode segmented control + hint
+       |    |- .coverage-rail-scroll      the only scrolling region in the rail
+       |    |    \- details.rail-section  > summary.rail-summary + .rail-body
+       |    \- .coverage-rail-foot        estimate tiles + live status line
+       \- section.coverage-stage          position: relative
+            |- .coverage-map              position: absolute; inset: 0
+            |- .coverage-unavailable
+            \- details.coverage-legend
+
+   The explorer is a FIXED-HEIGHT card: the rail scrolls internally and the map
+   fills its pane exactly, so there is never a dead strip under the tiles.
+   app-map.js observes .coverage-stage and calls invalidateSize() on every
+   resize, mode switch, and rail disclosure toggle.
+   =========================================================================== */
+
+.coverage-explorer {
+    /* Viewport minus topbar, page header, and canvas gutters. Clamped so the
+       explorer stays usable on a laptop and does not stretch absurdly tall on
+       a portrait display. */
+    --coverage-height: clamp(30rem, calc(100dvh - 15.5rem), 56rem);
+    display: grid;
+    grid-template-columns: minmax(0, 20.5rem) minmax(0, 1fr);
+    height: var(--coverage-height);
+    min-height: 0;
+    overflow: hidden;
+}
+
+.coverage-explorer > * {
+    min-width: 0;
+    min-height: 0;
+}
+
+/* --- Rail ---------------------------------------------------------------- */
+
+.coverage-rail {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    min-height: 0;
+    border-right: 1px solid var(--border);
+    background: var(--surface);
+    border-radius: var(--radius-md) 0 0 var(--radius-md);
+}
+
+.coverage-rail-head {
+    display: grid;
+    gap: var(--space-2);
+    padding: var(--space-4);
+    border-bottom: 1px solid var(--border);
+}
+
+.coverage-modes {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+    width: 100%;
+}
+
+.coverage-modes label {
+    min-width: 0;
+    padding-inline: var(--space-2);
+}
+
+.coverage-mode-hint {
+    margin: 0;
+    min-height: 2.1em;
+}
+
+.coverage-rail-scroll {
+    min-height: 0;
+    overflow: hidden auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+}
+
+.coverage-rail-scroll > .notice {
+    margin: var(--space-4);
+}
+
+/* Collapsible rail sections. Native <details> keeps the disclosure keyboard
+   accessible and scriptless; app-map.js only listens for the toggle event so
+   Leaflet can re-measure. */
+.rail-section {
+    border-bottom: 1px solid var(--border-subtle);
+}
+
+.rail-summary {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-4);
+    color: var(--text);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-semibold);
+    list-style: none;
+    cursor: pointer;
+    transition: background-color var(--transition-fast);
+}
+
+.rail-summary::-webkit-details-marker { display: none; }
+.rail-summary:hover { background: var(--surface-hover); }
+.rail-summary:focus-visible { outline-offset: -2px; }
+
+.rail-summary-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.rail-summary-meta {
+    flex: 0 0 auto;
+    max-width: 9rem;
+    overflow: hidden;
+    padding: 0 var(--space-2);
+    border-radius: var(--radius-pill);
+    background: var(--surface-muted);
+    color: var(--text-muted);
+    font-size: var(--text-2xs);
+    font-weight: var(--weight-medium);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.rail-summary .icon {
+    color: var(--text-faint);
+    transition: transform var(--transition-fast);
+}
+
+.rail-section[open] > .rail-summary .icon { transform: rotate(180deg); }
+
+.rail-body {
+    display: grid;
+    gap: var(--space-3);
+    padding: 0 var(--space-4) var(--space-4);
+}
+
+.rail-grid {
+    display: grid;
+    gap: var(--space-2);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.rail-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+.rail-body .input-group { width: 100%; }
+.rail-body .input-group > .select,
+.rail-body .input-group > .input { min-width: 0; flex: 1 1 auto; }
+.rail-body .input-group > .button { flex: 0 0 auto; }
+.rail-body .switch { font-size: var(--text-xs); color: var(--text-muted); }
+
+/* Mode scoping: sections stay in the DOM (so their values and hooks survive)
+   and only the ones the active mode uses are painted. */
+.coverage-explorer[data-mode="planning"] [data-mode-scope]:not([data-mode-scope~="planning"]),
+.coverage-explorer[data-mode="live"] [data-mode-scope]:not([data-mode-scope~="live"]),
+.coverage-explorer[data-mode="results"] [data-mode-scope]:not([data-mode-scope~="results"]) {
+    display: none;
+}
+
+.coverage-rail-foot {
+    display: grid;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border-top: 1px solid var(--border);
+    background: var(--surface-muted);
+    border-radius: 0 0 0 var(--radius-md);
+}
+
+.coverage-stats {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: var(--space-2);
+}
+
+.coverage-stat {
+    display: grid;
+    gap: 1px;
+    min-width: 0;
+}
+
+.coverage-stat strong {
+    font-size: var(--text-md);
+    font-weight: var(--weight-bold);
+    letter-spacing: var(--tracking-tight);
+    line-height: 1.2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.coverage-status {
+    margin: 0;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+}
+
+/* Server estimates that were never configured arrive as a sentence, not a
+   number; app-map.js flags them so they read as "nothing yet" instead of a
+   truncated headline. */
+.coverage-stat strong[data-empty="true"] {
+    color: var(--text-faint);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+    letter-spacing: 0;
+    line-height: 1.5;
+    white-space: normal;
+}
+
+.coverage-status[data-tone="success"] { border-color: transparent; background: var(--state-success-bg); color: var(--state-success-fg); }
+.coverage-status[data-tone="warning"] { border-color: transparent; background: var(--state-warning-bg); color: var(--state-warning-fg); }
+.coverage-status[data-tone="error"] { border-color: transparent; background: var(--state-danger-bg); color: var(--state-danger-fg); }
+
+/* --- Stage --------------------------------------------------------------- */
+
+.coverage-stage {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+    border-radius: 0 var(--radius-md) var(--radius-md) 0;
+    overflow: hidden;
+    background: var(--surface-sunken);
+}
+
+/* z-index: 0 makes the map its own stacking context, so Leaflet's internal
+   panes can never paint over the legend or the unavailable notice. */
+.coverage-map {
+    position: absolute;
+    z-index: 0;
+    inset: 0;
+    background: var(--surface-sunken);
+}
+
+.coverage-map.leaflet-container { font-family: var(--font); }
+.coverage-map .leaflet-control-attribution { max-width: calc(100% - 1rem); background: color-mix(in srgb, var(--surface) 88%, transparent); color: var(--text-muted); font-size: var(--text-2xs); }
+.coverage-map .leaflet-control-attribution a { color: var(--primary); }
+/* Leaflet 1.9 ships an 12x8 inline flag SVG in its attribution. app.css still
+   carries a legacy `.map-canvas svg { width:100%; height:100% }` rule for the
+   retired static map; pinning the intrinsic size here means no future stray
+   descendant rule can inflate it over the tiles again. */
+.coverage-map .leaflet-attribution-flag { width: .75rem; height: .5rem; }
+.coverage-map .leaflet-popup-content-wrapper,
+.coverage-map .leaflet-popup-tip { background: var(--surface-raised); color: var(--text); }
+.coverage-map .leaflet-popup-content-wrapper { border-radius: var(--radius); box-shadow: var(--shadow-lg); }
+.coverage-map .leaflet-tooltip { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-raised); color: var(--text); font-size: var(--text-2xs); box-shadow: var(--shadow-sm); }
+/* background-COLOR only: the draw toolbar paints its icons with
+   background-image, and the shorthand would erase the sprite. */
+.coverage-map .leaflet-bar a { background-color: var(--surface); color: var(--text); border-bottom-color: var(--border); }
+.coverage-map .leaflet-bar a:hover { background-color: var(--surface-hover); }
+.coverage-map .leaflet-bar a.leaflet-disabled { background-color: var(--surface-muted); color: var(--text-faint); }
+
+/* The vendored draw sprite is a dark-on-transparent PNG/SVG, so it disappears
+   on the dark surface. Both dark selectors from the app.css theme contract get
+   the same treatment so the system preference and the toggle stay in step. */
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .coverage-map .leaflet-draw-toolbar a { filter: invert(1) brightness(1.35); }
+}
+
+:root[data-theme="dark"] .coverage-map .leaflet-draw-toolbar a { filter: invert(1) brightness(1.35); }
+
+.coverage-unavailable {
+    position: absolute;
+    z-index: 3;
+    inset: var(--space-5);
+    display: grid;
+    align-content: center;
+    justify-items: center;
+    gap: var(--space-2);
+    padding: var(--space-7);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    color: var(--text);
+    text-align: center;
+    box-shadow: var(--shadow-lg);
+}
+
+.coverage-unavailable[hidden] { display: none; }
+.coverage-unavailable p { max-width: 34rem; margin: 0; color: var(--text-muted); font-size: var(--text-sm); }
+
+/* --- Legend -------------------------------------------------------------- */
+
+.coverage-legend {
+    position: absolute;
+    z-index: 2;
+    bottom: var(--space-4);
+    left: var(--space-4);
+    width: min(17.5rem, calc(100% - 2 * var(--space-4)));
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--surface) 93%, transparent);
+    box-shadow: var(--shadow-md);
+    backdrop-filter: blur(10px);
+}
+
+.coverage-legend-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    color: var(--text-muted);
+    font-size: var(--text-2xs);
+    font-weight: var(--weight-bold);
+    letter-spacing: var(--tracking-caps);
+    text-transform: uppercase;
+    list-style: none;
+    cursor: pointer;
+}
+
+.coverage-legend-summary::-webkit-details-marker { display: none; }
+.coverage-legend-summary .icon { color: var(--text-faint); transition: transform var(--transition-fast); }
+.coverage-legend[open] .coverage-legend-summary .icon { transform: rotate(180deg); }
+
+.coverage-legend-body {
+    display: grid;
+    gap: var(--space-3);
+    padding: 0 var(--space-3) var(--space-3);
+}
+
+.coverage-legend-group { display: grid; gap: var(--space-2); }
+.coverage-legend-group[hidden] { display: none; }
+.coverage-legend-group .heat-legend-title { margin: 0; }
+
+.coverage-legend-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-1) var(--space-2);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    color: var(--text-muted);
+    font-size: var(--text-2xs);
+}
+
+.coverage-legend-list li {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Legend swatches mirror the translucent cell fills: the same hue at the same
+   alpha over the panel, with the solid hue as the stroke. */
+.coverage-legend .legend-swatch {
+    flex: 0 0 auto;
+    width: .75rem;
+    height: .75rem;
+    margin: 0;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-xs);
+}
+
+.coverage-legend .cell-waiting { border-color: var(--cell-waiting); background: color-mix(in srgb, var(--cell-waiting) 28%, transparent); }
+.coverage-legend .cell-running { border-color: var(--cell-running); background: color-mix(in srgb, var(--cell-running) 28%, transparent); }
+.coverage-legend .cell-completed { border-color: var(--cell-completed); background: color-mix(in srgb, var(--cell-completed) 28%, transparent); }
+.coverage-legend .cell-partial { border-color: var(--cell-partial); background: color-mix(in srgb, var(--cell-partial) 28%, transparent); }
+.coverage-legend .cell-failed { border-color: var(--cell-failed); background: color-mix(in srgb, var(--cell-failed) 28%, transparent); }
+.coverage-legend .cell-paused { border-color: var(--cell-paused); background: color-mix(in srgb, var(--cell-paused) 28%, transparent); }
+
+/* The saturation ramp: four contiguous steps, no gaps, read left to right. */
+.coverage-ramp {
+    display: flex;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xs);
+}
+
+.coverage-ramp .legend-swatch {
+    width: auto;
+    height: .6rem;
+    flex: 1 1 0;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+}
+
+.coverage-ramp-scale {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--space-2);
+    margin: 0;
+    color: var(--text-faint);
+    font-size: var(--text-2xs);
+}
+
+/* The confidence ramp has no counterpart in app.css because it only exists on
+   this view; app-map.js paints the identical four colours onto the cells. */
+.heat-confidence-1 { background: #f6d7a8; }
+.heat-confidence-2 { background: #dcd2a0; }
+.heat-confidence-3 { background: #a9cf9a; }
+.heat-confidence-4 { background: #3f9d6d; }
+
+.coverage-legend .map-heat-legend {
+    position: static;
+    display: grid;
+    gap: var(--space-1);
+    width: auto;
+    max-width: none;
+    padding: 0;
+    border: 0;
+    background: none;
+    box-shadow: none;
+    backdrop-filter: none;
+    color: var(--text-muted);
+    font-size: var(--text-2xs);
+}
+
+.coverage-legend .map-heat-legend > span {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+.coverage-legend .map-heat-legend .heat-legend-title { display: block; }
+
+@media (max-width: 68rem) {
+    .coverage-explorer {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: minmax(0, 20rem) minmax(22rem, 1fr);
+        height: auto;
+    }
+
+    .coverage-rail { border-right: 0; border-bottom: 1px solid var(--border); border-radius: var(--radius-md) var(--radius-md) 0 0; }
+    .coverage-rail-foot { border-radius: 0; }
+    .coverage-stage { min-height: 24rem; border-radius: 0 0 var(--radius-md) var(--radius-md); }
+}
+
+/* ===========================================================================
+   2. SCRAPE WIZARD  (/app/scrapes/new)
+   ---------------------------------------------------------------------------
+   DOM contract — templates/app/pages/new_scrape.html:
+
+     .wizard[data-wizard]
+       |- .wizard-toolbar            mode segmented control + template actions
+       |- aside.wizard-steps         the numbered step rail (JS hook: keep it)
+       \- form.wizard-card           every step panel, all always in the DOM
+
+   Mode is progressive disclosure only: hidden panels are never disabled, so
+   the job the form creates is identical in all three modes.
+   =========================================================================== */
+
+body[data-active-nav="new-scrape"] .wizard {
+    display: grid;
+    grid-template-columns: minmax(0, 16rem) minmax(0, 1fr);
+    grid-template-areas:
+        "toolbar toolbar"
+        "rail    form";
+    gap: var(--space-4);
+    align-items: start;
+}
+
+body[data-active-nav="new-scrape"] .wizard-toolbar { grid-area: toolbar; }
+body[data-active-nav="new-scrape"] .wizard-steps { grid-area: rail; }
+body[data-active-nav="new-scrape"] .wizard-card { grid-area: form; }
+
+/* --- Mode toolbar -------------------------------------------------------- */
+
+.wizard-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3) var(--space-4);
+    padding: var(--space-3) var(--space-4);
+}
+
+.wizard-mode-fieldset {
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+}
+
+/* The three labels are sized by their own text, so "GBP Prospecting" gets the
+   room it needs instead of wrapping onto a second line in a narrow rail. */
+.wizard-mode-switch label {
+    min-height: 1.9rem;
+    padding-inline: var(--space-5);
+    white-space: nowrap;
+}
+
+.wizard-mode-copy {
+    display: grid;
+    gap: 1px;
+    min-width: 12rem;
+    flex: 1 1 16rem;
+}
+
+.wizard-mode-copy .wizard-mode-note {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+}
+
+.wizard-toolbar-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    margin-left: auto;
+}
+
+/* --- Step rail ----------------------------------------------------------- */
+
+body[data-active-nav="new-scrape"] .wizard-steps {
+    position: sticky;
+    top: 0;
+    padding: var(--space-2);
+}
+
+body[data-active-nav="new-scrape"] .wizard-steps ol {
+    display: grid;
+    gap: 2px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+body[data-active-nav="new-scrape"] .wizard-steps button {
+    display: grid;
+    width: 100%;
+    grid-template-columns: 1.35rem minmax(0, 1fr);
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-2) var(--space-3);
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+    text-align: left;
+    cursor: pointer;
+    transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+
+body[data-active-nav="new-scrape"] .wizard-steps button:hover { background: var(--surface-hover); color: var(--text); }
+
+body[data-active-nav="new-scrape"] .wizard-steps button[aria-current="step"] {
+    background: var(--primary-soft);
+    color: var(--primary);
+    font-weight: var(--weight-semibold);
+}
+
+body[data-active-nav="new-scrape"] .wizard-steps .step-number {
+    display: grid;
+    width: 1.35rem;
+    height: 1.35rem;
+    place-items: center;
+    border: 1px solid var(--border-strong);
+    border-radius: 50%;
+    color: var(--text-muted);
+    font-size: var(--text-2xs);
+    font-weight: var(--weight-bold);
+    font-variant-numeric: tabular-nums;
+}
+
+body[data-active-nav="new-scrape"] .wizard-steps button[aria-current="step"] .step-number {
+    border-color: var(--primary);
+    background: var(--primary);
+    color: var(--primary-contrast);
+}
+
+.wizard-rail-foot {
+    margin: var(--space-2) var(--space-2) var(--space-1);
+    padding-top: var(--space-3);
+    border-top: 1px solid var(--border-subtle);
+    color: var(--text-muted);
+    font-size: var(--text-2xs);
+}
+
+/* --- Panels -------------------------------------------------------------- */
+
+body[data-active-nav="new-scrape"] .wizard-panel {
+    display: grid;
+    align-content: start;
+    gap: var(--space-5);
+    min-height: 0;
+    padding: var(--space-5);
+}
+
+body[data-active-nav="new-scrape"] .wizard-panel[hidden] { display: none; }
+
+.wizard-panel-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding-bottom: var(--space-4);
+    border-bottom: 1px solid var(--border);
+}
+
+.wizard-panel-head h2 { margin: 0; }
+.wizard-panel-head p { max-width: 68ch; margin: var(--space-1) 0 0; color: var(--text-muted); font-size: var(--text-sm); }
+.wizard-panel-head-copy { min-width: 0; }
+
+/* Step 1 splits into the query editor and a sticky, compact live preview. The
+   preview never grows past the editor: it scrolls inside its own box. */
+.wizard-split {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 21rem);
+    gap: var(--space-4);
+    align-items: stretch;
+}
+
+.wizard-split > * { min-width: 0; }
+
+/* The preview column matches the editor's height and scrolls its own list, so
+   it neither runs short nor pushes the step taller than the queries do. */
+.wizard-preview {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+}
+
+.wizard-preview-counts {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--border);
+}
+
+.wizard-preview-count { display: grid; gap: 1px; }
+.wizard-preview-count strong { font-size: var(--text-lg); font-weight: var(--weight-bold); letter-spacing: var(--tracking-tight); line-height: 1.15; }
+
+body[data-active-nav="new-scrape"] .query-preview {
+    min-height: 8rem;
+    max-height: none;
+    flex: 1 1 auto;
+    margin: 0;
+    padding: var(--space-2) var(--space-3) var(--space-2) var(--space-8);
+    overflow: auto;
+    overscroll-behavior: contain;
+    color: var(--text);
+    font-size: var(--text-xs);
+}
+
+body[data-active-nav="new-scrape"] .query-preview li { padding-block: 2px; }
+body[data-active-nav="new-scrape"] .query-preview:empty::after {
+    content: "Queries you enter appear here, de-duplicated.";
+    display: block;
+    margin-left: calc(-1 * var(--space-5));
+    color: var(--text-faint);
+}
+
+/* --- Disclosures inside a step ------------------------------------------- */
+
+body[data-active-nav="new-scrape"] .disclosure {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    box-shadow: none;
+}
+
+body[data-active-nav="new-scrape"] .disclosure > summary {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-4);
+    color: var(--text);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-semibold);
+    cursor: pointer;
+}
+
+body[data-active-nav="new-scrape"] .disclosure[open] > summary { border-bottom: 1px solid var(--border-subtle); }
+body[data-active-nav="new-scrape"] .disclosure > .card-body { display: grid; gap: var(--space-4); padding: var(--space-4); }
+
+.disclosure-tag {
+    margin-left: auto;
+    padding: 0 var(--space-2);
+    border-radius: var(--radius-pill);
+    background: var(--state-info-bg);
+    color: var(--state-info-fg);
+    font-size: var(--text-2xs);
+    font-weight: var(--weight-bold);
+}
+
+/* --- Fields -------------------------------------------------------------- */
+
+/* Native file controls render as an unstyled "Choose File" button on every
+   engine; ::file-selector-button is the only CSP-safe way to make them match
+   the button component without a script or a hidden-input hack. */
+.file-input {
+    display: flex;
+    align-items: center;
+    padding: 0 var(--space-3) 0 0;
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    cursor: pointer;
+}
+
+.file-input::file-selector-button {
+    margin-right: var(--space-3);
+    min-height: 1.85rem;
+    padding: 0 var(--space-4);
+    border: 0;
+    border-right: 1px solid var(--border-strong);
+    border-radius: calc(var(--radius-sm) - 1px) 0 0 calc(var(--radius-sm) - 1px);
+    background: var(--surface-muted);
+    color: var(--text);
+    font: inherit;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    cursor: pointer;
+    transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+
+.file-input:hover::file-selector-button { background: var(--surface-hover); }
+.file-input:focus-within { border-color: var(--primary); box-shadow: var(--focus); outline: none; }
+
+body[data-active-nav="new-scrape"] .fieldset > legend {
+    margin-bottom: var(--space-3);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-semibold);
+}
+
+body[data-active-nav="new-scrape"] .preset-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    gap: var(--space-3);
+}
+
+body[data-active-nav="new-scrape"] .preset-option {
+    position: relative;
+    display: grid;
+    gap: var(--space-1);
+    padding: var(--space-4);
+    padding-right: var(--space-8);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    font-size: var(--text-sm);
+    cursor: pointer;
+    transition: border-color var(--transition-fast), background-color var(--transition-fast);
+}
+
+body[data-active-nav="new-scrape"] .preset-option:hover { border-color: var(--border-strong); background: var(--surface-hover); }
+body[data-active-nav="new-scrape"] .preset-option:has(input:checked) { border-color: var(--primary); background: var(--primary-soft); box-shadow: none; }
+body[data-active-nav="new-scrape"] .preset-option input { position: absolute; top: var(--space-4); right: var(--space-4); accent-color: var(--primary); }
+body[data-active-nav="new-scrape"] .preset-option span { color: var(--text-muted); font-size: var(--text-xs); }
+
+body[data-active-nav="new-scrape"] .check-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+    gap: var(--space-3);
+}
+
+body[data-active-nav="new-scrape"] .form-grid-4 {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    gap: var(--space-4);
+}
+
+.wizard-gbp-fieldset { border-radius: var(--radius); }
+
+.wizard-field-card {
+    display: grid;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+    background: var(--surface-muted);
+}
+
+.wizard-field-card > h3 { margin: 0; font-size: var(--text-sm); }
+
+/* --- Review / pre-flight ------------------------------------------------- */
+
+.preflight-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+    gap: var(--space-3);
+}
+
+.preflight-check {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+    background: var(--surface);
+    font-size: var(--text-sm);
+}
+
+.preflight-check strong { display: block; font-weight: var(--weight-semibold); }
+.preflight-check span { display: block; color: var(--text-muted); font-size: var(--text-xs); }
+
+.preflight-mark {
+    display: grid;
+    width: 1.25rem;
+    height: 1.25rem;
+    flex: 0 0 auto;
+    place-items: center;
+    margin-top: 1px;
+    border-radius: 50%;
+    background: var(--state-success-bg);
+    color: var(--state-success-fg);
+    font-size: var(--text-2xs);
+    font-weight: var(--weight-bold);
+}
+
+.preflight-check[data-tone="warn"] { border-color: var(--warning); background: var(--state-warning-bg); }
+.preflight-check[data-tone="warn"] strong { color: var(--state-warning-fg); }
+.preflight-check[data-tone="warn"] .preflight-mark { background: var(--warning); color: var(--surface); }
+
+body[data-active-nav="new-scrape"] .estimate {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: var(--space-2);
+}
+
+body[data-active-nav="new-scrape"] .estimate > div {
+    display: grid;
+    gap: 1px;
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+    background: var(--surface-muted);
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+}
+
+body[data-active-nav="new-scrape"] .estimate strong {
+    display: block;
+    color: var(--text);
+    font-size: var(--text-xl);
+    font-weight: var(--weight-bold);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: var(--tracking-tighter);
+    line-height: 1.15;
+}
+
+body[data-active-nav="new-scrape"] .key-value {
+    display: grid;
+    grid-template-columns: minmax(0, 8rem) minmax(0, 1fr);
+    gap: var(--space-2) var(--space-4);
+    margin: 0;
+    font-size: var(--text-sm);
+}
+
+body[data-active-nav="new-scrape"] .key-value dt { color: var(--text-muted); font-size: var(--text-xs); }
+body[data-active-nav="new-scrape"] .key-value dd { margin: 0; overflow-wrap: anywhere; }
+
+@media (max-width: 75rem) {
+    .wizard-split { grid-template-columns: minmax(0, 1fr); }
+    .wizard-preview { position: static; }
+}
+
+@media (max-width: 64rem) {
+    body[data-active-nav="new-scrape"] .wizard {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas: "toolbar" "rail" "form";
+    }
+
+    body[data-active-nav="new-scrape"] .wizard-steps { position: static; }
+    body[data-active-nav="new-scrape"] .wizard-steps ol { grid-auto-flow: column; grid-auto-columns: minmax(min-content, 1fr); overflow-x: auto; }
+}
+
+/* ===========================================================================
+   3. ONBOARDING  (/app/onboarding)
+   =========================================================================== */
+
+.onboarding-hero-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-6);
+    padding: var(--space-6);
+    border: 1px solid var(--primary-border);
+    border-radius: var(--radius-md);
+    background: linear-gradient(120deg, var(--primary-soft), var(--surface) 68%);
+}
+
+.onboarding-hero-copy { display: grid; gap: var(--space-2); min-width: 0; }
+.onboarding-hero-copy h2 { margin: 0; max-width: 34ch; }
+.onboarding-hero-copy p { max-width: 62ch; margin: 0; color: var(--text-muted); font-size: var(--text-sm); }
+
+.onboarding-progress {
+    display: grid;
+    gap: var(--space-2);
+    min-width: 11rem;
+    padding: var(--space-4);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    text-align: center;
+}
+
+.onboarding-progress strong { font-size: var(--text-2xl); font-weight: var(--weight-bold); font-variant-numeric: tabular-nums; letter-spacing: var(--tracking-tighter); line-height: 1; }
+
+.onboarding-checks {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+    gap: var(--space-3);
+}
+
+.onboarding-steps { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; counter-reset: onboarding-step; }
+
+.onboarding-steps li {
+    display: grid;
+    grid-template-columns: 1.5rem minmax(0, 1fr);
+    align-items: start;
+    gap: var(--space-3);
+    font-size: var(--text-sm);
+}
+
+.onboarding-steps li::before {
+    counter-increment: onboarding-step;
+    content: counter(onboarding-step);
+    display: grid;
+    width: 1.5rem;
+    height: 1.5rem;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--surface-muted);
+    color: var(--text-muted);
+    font-size: var(--text-2xs);
+    font-weight: var(--weight-bold);
+}
+
+@media (max-width: 56rem) {
+    .onboarding-hero-card { grid-template-columns: minmax(0, 1fr); }
+}

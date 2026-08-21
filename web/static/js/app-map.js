@@ -5,8 +5,13 @@
     if (!explorer) return;
 
     const canvas = explorer.querySelector("[data-map-canvas]");
+    const stage = explorer.querySelector(".coverage-stage");
     const unavailable = explorer.querySelector("[data-map-unavailable]");
     const status = explorer.querySelector("[data-map-status]");
+    const modeHint = explorer.querySelector("[data-map-mode-hint]");
+    const shapeLabel = explorer.querySelector("[data-map-shape-label]");
+    const centreLabel = explorer.querySelector("[data-map-centre-label]");
+    const coverageMeta = explorer.querySelector("[data-map-coverage-meta]");
     const areaSelect = explorer.querySelector("[data-map-area-select]");
     const areaName = explorer.querySelector("[data-map-area-name]");
     const latitudeInput = explorer.querySelector("[data-map-latitude]");
@@ -16,12 +21,17 @@
     const queryInput = explorer.querySelector("[data-map-query]");
     const jobSelect = explorer.querySelector("[data-map-job]");
     const heatmapSelect = explorer.querySelector("[data-map-heatmap]");
+    const confidenceOption = explorer.querySelector("[data-map-confidence-option]");
     const liveRefreshInput = explorer.querySelector("[data-map-live-refresh]");
     const cellKeywordInput = explorer.querySelector("[data-map-cell-keyword]");
     const keywordGroupSelect = explorer.querySelector("[data-map-keyword-group]");
-    const cellCount = explorer.querySelector("[data-map-cell-count]");
-    const markerCount = explorer.querySelector("[data-map-marker-count]");
+    const cellCounters = Array.from(explorer.querySelectorAll("[data-map-cell-count]"));
+    const markerCounters = Array.from(explorer.querySelectorAll("[data-map-marker-count]"));
     const heatLegend = explorer.querySelector("[data-map-heat-legend]");
+    const saturationLegend = explorer.querySelector("[data-map-saturation-legend]");
+    const saturationRamp = explorer.querySelector("[data-map-saturation-ramp]");
+    const saturationTitle = explorer.querySelector("[data-map-saturation-title]");
+    const saturationMax = explorer.querySelector("[data-map-saturation-max]");
     const densityHeatButton = explorer.querySelector('[data-action="toggle-density-heat"]');
     const failedHeatButton = explorer.querySelector('[data-action="toggle-failed-heat"]');
     const emptyHeatButton = explorer.querySelector('[data-action="toggle-empty-heat"]');
@@ -55,10 +65,71 @@
     const densityHeatRamp = ["#bcd3f5", "#6ea0ea", "#3478e5", "#1d4ea8"];
     const failedHeatRamp = ["#f3c6cd", "#e78d9b", "#d44b5c", "#9c2130"];
     const duplicateHeatRamp = ["#e2d2f3", "#c3a2e4", "#9f66d3", "#6d3aa8"];
+    const confidenceHeatRamp = ["#f6d7a8", "#dcd2a0", "#a9cf9a", "#3f9d6d"];
     const emptyHeatFill = "#e8b45a";
     const emptyHeatStroke = "#8a6a1c";
     const mutedHeatFill = "#d9dee7";
     const mutedHeatStroke = "#aab3c2";
+
+    // Grid cells are an OVERLAY, never a replacement basemap: every fill stays
+    // translucent so streets, water, and labels read through, and the state
+    // colour is carried mainly by the stroke. These are the only opacity values
+    // used for cell fills.
+    const FILL_BASE = 0.2;
+    const FILL_SELECTED = 0.42;
+    const FILL_MUTED = 0.08;
+    const FILL_RAMP_STEP = 0.08;
+    const FILL_RAMP_FLOOR = 0.14;
+
+    // Cell colours resolve from the --cell-* design tokens so the map, the
+    // legend swatches, and both themes stay in step. The literals are only a
+    // fallback for the (impossible in practice) case of an unstyled document.
+    const cellTokens = {
+        waiting: "--cell-waiting",
+        running: "--cell-running",
+        completed: "--cell-completed",
+        partial: "--cell-partial",
+        failed: "--cell-failed",
+        blocked: "--cell-failed",
+        paused: "--cell-paused"
+    };
+    const cellFallbacks = {
+        waiting: "#8f99aa",
+        running: "#477ae8",
+        completed: "#3aa778",
+        partial: "#d79a36",
+        failed: "#d94d5b",
+        blocked: "#d94d5b",
+        paused: "#805dc8"
+    };
+    let stateColours = Object.assign({}, cellFallbacks);
+
+    function readCellTokens() {
+        const computed = window.getComputedStyle(document.documentElement);
+        const next = {};
+        Object.keys(cellTokens).forEach((state) => {
+            const value = String(computed.getPropertyValue(cellTokens[state]) || "").trim();
+            next[state] = value || cellFallbacks[state];
+        });
+        stateColours = next;
+    }
+
+    function setCounter(nodes, text) {
+        nodes.forEach((node) => { node.textContent = text; });
+        markEmptyEstimates();
+    }
+
+    // Server-side estimates arrive as a sentence ("not configured") whenever a
+    // job has not defined them. Rendered at headline weight that reads as a
+    // broken number, so anything non-numeric is flagged for the muted empty
+    // treatment the design system already defines for stat values.
+    function markEmptyEstimates() {
+        explorer.querySelectorAll(".coverage-stat strong").forEach((node) => {
+            const text = node.textContent.trim().replace(/,/g, "");
+            if (text !== "" && Number.isFinite(Number(text))) node.removeAttribute("data-empty");
+            else node.dataset.empty = "true";
+        });
+    }
 
     function showStatus(message, tone) {
         if (status) {
@@ -151,8 +222,8 @@
         if (heatLayers) heatLayers.clearLayers();
         lastResultPoints = [];
         lastDensityMaximum = 0;
-        if (cellCount) cellCount.textContent = "0";
-        if (markerCount) markerCount.textContent = "0";
+        setCounter(cellCounters, "0");
+        setCounter(markerCounters, "0");
         updateSelectionActions();
         updateHeatLegend();
     }
@@ -215,6 +286,18 @@
         };
     }
 
+    const shapeNames = { circle: "circle", bbox: "rectangle", polygon: "polygon", multipolygon: "multi-polygon" };
+
+    function updateShapeLabel() {
+        if (!shapeLabel) return;
+        const layers = drawnLayers ? drawnLayers.getLayers() : [];
+        if (!layers.length) {
+            shapeLabel.textContent = "none";
+            return;
+        }
+        shapeLabel.textContent = shapeNames[layerShape(layers[0])] || "polygon";
+    }
+
     function updateCoordinateInputs(layer) {
         let centre;
         if (layerShape(layer) === "circle") {
@@ -226,6 +309,7 @@
         if (!centre) return;
         if (latitudeInput) latitudeInput.value = centre.lat.toFixed(7).replace(/0+$/, "").replace(/\.$/, "");
         if (longitudeInput) longitudeInput.value = centre.lng.toFixed(7).replace(/0+$/, "").replace(/\.$/, "");
+        if (centreLabel) centreLabel.textContent = centre.lat.toFixed(4) + ", " + centre.lng.toFixed(4);
     }
 
     function fitArea() {
@@ -248,13 +332,13 @@
             const coordinates = feature.geometry.coordinates || [];
             const radius = Number(currentProperties.radius_m || currentProperties.radius_metres || currentProperties.radius_meters);
             if (coordinates.length < 2 || !Number.isFinite(radius) || radius <= 0) throw new Error("The saved circle is invalid.");
-            const circle = window.L.circle([coordinates[1], coordinates[0]], { radius: radius, color: "#2d6cdf", fillOpacity: 0.12 });
+            const circle = window.L.circle([coordinates[1], coordinates[0]], Object.assign({ radius: radius }, areaStyle()));
             circle._gosomMapShape = "circle";
             drawnLayers.addLayer(circle);
             updateCoordinateInputs(circle);
         } else {
             const geoJSONLayer = window.L.geoJSON(feature, {
-                style: { color: "#2d6cdf", weight: 2, fillOpacity: 0.10 },
+                style: areaStyle,
                 onEachFeature: function (_, layer) {
                     layer._gosomMapShape = shape === "bbox" ? "bbox" : "polygon";
                 }
@@ -266,7 +350,14 @@
         }
         if (!drawnLayers.getLayers().length) throw new Error("The GeoJSON feature has no drawable geometry.");
         if (shouldFit !== false) fitArea();
+        updateShapeLabel();
         updateSelectionActions();
+    }
+
+    // The drawn area is an outline, not a wash: a hairline fill keeps the
+    // basemap readable inside the search boundary.
+    function areaStyle() {
+        return { color: "#2d6cdf", weight: 2, dashArray: "6 4", fillColor: "#2d6cdf", fillOpacity: 0.05 };
     }
 
     function applyCoordinateCircle() {
@@ -284,46 +375,123 @@
         showStatus("Coordinate circle applied. Preview the grid or save it as a reusable area.", "success");
     }
 
-    const stateColours = {
-        waiting: "#778195",
-        running: "#3478e5",
-        completed: "#2f9e70",
-        partial: "#d18a12",
-        failed: "#d44b5c",
-        blocked: "#d44b5c",
-        paused: "#8654c7"
+    // --- Per-cell evidence ---------------------------------------------------
+    // The coverage endpoint may carry per-cell confidence and reason codes. It
+    // may equally not: every reader below returns a null/empty value rather
+    // than assuming the field exists, so an older backend degrades to the plain
+    // task-count evidence without a single console error.
+
+    function cellConfidence(cell) {
+        if (!cell) return null;
+        const raw = cell.confidence !== undefined ? cell.confidence
+            : (cell.coverage_confidence !== undefined ? cell.coverage_confidence : undefined);
+        const value = Number(raw);
+        if (!Number.isFinite(value)) return null;
+        return value > 1 ? Math.min(1, value / 100) : Math.max(0, value);
+    }
+
+    function cellReasons(cell) {
+        if (!cell) return [];
+        const raw = cell.reason_codes || cell.reasons || cell.reason || cell.coverage_reasons;
+        if (Array.isArray(raw)) return raw.map((item) => String(item)).filter(Boolean).slice(0, 6);
+        if (typeof raw === "string" && raw.trim()) return [raw.trim()];
+        return [];
+    }
+
+    function confidenceEvidenceAvailable() {
+        return Boolean(lastPreview && Array.isArray(lastPreview.cells) &&
+            lastPreview.cells.some((cell) => cellConfidence(cell) !== null));
+    }
+
+    function syncConfidenceOption() {
+        if (!confidenceOption) return;
+        const available = confidenceEvidenceAvailable();
+        confidenceOption.hidden = !available;
+        confidenceOption.disabled = !available;
+        if (!available && heatmapSelect && heatmapSelect.value === "confidence") heatmapSelect.value = "coverage";
+        if (coverageMeta) {
+            coverageMeta.textContent = available ? "confidence" : (coverageEvidenceAvailable() ? "tasks" : "evidence");
+        }
+    }
+
+    // --- Cell shading --------------------------------------------------------
+
+    function overlayValue(overlay, cell) {
+        if (overlay === "density") return Number(cell.result_count || 0);
+        if (overlay === "failed") return cellFailureCount(cell);
+        if (overlay === "empty") return cell.empty ? 1 : 0;
+        if (overlay === "confidence") {
+            const confidence = cellConfidence(cell);
+            return confidence === null ? 0 : confidence;
+        }
+        return cellDuplicateCount(cell);
+    }
+
+    function overlayMaximum(overlay) {
+        if (overlay === "confidence") return 1;
+        if (!lastPreview || !Array.isArray(lastPreview.cells)) return 1;
+        return Math.max(1, ...lastPreview.cells.map((cell) => overlayValue(overlay, cell)));
+    }
+
+    const overlayRamps = {
+        density: densityHeatRamp,
+        failed: failedHeatRamp,
+        duplicates: duplicateHeatRamp,
+        confidence: confidenceHeatRamp
     };
+    const overlayTitles = {
+        density: "Result density per cell",
+        failed: "Failed or blocked tasks",
+        duplicates: "Duplicate saturation",
+        confidence: "Cell coverage confidence",
+        empty: "Empty cells"
+    };
+    const overlayUnits = {
+        density: ["result", "results"],
+        failed: ["failed or blocked task", "failed or blocked tasks"],
+        duplicates: ["duplicate row", "duplicate rows"],
+        confidence: ["confidence", "confidence"]
+    };
+
+    function activeOverlay() {
+        const value = heatmapSelect ? heatmapSelect.value : "coverage";
+        if (value === "confidence" && !confidenceEvidenceAvailable()) return "coverage";
+        return value;
+    }
 
     function cellStyle(cell, selected) {
         const state = stateColours[cell.state] ? cell.state : "waiting";
-        const overlay = heatmapSelect ? heatmapSelect.value : "coverage";
-        let fillColor = stateColours[state];
-        let fillOpacity = selected ? 0.43 : 0.25;
+        const overlay = activeOverlay();
+        let strokeColour = stateColours[state];
+        let fillColour = stateColours[state];
+        let fillOpacity = selected ? FILL_SELECTED : FILL_BASE;
+
         if (overlay !== "coverage") {
-            let value = 0;
-            if (overlay === "density") value = Number(cell.result_count || 0);
-            if (overlay === "failed") value = Number(cell.failed_tasks || 0) + Number(cell.blocked_tasks || 0);
-            if (overlay === "empty") value = cell.empty ? 1 : 0;
-            if (overlay === "duplicates") value = Number(cell.duplicate_count || 0);
-            let maximum = 1;
-            if (lastPreview && Array.isArray(lastPreview.cells)) {
-                maximum = Math.max(1, ...lastPreview.cells.map((item) => {
-                    if (overlay === "density") return Number(item.result_count || 0);
-                    if (overlay === "failed") return Number(item.failed_tasks || 0) + Number(item.blocked_tasks || 0);
-                    if (overlay === "empty") return item.empty ? 1 : 0;
-                    return Number(item.duplicate_count || 0);
-                }));
+            const value = overlayValue(overlay, cell);
+            if (overlay === "empty") {
+                const isEmpty = Boolean(cell.empty);
+                fillColour = isEmpty ? emptyHeatFill : mutedHeatFill;
+                strokeColour = isEmpty ? emptyHeatStroke : mutedHeatStroke;
+                fillOpacity = selected ? FILL_SELECTED : (isEmpty ? 0.4 : FILL_MUTED);
+            } else if (value > 0) {
+                const ramp = overlayRamps[overlay] || densityHeatRamp;
+                const step = heatStep(value, overlayMaximum(overlay));
+                fillColour = ramp[step - 1];
+                strokeColour = ramp[3];
+                fillOpacity = selected ? FILL_SELECTED : FILL_RAMP_FLOOR + step * FILL_RAMP_STEP;
+            } else {
+                fillColour = mutedHeatFill;
+                strokeColour = mutedHeatStroke;
+                fillOpacity = selected ? FILL_SELECTED : FILL_MUTED;
             }
-            const intensity = Math.max(0, Math.min(1, value / maximum));
-            const hues = { density: 212, failed: 351, empty: 42, duplicates: 276 };
-            fillColor = value > 0 ? "hsl(" + hues[overlay] + " 72% " + (68 - intensity * 30) + "%)" : "#d9dee7";
-            fillOpacity = selected ? 0.64 : (value > 0 ? 0.30 + intensity * 0.45 : 0.14);
         }
+
         const style = {
-            color: selected ? "#101828" : stateColours[state],
-            weight: selected ? 3 : 1.5,
+            color: selected ? "#101828" : strokeColour,
+            weight: selected ? 2.5 : 1,
+            opacity: selected ? 1 : 0.85,
             dashArray: selected ? "5 3" : null,
-            fillColor: fillColor,
+            fillColor: fillColour,
             fillOpacity: fillOpacity
         };
 
@@ -347,8 +515,10 @@
         return lastPreview.cells.reduce((maximum, cell) => Math.max(maximum, cellFailureCount(cell)), 0);
     }
 
+    // Duplicate evidence is reported as "duplicates" (rows skipped or replaced
+    // at a checkpoint) and, on older payloads, only as "duplicate_count".
     function cellDuplicateCount(cell) {
-        return Number(cell.duplicates || 0);
+        return Math.max(Number(cell.duplicates || 0), Number(cell.duplicate_count || 0));
     }
 
     function maximumCellDuplicates() {
@@ -362,25 +532,25 @@
         if (coverageEmphasis.failed && failures > 0) {
             const step = heatStep(failures, maximumCellFailures());
             style.fillColor = failedHeatRamp[step - 1];
-            style.fillOpacity = selected ? 0.68 : 0.32 + step * 0.09;
+            style.fillOpacity = selected ? FILL_SELECTED : FILL_RAMP_FLOOR + step * FILL_RAMP_STEP;
             if (!selected) style.color = failedHeatRamp[3];
             return style;
         }
         if (coverageEmphasis.empty && cell.empty) {
             style.fillColor = emptyHeatFill;
-            style.fillOpacity = selected ? 0.68 : 0.55;
+            style.fillOpacity = selected ? FILL_SELECTED : 0.4;
             if (!selected) style.color = emptyHeatStroke;
             return style;
         }
         if (coverageEmphasis.duplicates && cellDuplicateCount(cell) > 0) {
             const step = heatStep(cellDuplicateCount(cell), maximumCellDuplicates());
             style.fillColor = duplicateHeatRamp[step - 1];
-            style.fillOpacity = selected ? 0.68 : 0.32 + step * 0.09;
+            style.fillOpacity = selected ? FILL_SELECTED : FILL_RAMP_FLOOR + step * FILL_RAMP_STEP;
             if (!selected) style.color = duplicateHeatRamp[3];
             return style;
         }
         style.fillColor = mutedHeatFill;
-        style.fillOpacity = selected ? 0.4 : 0.08;
+        style.fillOpacity = selected ? 0.3 : FILL_MUTED;
         if (!selected) style.color = mutedHeatStroke;
         return style;
     }
@@ -459,18 +629,58 @@
         return rows;
     }
 
+    // The saturation legend explains the *continuous* scale currently painted
+    // on the cells (density, duplicates, failures, confidence). The cell-state
+    // legend above it explains the discrete lifecycle colours.
+    function updateSaturationLegend() {
+        if (!saturationLegend || !saturationRamp) return;
+        const mode = explorer.dataset.mode || "planning";
+        const overlay = activeOverlay();
+        if (mode === "results" || overlay === "coverage") {
+            saturationLegend.hidden = true;
+            return;
+        }
+        saturationLegend.hidden = false;
+        if (saturationTitle) saturationTitle.textContent = overlayTitles[overlay] || "Saturation";
+        saturationRamp.replaceChildren();
+        if (overlay === "empty") {
+            [["heat-empty-cell", "completed, zero results"], ["heat-muted-cell", "other cells"]].forEach((entry) => {
+                const swatch = document.createElement("i");
+                swatch.className = "legend-swatch heat-swatch " + entry[0];
+                swatch.title = entry[1];
+                saturationRamp.appendChild(swatch);
+            });
+            if (saturationMax) saturationMax.textContent = "empty";
+            return;
+        }
+        const prefix = overlay === "failed" ? "heat-failed-" : (overlay === "duplicates" ? "heat-duplicate-" : (overlay === "confidence" ? "heat-confidence-" : "heat-density-"));
+        for (let step = 1; step <= 4; step++) {
+            const swatch = document.createElement("i");
+            swatch.className = "legend-swatch heat-swatch " + prefix + step;
+            saturationRamp.appendChild(swatch);
+        }
+        if (saturationMax) {
+            const maximum = overlayMaximum(overlay);
+            const units = overlayUnits[overlay] || ["", ""];
+            saturationMax.textContent = overlay === "confidence"
+                ? "high"
+                : maximum + " " + (maximum === 1 ? units[0] : units[1]);
+        }
+    }
+
     function updateHeatLegend() {
         const mode = explorer.dataset.mode || "planning";
         // The grid layer is not on the map in Results mode, so the cell-state
         // legend would be explaining colours that are not on screen.
         const coverageLegend = explorer.querySelector("[data-map-coverage-legend]");
-        if (coverageLegend) coverageLegend.hidden = mode === "results";
+        if (coverageLegend) coverageLegend.hidden = mode === "results" || activeOverlay() !== "coverage";
+        updateSaturationLegend();
         if (!heatLegend) return;
         heatLegend.replaceChildren();
         const addSection = function (title, rows) {
             if (!rows.length) return;
             const heading = document.createElement("span");
-            heading.className = "heat-legend-title";
+            heading.className = "heat-legend-title t-overline";
             heading.textContent = title;
             heatLegend.appendChild(heading);
             rows.forEach((row) => heatLegend.appendChild(row));
@@ -534,7 +744,7 @@
             const rectangle = window.L.rectangle([
                 [bucket.row * size.latitude, bucket.column * size.longitude],
                 [(bucket.row + 1) * size.latitude, (bucket.column + 1) * size.longitude]
-            ], { color: colour, weight: 1, fillColor: colour, fillOpacity: 0.28 + step * 0.11 });
+            ], { color: colour, weight: 1, opacity: 0.75, fillColor: colour, fillOpacity: FILL_RAMP_FLOOR + step * FILL_RAMP_STEP });
             rectangle.bindTooltip(bucket.count + (bucket.count === 1 ? " result" : " results") + " in this bucket");
             heatLayers.addLayer(rectangle);
         });
@@ -569,6 +779,9 @@
         showStatus("Density heatmap on: " + lastResultPoints.length + " mapped results aggregated (darker blue means more results per bucket).", "success");
     }
 
+    // The cell tooltip is the coverage explorer's inspection surface: it states
+    // the lifecycle, the durable task evidence, and — when the backend supplies
+    // them — the confidence score and reason codes behind that state.
     function cellTooltip(cell) {
         const parts = ["Cell " + cell.number, cell.state || "waiting"];
         if (Number(cell.task_count || 0)) parts.push((cell.completed_tasks || 0) + "/" + cell.task_count + " tasks");
@@ -579,6 +792,10 @@
         if (Number(cell.failed_tasks || 0) || Number(cell.blocked_tasks || 0)) {
             parts.push((Number(cell.failed_tasks || 0) + Number(cell.blocked_tasks || 0)) + " failed/blocked");
         }
+        const confidence = cellConfidence(cell);
+        if (confidence !== null) parts.push(Math.round(confidence * 100) + "% confidence");
+        const reasons = cellReasons(cell);
+        if (reasons.length) parts.push(reasons.join(", ").replace(/_/g, " "));
         return parts.join(" · ");
     }
 
@@ -586,6 +803,7 @@
         lastPreview = preview;
         selectedCells = new Set();
         gridLayers.clearLayers();
+        syncConfidenceOption();
         const cells = Array.isArray(preview.cells) ? preview.cells : [];
         let visibleCount = 0;
         cells.forEach((cell) => {
@@ -606,7 +824,7 @@
             gridLayers.addLayer(rectangle);
             visibleCount++;
         });
-        if (cellCount) cellCount.textContent = String(visibleCount);
+        setCounter(cellCounters, String(visibleCount));
         updateSelectionActions();
         updateHeatLegend();
     }
@@ -832,7 +1050,7 @@
         }
         appendPopupBadge(signals, "status status-" + badgeState(result.website_status), result.website_status || "unknown", "Stored website audit status");
         if (Number.isFinite(result.quality_score)) {
-            appendPopupBadge(signals, "badge", "quality " + Math.round(result.quality_score) + "/100");
+            appendPopupBadge(signals, "badge badge-outline", "quality " + Math.round(result.quality_score) + "/100");
         }
         popup.appendChild(signals);
 
@@ -890,7 +1108,7 @@
                 plotted++;
             });
             lastResultPoints = points;
-            if (markerCount) markerCount.textContent = String(plotted);
+            setCounter(markerCounters, String(plotted));
             setMode("results", false);
             const total = payload.meta && Number.isFinite(Number(payload.meta.total)) ? Number(payload.meta.total) : results.length;
             showStatus("Showing " + plotted + " mapped businesses from " + total + " spatial matches (up to 250 per view).", "success");
@@ -996,10 +1214,17 @@
         showStatus("Imported " + areas.length + " saved area" + (areas.length === 1 ? "." : "s."), "success");
     }
 
+    const modeHints = {
+        planning: "Draw or load an area, then preview the deterministic grid.",
+        live: "Pick the source job to shade each cell by its durable task evidence.",
+        results: "Committed businesses inside the area, filtered by the current Results URL."
+    };
+
     function setMode(mode, load) {
         const normalized = mode === "results" || mode === "live" ? mode : "planning";
         explorer.dataset.mode = normalized;
         explorer.querySelectorAll('input[name="mode"]').forEach((input) => { input.checked = input.value === normalized; });
+        if (modeHint) modeHint.textContent = modeHints[normalized];
         if (normalized === "results") {
             if (map.hasLayer(gridLayers)) map.removeLayer(gridLayers);
             syncResultLayerVisibility();
@@ -1012,6 +1237,9 @@
         }
         updateLiveRefresh();
         updateHeatLegend();
+        // Hiding or revealing rail sections changes the rail's scroll height,
+        // which can change the stage width on narrow viewports.
+        scheduleInvalidate();
     }
 
     function updateLiveRefresh() {
@@ -1026,12 +1254,35 @@
     }
 
     function startDrawing(shape) {
-        const options = shape === "polygon" ? { allowIntersection: false, showArea: true, shapeOptions: { color: "#2d6cdf" } } : { shapeOptions: { color: "#2d6cdf" } };
+        const options = shape === "polygon" ? { allowIntersection: false, showArea: true, shapeOptions: areaStyle() } : { shapeOptions: areaStyle() };
         let drawer;
         if (shape === "polygon") drawer = new window.L.Draw.Polygon(map, options);
         if (shape === "bbox") drawer = new window.L.Draw.Rectangle(map, options);
         if (shape === "circle") drawer = new window.L.Draw.Circle(map, options);
         if (drawer) drawer.enable();
+    }
+
+    // --- Sizing --------------------------------------------------------------
+    // The stage is a fixed-height flex/grid cell and the canvas fills it
+    // absolutely, so Leaflet only ever needs telling that the box changed.
+    // Every layout trigger funnels through one rAF-batched invalidateSize().
+    let invalidateHandle = 0;
+
+    function scheduleInvalidate() {
+        if (!map || invalidateHandle) return;
+        invalidateHandle = window.requestAnimationFrame(function () {
+            invalidateHandle = 0;
+            map.invalidateSize({ animate: false, pan: false });
+        });
+    }
+
+    function observeStageSize() {
+        if (!stage) return;
+        if (typeof window.ResizeObserver === "function") {
+            new window.ResizeObserver(scheduleInvalidate).observe(stage);
+            return;
+        }
+        window.addEventListener("resize", scheduleInvalidate);
     }
 
     function initializeMap() {
@@ -1040,6 +1291,8 @@
             showStatus("The locally bundled interactive map could not start.", "error");
             return false;
         }
+        readCellTokens();
+        markEmptyEstimates();
         map = window.L.map(canvas, { preferCanvas: true, zoomControl: true }).setView([37.7749, -122.4194], 11);
         const tiles = window.L.tileLayer(explorer.dataset.tileTemplate, {
             minZoom: 0,
@@ -1073,9 +1326,9 @@
                 marker: false,
                 circlemarker: false,
                 polyline: false,
-                polygon: { allowIntersection: false, showArea: true, shapeOptions: { color: "#2d6cdf" } },
-                rectangle: { shapeOptions: { color: "#2d6cdf" } },
-                circle: { shapeOptions: { color: "#2d6cdf" } }
+                polygon: { allowIntersection: false, showArea: true, shapeOptions: areaStyle() },
+                rectangle: { shapeOptions: areaStyle() },
+                circle: { shapeOptions: areaStyle() }
             }
         }));
 
@@ -1086,6 +1339,7 @@
             event.layer._gosomMapShape = event.layerType === "rectangle" ? "bbox" : event.layerType;
             drawnLayers.addLayer(event.layer);
             updateCoordinateInputs(event.layer);
+            updateShapeLabel();
             setAreaState("");
             clearDerivedLayers();
             fitArea();
@@ -1102,13 +1356,23 @@
             removedCells = new Set();
             setAreaState("");
             clearDerivedLayers();
+            updateShapeLabel();
             showStatus("Area geometry removed. Draw or load another area.");
         });
+
+        observeStageSize();
+        // The theme toggle rewrites html[data-theme]; re-reading the tokens
+        // keeps painted cells matching their legend swatches after the swap.
+        new window.MutationObserver(function () {
+            readCellTokens();
+            restyleGridCells();
+        }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 
         const initial = document.getElementById("map-initial-geojson");
         if (initial && initial.value.trim()) replaceGeometry(JSON.parse(initial.value), true);
         else applyCoordinateCircle();
         setMode(explorer.dataset.mode || "planning", false);
+        scheduleInvalidate();
         return true;
     }
 
@@ -1159,12 +1423,21 @@
             updateLiveRefresh();
             if (explorer.dataset.mode === "live" && jobSelect.value) loadCoverage(false).catch(showError);
         }
-        if (event.target === heatmapSelect && lastPreview) renderPreviewPreservingSelection(lastPreview);
+        if (event.target === heatmapSelect) {
+            if (lastPreview) renderPreviewPreservingSelection(lastPreview);
+            else updateHeatLegend();
+        }
         if (event.target === liveRefreshInput) updateLiveRefresh();
         if (event.target === keywordGroupSelect) updateSelectionActions();
         if (event.target.matches("[data-map-import]")) {
             importArea(event.target.files && event.target.files[0]).catch(showError).finally(() => { event.target.value = ""; });
         }
+    });
+
+    // A collapsing rail section reflows the rail, and on narrow viewports the
+    // stage with it, so Leaflet is told after every disclosure toggle.
+    explorer.querySelectorAll("[data-rail-section]").forEach((section) => {
+        section.addEventListener("toggle", scheduleInvalidate);
     });
 
     if (queryInput) queryInput.addEventListener("keydown", function (event) {
