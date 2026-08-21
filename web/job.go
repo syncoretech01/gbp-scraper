@@ -69,6 +69,29 @@ func (j *Job) Validate() error {
 // per-task capacity for finer resume granularity rather than adding load.
 const MaximumJobTaskWorkers = 16
 
+// Checkpoint interval bounds. A job writes a safe resume boundary after every
+// completed task; this interval adds a time-based one in between, so an
+// interrupted long task still reports how recently it was making progress.
+const (
+	// DefaultCheckpointSeconds is used when a job does not choose an interval.
+	DefaultCheckpointSeconds = 30
+	// MinimumCheckpointSeconds keeps the interval from becoming a write loop.
+	MinimumCheckpointSeconds = 5
+	// MaximumCheckpointSeconds keeps a configured interval meaningful.
+	MaximumCheckpointSeconds = 3600
+)
+
+// CheckpointInterval returns the effective interval between time-based
+// checkpoints for one job.
+func (d JobData) CheckpointInterval() time.Duration {
+	seconds := d.CheckpointSeconds
+	if seconds < MinimumCheckpointSeconds || seconds > MaximumCheckpointSeconds {
+		seconds = DefaultCheckpointSeconds
+	}
+
+	return time.Duration(seconds) * time.Second
+}
+
 type JobData struct {
 	Keywords        []string              `json:"keywords"`
 	Lang            string                `json:"lang"`
@@ -97,7 +120,11 @@ type JobData struct {
 	Headfull        bool                  `json:"headfull,omitempty"`
 	LoadImages      bool                  `json:"load_images,omitempty"`
 	Adaptive        bool                  `json:"adaptive_performance,omitempty"`
-	LowDiskBytes    uint64                `json:"low_disk_bytes,omitempty"`
+	// CheckpointSeconds is how often the running job writes a time-based safe
+	// resume boundary in addition to the one written after every completed
+	// task. Zero keeps the default interval.
+	CheckpointSeconds int    `json:"checkpoint_seconds,omitempty"`
+	LowDiskBytes      uint64 `json:"low_disk_bytes,omitempty"`
 	ProxyPoolID     string                `json:"proxy_pool_id,omitempty"`
 	Proxies         []string              `json:"proxies"`
 	SavedAreaID     string                `json:"saved_area_id,omitempty"`
@@ -176,6 +203,13 @@ func (d *JobData) Validate() error {
 	}
 	if d.LowDiskBytes > 1<<40 {
 		return errors.New("low disk threshold must be at most 1 TiB")
+	}
+	if d.CheckpointSeconds < 0 || d.CheckpointSeconds > MaximumCheckpointSeconds ||
+		(d.CheckpointSeconds > 0 && d.CheckpointSeconds < MinimumCheckpointSeconds) {
+		return fmt.Errorf(
+			"checkpoint interval must be between %d and %d seconds when set",
+			MinimumCheckpointSeconds, MaximumCheckpointSeconds,
+		)
 	}
 	if d.Enrichment != nil {
 		if err := d.Enrichment.Validate(); err != nil {

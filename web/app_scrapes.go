@@ -170,6 +170,11 @@ func parseWizardJob(r *http.Request) (Job, jobruntime.State, error) {
 	if err != nil {
 		return Job{}, "", err
 	}
+	checkpointSeconds, err := optionalFormInt(r, "checkpoint_seconds")
+	if err != nil {
+		return Job{}, "", err
+	}
+
 	lowDiskMB, err := optionalFormInt(r, "low_disk_mb")
 	if err != nil {
 		return Job{}, "", err
@@ -226,6 +231,7 @@ func parseWizardJob(r *http.Request) (Job, jobruntime.State, error) {
 		Headfull:        r.FormValue("headfull") == "on",
 		LoadImages:      r.FormValue("load_images") == "on",
 		Adaptive:        r.FormValue("adaptive_performance") == "on",
+		CheckpointSeconds: max(0, checkpointSeconds),
 		LowDiskBytes:    uint64(max(0, lowDiskMB)) * 1024 * 1024,
 		ProxyPoolID:     strings.TrimSpace(r.FormValue("proxy_pool_id")),
 		SavedAreaID:     strings.TrimSpace(r.FormValue("saved_area_id")),

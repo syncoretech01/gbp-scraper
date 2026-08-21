@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gosom/google-maps-scraper/deduper"
 	"github.com/gosom/google-maps-scraper/exiter"
 	"github.com/gosom/google-maps-scraper/grid"
 	"github.com/gosom/google-maps-scraper/runner"
@@ -311,7 +310,9 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) error {
 		coords = job.Data.Lat + "," + job.Data.Lon
 	}
 
-	dedup := deduper.New()
+	// A repository with durable listing state makes deduplication survive a
+	// restart; without one this is exactly the historical in-memory deduper.
+	dedup := w.newJobDeduper(ctx, job)
 	exitOptions := make([]exiter.Option, 0, 1)
 	if job.Data.MaxRecords > 0 {
 		exitOptions = append(exitOptions, exiter.WithMaximumPlaces(job.Data.MaxRecords))

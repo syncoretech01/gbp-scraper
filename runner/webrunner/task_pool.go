@@ -292,6 +292,7 @@ func (w *webrunner) runTaskPool(
 	}
 
 	group.Wait()
+	flushListingKeys(context.Background(), run.dedup)
 	runCancel()
 	<-stopWatchDone
 	<-supervisorDone
@@ -583,6 +584,10 @@ func (w *webrunner) executeLeasedTask(
 		run.windowSuccesses.Add(1)
 		w.recordProxyTaskOutcome(run, assignment, true, taskDuration, nil)
 
+		// The task reached a durable boundary: persist the listing identities
+		// discovered since the last one so a restart does not re-visit them.
+		flushListingKeys(context.Background(), run.dedup)
+
 		if completeErr := w.svc.CompleteJobTask(context.Background(), job.ID, task.Key, checkpoint); completeErr != nil {
 			_ = w.svc.RecordJobWorkerEvent(
 				context.Background(), job.ID, "task-commit-failed", "error",
@@ -677,6 +682,8 @@ func (w *webrunner) concludeInterruptedTask(
 			)
 		}
 	}
+
+	flushListingKeys(context.Background(), run.dedup)
 
 	reason := run.currentStop()
 	if reason == jobruntime.StopReasonNone {
@@ -824,6 +831,12 @@ func (w *webrunner) superviseTaskPool(
 	ticker := time.NewTicker(resourceSampleInterval)
 	defer ticker.Stop()
 
+	// The configurable interval checkpoint complements the one written after
+	// every completed task, so a long task still reports how recently the run
+	// was making progress.
+	checkpointInterval := job.Data.CheckpointInterval()
+	lastCheckpoint := time.Now()
+
 	for {
 		sample, err := w.sampleWorkerResources(ctx)
 		if err == nil {
@@ -867,6 +880,12 @@ func (w *webrunner) superviseTaskPool(
 			}
 		}
 
+		if time.Since(lastCheckpoint) >= checkpointInterval {
+			lastCheckpoint = time.Now()
+
+			w.recordIntervalCheckpoint(run, checkpointInterval)
+		}
+
 		w.pollLiveControls(run, runCancel)
 
 		select {
@@ -875,6 +894,41 @@ func (w *webrunner) superviseTaskPool(
 		case <-ticker.C:
 		}
 	}
+}
+
+// recordIntervalCheckpoint flushes the durable deduplication state and appends
+// a time-based safe resume boundary describing where the plan stands.
+//
+// It records where the run is, never what it collected, and a repository
+// without durable listing state simply skips it: the per-task checkpoint
+// remains the authoritative resume point either way.
+func (w *webrunner) recordIntervalCheckpoint(run *taskPoolRun, interval time.Duration) {
+	ctx := context.Background()
+
+	flushListingKeys(ctx, run.dedup)
+
+	if !w.svc.SupportsListingState() {
+		return
+	}
+
+	execution, err := w.svc.GetJobExecution(ctx, run.job.ID)
+	if err != nil {
+		return
+	}
+
+	listingKeys, _ := w.svc.CountJobListingKeys(ctx, run.job.ID)
+
+	_ = w.svc.RecordJobIntervalCheckpoint(ctx, run.job.ID, web.JobIntervalCheckpoint{
+		Reason:           "interval",
+		IntervalSeconds:  int(interval / time.Second),
+		TasksCompleted:   execution.Tasks.Completed,
+		TasksRunning:     execution.Tasks.Running,
+		TasksPending:     execution.Tasks.Pending,
+		TasksFailed:      execution.Tasks.Failed,
+		ListingKeys:      listingKeys,
+		CommittedMerges:  run.committedWrites.Load(),
+		EffectiveWorkers: run.effectiveConcurrency.Load(),
+	})
 }
 
 // adaptTaskPool records an adaptive change to the shared concurrency budget.
