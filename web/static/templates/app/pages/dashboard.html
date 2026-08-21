@@ -51,6 +51,11 @@ static/css/views/dashboard.css; components come from app.css unchanged.
             <p class="stat-meta">places/min &middot; {{.Page.Metrics.AverageDuration}} average run</p>
         </article>
         <article class="stat stat-compact">
+            <p class="stat-label"><span>Proxy health</span></p>
+            <p class="stat-value" data-metric="proxy-success-rate">{{.Page.Metrics.ProxySuccessRate}}</p>
+            <p class="stat-meta">success &middot; <span data-metric="proxy-block-rate">{{.Page.Metrics.ProxyBlockRate}}</span> blocked &middot; <span class="num" data-metric="healthy-proxies">{{.Page.Metrics.HealthyProxies}}</span>/<span class="num">{{.Page.Metrics.TotalProxies}}</span> healthy</p>
+        </article>
+        <article class="stat stat-compact">
             <p class="stat-label"><span>Local storage</span></p>
             <p class="stat-value">{{.Page.Metrics.DatabaseSize}}</p>
             <p class="stat-meta">database &middot; {{.Page.Metrics.DiskFree}} free on disk</p>
@@ -103,8 +108,11 @@ static/css/views/dashboard.css; components come from app.css unchanged.
                                     <div class="table-actions">
                                         {{if .CanPause}}<form action="/api/v1/jobs/{{.ID}}/pause" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-ghost" type="submit" data-action="pause-job" data-endpoint="/api/v1/jobs/{{.ID}}/pause">Pause</button></form>{{end}}
                                         {{if .CanResume}}<form action="/api/v1/jobs/{{.ID}}/resume" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-ghost" type="submit" data-action="resume-job" data-endpoint="/api/v1/jobs/{{.ID}}/resume">Resume</button></form>{{end}}
-                                        {{if .CanCancel}}<form action="/api/v1/jobs/{{.ID}}/cancel" method="post" data-confirm="Stop this job at its next safe checkpoint?"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-ghost" type="submit">Stop</button></form>{{end}}
-                                        <a class="button button-sm button-ghost" href="/app/jobs/{{.ID}}" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}">Monitor</a>
+                                        {{if .CanCancel}}<form action="/api/v1/jobs/{{.ID}}/cancel" method="post" data-confirm="Stop this job at its next safe checkpoint?"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-ghost" type="submit" data-action="cancel-job" data-endpoint="/api/v1/jobs/{{.ID}}/cancel">Stop</button></form>{{end}}
+                                        {{if .CanRetry}}<form action="/api/v1/jobs/{{.ID}}/retry" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-ghost" type="submit" data-action="retry-job" data-endpoint="/api/v1/jobs/{{.ID}}/retry">Retry failures</button></form>{{end}}
+                                        {{if .HasResults}}<a class="button button-sm button-ghost" href="/api/v1/jobs/{{.ID}}/download" download data-action="download-partial" data-endpoint="/api/v1/jobs/{{.ID}}/download">Partial CSV</a>{{end}}
+                                        {{if .CanDuplicate}}<form action="/api/v1/jobs/{{.ID}}/duplicate" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-ghost" type="submit" data-action="duplicate-job" data-endpoint="/api/v1/jobs/{{.ID}}/duplicate">Duplicate</button></form>{{end}}
+                                        <a class="button button-sm button-ghost" href="/app/jobs/{{.ID}}" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}">Open</a>
                                     </div>
                                 </td>
                             </tr>
@@ -134,16 +142,28 @@ static/css/views/dashboard.css; components come from app.css unchanged.
                 </header>
                 <div class="card-body dash-availability">
                     {{range .Page.Availability}}
-                    <div class="meter-row">
+                    <div class="meter-row" data-availability="{{.Label}}">
                         <p class="metric-label"><span>{{.Label}}</span><strong>{{.Percent}}%</strong></p>
                         <div class="meter-track"><span class="meter-fill" style="--meter: {{.Percent}}%"></span></div>
+                        <p class="dash-availability-count t-caption"><span class="num">{{.Count}}</span> of <span class="num">{{.Total}}</span> businesses</p>
                     </div>
                     {{else}}
                     <p class="empty-inline">Availability appears after the first result is saved.</p>
                     {{end}}
                 </div>
+                {{if gt .Page.Metrics.Websites 0}}
+                <div class="card-body dash-availability" aria-label="Website reachability">
+                    <h3 class="t-overline">Website active versus inactive</h3>
+                    {{range .Page.WebsiteStatus}}
+                    <div class="meter-row" data-website-status="{{.Label}}">
+                        <p class="metric-label"><span>{{.Label}}</span><strong>{{.Percent}}%</strong></p>
+                        <div class="meter-track"><span class="meter-fill" style="--meter: {{.Percent}}%"></span></div>
+                        <p class="dash-availability-count t-caption"><span class="num">{{.Count}}</span> of <span class="num">{{.Total}}</span> discovered websites</p>
+                    </div>
+                    {{end}}
+                </div>
+                {{end}}
                 <footer class="card-footer dash-availability-footer">
-                    {{if gt .Page.Metrics.Websites 0}}<p class="t-caption">Website checks: <span class="num">{{.Page.Metrics.ActiveWebsites}}</span> active &middot; <span class="num">{{.Page.Metrics.InactiveWebsites}}</span> inactive or error &middot; <span class="num">{{.Page.Metrics.Websites}}</span> discovered.</p>{{end}}
                     {{if .Page.Metrics.MissingEmail}}<a class="button button-sm" href="/app/results?filter_field=email&amp;filter_operator=empty&amp;filter_value=" data-action="navigate" data-endpoint="/app/results?filter_field=email&amp;filter_operator=empty&amp;filter_value=">{{.Page.Metrics.MissingEmail}} businesses without email</a>{{end}}
                 </footer>
             </section>
@@ -416,12 +436,27 @@ static/css/views/dashboard.css; components come from app.css unchanged.
                 {{if .Page.JobTrends}}<div class="table-wrap overflow-safe" data-density="compact"><table class="data-table"><thead><tr><th scope="col">Date</th><th scope="col" class="num">Done</th><th scope="col" class="num">Partial</th><th scope="col" class="num">Failed</th><th scope="col" class="num">Cancelled</th></tr></thead><tbody>{{range .Page.JobTrends}}<tr><td class="dash-date">{{.Label}}</td><td class="num">{{.Completed}}</td><td class="num">{{.Partial}}</td><td class="num">{{.Failed}}</td><td class="num">{{.Cancelled}}</td></tr>{{end}}</tbody></table></div>{{else}}<p class="empty-inline">No terminal job history in the last 30 days.</p>{{end}}
             </div>
             <div class="dash-breakdown">
-                <h3 class="t-overline">Speed and warnings</h3>
-                {{if .Page.SpeedTrends}}<div class="table-wrap overflow-safe" data-density="compact"><table class="data-table"><thead><tr><th scope="col">Date</th><th scope="col" class="num">Places/min</th><th scope="col" class="num">Warnings</th></tr></thead><tbody>{{range .Page.SpeedTrends}}<tr><td class="dash-date">{{.Label}}</td><td class="num">{{printf "%.1f" .PlacesPerMinute}}</td><td class="num">{{.WarningEvents}}</td></tr>{{end}}</tbody></table></div>{{else}}<p class="empty-inline">Throughput telemetry appears as checkpoint-enabled jobs run.</p>{{end}}
+                <h3 class="t-overline">Scraping speed and block rate</h3>
+                {{if .Page.SpeedTrends}}<div class="table-wrap overflow-safe" data-density="compact"><table class="data-table" data-speed-trend><thead><tr><th scope="col">Date</th><th scope="col" class="num">Places/min</th><th scope="col" class="num">Blocks</th><th scope="col" class="num">Block rate</th><th scope="col" class="num">Warnings</th></tr></thead><tbody>{{range .Page.SpeedTrends}}<tr><td class="dash-date">{{.Label}}</td><td class="num">{{printf "%.1f" .PlacesPerMinute}}</td><td class="num">{{.BlockEvents}}</td><td class="num">{{printf "%.1f" .BlockRatePercent}}%</td><td class="num">{{.WarningEvents}}</td></tr>{{end}}</tbody></table></div><p class="t-caption">A block is a proxy refusal, rate limit, or captcha interruption. The rate is blocks as a share of that day&rsquo;s blocks plus finished tasks.</p>{{else}}<p class="empty-inline">Throughput telemetry appears as checkpoint-enabled jobs run.</p>{{end}}
             </div>
             <div class="dash-breakdown">
                 <h3 class="t-overline">Proxy latency</h3>
                 {{if .Page.ProxyLatency}}<div class="table-wrap overflow-safe" data-density="compact"><table class="data-table"><thead><tr><th scope="col">Latency</th><th scope="col" class="num">Proxies</th></tr></thead><tbody>{{range .Page.ProxyLatency}}<tr><td>{{.Label}}</td><td class="num">{{.Value}}</td></tr>{{end}}</tbody></table></div><p class="t-caption">Unknown means an enabled proxy has no latency sample yet.</p>{{else}}<p class="empty-inline">No enabled proxies yet.</p>{{end}}
+            </div>
+            <div class="dash-breakdown">
+                <h3 class="t-overline">Workspace storage</h3>
+                <div class="table-wrap overflow-safe" data-density="compact"><table class="data-table" data-storage-breakdown>
+                    <caption class="sr-only">Local storage used by the workspace and the disk capacity left</caption>
+                    <thead><tr><th scope="col">Location</th><th scope="col" class="num">Size</th></tr></thead>
+                    <tbody>
+                        <tr><td>Local database</td><td class="num" data-storage="database">{{.Page.Metrics.DatabaseSize}}</td></tr>
+                        <tr><td>Export files</td><td class="num" data-storage="exports">{{if .Page.Metrics.ExportStorage}}{{.Page.Metrics.ExportStorage}}{{else}}<span class="empty-inline">not created</span>{{end}}</td></tr>
+                        <tr><td>Screenshots</td><td class="num" data-storage="screenshots">{{if .Page.Metrics.ScreenshotStorage}}{{.Page.Metrics.ScreenshotStorage}}{{else}}<span class="empty-inline">not created</span>{{end}}</td></tr>
+                        <tr><td>Job logs</td><td class="num" data-storage="logs">{{if .Page.Metrics.LogStorage}}{{.Page.Metrics.LogStorage}}{{else}}<span class="empty-inline">not created</span>{{end}}</td></tr>
+                        <tr><td>Remaining disk capacity</td><td class="num" data-storage="disk-free">{{.Page.Metrics.DiskFree}}</td></tr>
+                    </tbody>
+                </table></div>
+                {{if .Features.System}}<p class="t-caption"><a href="/app/system" data-action="navigate" data-endpoint="/app/system">System health</a> holds retention and cleanup actions.</p>{{end}}
             </div>
             <div class="dash-breakdown">
                 <h3 class="t-overline">Pool reliability</h3>

@@ -58,7 +58,7 @@ scrolls past the status header.
                 <p class="t-caption ops-identity-meta">
                     <code class="t-mono">{{.Page.Job.ID}}</code>
                     <span aria-hidden="true">&middot;</span><span>created {{.Page.Job.CreatedAt}}</span>
-                    <span aria-hidden="true">&middot;</span><span>scraper {{.Page.Job.ScraperVersion}}</span>
+                    <span aria-hidden="true">&middot;</span><span data-job-scraper-version>scraper {{.Page.Job.ScraperVersion}}</span>
                 </p>
             </div>
             <div class="ops-readouts">
@@ -306,6 +306,8 @@ scrolls past the status header.
                 <div class="ops-fact"><dt>Depth / zoom / radius</dt><dd>{{.Page.Job.Depth}} / {{.Page.Job.Zoom}} / {{.Page.Job.Radius}}</dd></div>
                 <div class="ops-fact"><dt>Enrichment</dt><dd>{{.Page.Job.EnrichmentSummary}}</dd></div>
                 <div class="ops-fact"><dt>Created by</dt><dd>{{.Page.Job.Owner}}</dd></div>
+                <div class="ops-fact"><dt>Scraper version for this run</dt><dd data-job-scraper-version>{{.Page.Job.ScraperVersion}}</dd></div>
+                <div class="ops-fact"><dt>Local build serving this page</dt><dd class="t-mono">{{.Page.Job.LocalBuild}}</dd></div>
             </dl>
             <pre class="code-block" tabindex="0">{{.Page.Job.ConfigJSON}}</pre>
         </div>

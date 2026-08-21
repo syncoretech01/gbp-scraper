@@ -108,10 +108,16 @@ type jobMonitorPageData struct {
 }
 
 type jobMonitorJob struct {
-	ID                string
-	Name              string
-	CreatedAt         string
+	ID        string
+	Name      string
+	CreatedAt string
+	// ScraperVersion is the build identity recorded when a worker started this
+	// job, or "not recorded" for a run that predates version stamping. It is
+	// never back-filled from the binary running today, because that build did
+	// not necessarily produce the committed rows. LocalBuild states the
+	// version of the binary serving the page, so both facts stay separable.
 	ScraperVersion    string
+	LocalBuild        string
 	State             string
 	Stage             string
 	Percent           int
@@ -557,6 +563,7 @@ func (s *Server) buildJobMonitorPage(r *http.Request, id string) (jobMonitorPage
 			Name:              job.Name,
 			CreatedAt:         formatDate(job.Date),
 			ScraperVersion:    "not recorded",
+			LocalBuild:        ScraperVersion(),
 			State:             string(runtime.State),
 			Stage:             humanStage(runtime.Stage),
 			Percent:           roundedPercent(runtime.Progress, runtime.State),
@@ -623,6 +630,16 @@ func (s *Server) buildJobMonitorPage(r *http.Request, id string) (jobMonitorPage
 			return jobMonitorPageData{}, logErr
 		}
 		page.Logs = logs
+	}
+
+	// A recorded build identity is evidence about this run; an unsupported
+	// repository or an unstamped legacy job simply keeps "not recorded".
+	if recorded, versionErr := s.svc.JobScraperVersion(r.Context(), job.ID); versionErr == nil && recorded != "" {
+		page.Job.ScraperVersion = recorded
+	} else if versionErr != nil &&
+		!errors.Is(versionErr, ErrScraperVersionUnsupported) &&
+		!errors.Is(versionErr, ErrLifecycleNotFound) {
+		return jobMonitorPageData{}, versionErr
 	}
 
 	if execution, executionErr := s.svc.GetJobExecution(r.Context(), job.ID); executionErr == nil {

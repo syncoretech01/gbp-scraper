@@ -32,6 +32,16 @@ type DashboardSpeedTrend struct {
 	Label           string  `json:"label"`
 	PlacesPerMinute float64 `json:"places_per_minute"`
 	WarningEvents   int64   `json:"warning_events"`
+	// BlockEvents counts the durable worker events that mean the platform or a
+	// proxy refused the request — proxy failures, rate limits, and captcha
+	// interruptions — rather than every warning.
+	BlockEvents int64 `json:"block_events"`
+	// BlockRatePercent expresses BlockEvents as a share of the day's task
+	// outcomes: blocks / (blocks + tasks that finished that day) × 100. The
+	// scraper engine publishes no per-request counter, so the denominator is
+	// the durable task plan, which is the finest granularity the workspace
+	// actually records. It stays zero on a day with no evidence at all.
+	BlockRatePercent float64 `json:"block_rate_percent"`
 }
 
 // DashboardAvailabilitySummary reports unique-business availability. Counts

@@ -144,10 +144,21 @@ func (s *Service) ConsumeJobRetryCurrent(ctx context.Context, jobID string) (boo
 }
 
 // ResetJobLiveControls clears every pending control at the start of a run.
+//
+// A run start is also the only moment the workspace can know which build of
+// the binary is about to execute the job, so the scraper version is stamped
+// here. The stamp is idempotent and best-effort: a repository without version
+// storage, or a job whose version was already recorded, leaves the durable
+// row untouched and never fails the run.
 func (s *Service) ResetJobLiveControls(ctx context.Context, jobID string) error {
 	repository, err := s.liveControlRepository()
 	if err != nil {
 		return err
+	}
+
+	if versionErr := s.RecordJobScraperVersion(ctx, jobID, ScraperVersion()); versionErr != nil &&
+		!errors.Is(versionErr, ErrScraperVersionUnsupported) {
+		return versionErr
 	}
 
 	return repository.ResetJobLiveControls(ctx, jobID)

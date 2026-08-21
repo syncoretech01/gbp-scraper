@@ -228,6 +228,12 @@ func (repo *repo) dashboardJobTrends(ctx context.Context, since time.Time) ([]we
 	return trends, nil
 }
 
+// dashboardBlockEventTypes are the durable worker event types that mean the
+// request was refused rather than merely degraded. Keeping the list here, next
+// to the query that uses it, is what lets the block rate stay a measurement
+// instead of a guess: every type below is written by runner/webrunner.
+const dashboardBlockEventTypes = `('proxy-failure', 'rate-limit', 'blocked', 'captcha')`
+
 func (repo *repo) dashboardSpeedTrends(ctx context.Context, since time.Time) ([]web.DashboardSpeedTrend, error) {
 	rows, err := repo.db.QueryContext(ctx, `
 		WITH dates AS (
@@ -235,20 +241,46 @@ func (repo *repo) dashboardSpeedTrends(ctx context.Context, since time.Time) ([]
 				AVG(CASE WHEN places_per_minute > 0 THEN places_per_minute END) AS speed
 			FROM job_progress WHERE updated_at >= ? GROUP BY label
 		), warnings AS (
-			-- The scraper engine emits no block-rate callback, so this counts the
-			-- degradation events the worker really does record (low disk, adaptive
-			-- concurrency changes, task errors) rather than a rate that cannot be
-			-- measured. See docs/technical-limitations.md.
+			-- Warnings stay a broad degradation counter (low disk, adaptive
+			-- concurrency changes, task errors). Blocks below are the narrow
+			-- subset that means the platform or proxy refused the request.
 			SELECT date(created_at, 'unixepoch') AS label, COUNT(*) AS count
 			FROM job_events
 			WHERE created_at >= ? AND severity IN ('warning', 'error')
 			GROUP BY label
+		), blocks AS (
+			SELECT date(created_at, 'unixepoch') AS label, COUNT(*) AS count
+			FROM job_events
+			WHERE created_at >= ? AND type IN ` + dashboardBlockEventTypes + `
+			GROUP BY label
+		), outcomes AS (
+			-- The engine publishes no per-request counter, so the denominator
+			-- is the durable task plan: the finest granularity the workspace
+			-- actually records.
+			SELECT date(finished_at, 'unixepoch') AS label, COUNT(*) AS count
+			FROM job_tasks
+			WHERE finished_at IS NOT NULL AND finished_at >= ?
+			GROUP BY label
 		), labels AS (
-			SELECT label FROM dates UNION SELECT label FROM warnings
+			SELECT label FROM dates
+			UNION SELECT label FROM warnings
+			UNION SELECT label FROM blocks
 		)
-		SELECT labels.label, COALESCE(dates.speed, 0), COALESCE(warnings.count, 0)
-		FROM labels LEFT JOIN dates USING(label) LEFT JOIN warnings USING(label)
-		ORDER BY labels.label`, since.Unix(), since.Unix())
+		SELECT labels.label,
+			COALESCE(dates.speed, 0),
+			COALESCE(warnings.count, 0),
+			COALESCE(blocks.count, 0),
+			CASE
+				WHEN COALESCE(blocks.count, 0) + COALESCE(outcomes.count, 0) = 0 THEN 0
+				ELSE 100.0 * COALESCE(blocks.count, 0)
+					/ (COALESCE(blocks.count, 0) + COALESCE(outcomes.count, 0))
+			END
+		FROM labels
+		LEFT JOIN dates USING(label)
+		LEFT JOIN warnings USING(label)
+		LEFT JOIN blocks USING(label)
+		LEFT JOIN outcomes USING(label)
+		ORDER BY labels.label`, since.Unix(), since.Unix(), since.Unix(), since.Unix())
 	if err != nil {
 		return nil, fmt.Errorf("query speed and warning trends: %w", err)
 	}
@@ -257,7 +289,13 @@ func (repo *repo) dashboardSpeedTrends(ctx context.Context, since time.Time) ([]
 	trends := make([]web.DashboardSpeedTrend, 0)
 	for rows.Next() {
 		var trend web.DashboardSpeedTrend
-		if err := rows.Scan(&trend.Label, &trend.PlacesPerMinute, &trend.WarningEvents); err != nil {
+		if err := rows.Scan(
+			&trend.Label,
+			&trend.PlacesPerMinute,
+			&trend.WarningEvents,
+			&trend.BlockEvents,
+			&trend.BlockRatePercent,
+		); err != nil {
 			return nil, fmt.Errorf("scan speed and warning trend: %w", err)
 		}
 		trends = append(trends, trend)
