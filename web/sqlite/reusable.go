@@ -93,6 +93,50 @@ func (repo *repo) SetScrapeTemplatePinned(ctx context.Context, id string, pinned
 	return requireReusableDelete(result, err)
 }
 
+// ScrapeTemplateMetrics reports one template's run history from the jobs that
+// recorded it in their configuration. The link is JobData.TemplateID, stamped
+// when the wizard or the scheduler creates a job, so a template that has never
+// run reports zeroes rather than an error.
+//
+// Average duration comes from job_runtime's started/finished stamps and only
+// counts runs that actually finished; average result count comes from the
+// distinct businesses each run linked to itself.
+func (repo *repo) ScrapeTemplateMetrics(ctx context.Context, id string) (web.ScrapeTemplateMetrics, error) {
+	metrics := web.ScrapeTemplateMetrics{TemplateID: id}
+	row := repo.db.QueryRowContext(ctx,
+		`SELECT
+			COUNT(*),
+			COALESCE(AVG((SELECT COUNT(*) FROM job_businesses WHERE job_businesses.job_id = jobs.id)), 0),
+			COALESCE(AVG(CASE
+				WHEN job_runtime.finished_at IS NOT NULL AND job_runtime.started_at IS NOT NULL
+					AND job_runtime.finished_at >= job_runtime.started_at
+				THEN job_runtime.finished_at - job_runtime.started_at END), 0),
+			COALESCE(SUM(CASE
+				WHEN job_runtime.finished_at IS NOT NULL AND job_runtime.started_at IS NOT NULL
+					AND job_runtime.finished_at >= job_runtime.started_at
+				THEN 1 ELSE 0 END), 0),
+			COALESCE(MAX(jobs.created_at), 0)
+		FROM jobs
+		LEFT JOIN job_runtime ON job_runtime.job_id = jobs.id
+		WHERE json_valid(jobs.data) AND json_extract(jobs.data, '$.template_id') = ?`,
+		id,
+	)
+	var averageSeconds float64
+	var lastRun int64
+	if err := row.Scan(
+		&metrics.RunCount, &metrics.AverageResults, &averageSeconds, &metrics.TimedRunCount, &lastRun,
+	); err != nil {
+		return web.ScrapeTemplateMetrics{}, fmt.Errorf("read scrape template metrics: %w", err)
+	}
+	metrics.AverageDuration = time.Duration(averageSeconds * float64(time.Second))
+	if lastRun > 0 {
+		value := time.Unix(lastRun, 0).UTC()
+		metrics.LastRunAt = &value
+	}
+
+	return metrics, nil
+}
+
 func (repo *repo) RecordScrapeTemplateUse(ctx context.Context, id string, usedAt time.Time) error {
 	result, err := repo.db.ExecContext(ctx,
 		"UPDATE templates SET use_count = use_count + 1, last_run_at = ?, updated_at = ? WHERE id = ?",

@@ -32,7 +32,11 @@ type templateCardView struct {
 	Keywords    string
 	Geography   string
 	Performance string
-	UpdatedAt   string
+	// History is the template's derived run history: how many jobs ran from
+	// it, their average result count and average duration. It reads "never
+	// run" until a job created from the template finishes.
+	History   string
+	UpdatedAt string
 }
 
 type savedViewCard struct {
@@ -41,6 +45,31 @@ type savedViewCard struct {
 	Summary   string
 	ResultURL string
 	UpdatedAt string
+}
+
+// templateHistoryLabel renders one template's derived run history for the
+// card. A repository that cannot derive it, or a template nothing has run yet,
+// reports the honest "used N times; no completed run yet" rather than an
+// invented average.
+func (s *Server) templateHistoryLabel(r *http.Request, template ScrapeTemplate) string {
+	used := fmt.Sprintf("used %d×", template.UseCount)
+	metrics, err := s.svc.ScrapeTemplateMetricsFor(r.Context(), template.ID)
+	if err != nil || metrics.RunCount == 0 {
+		return used + "; no recorded run yet"
+	}
+	label := fmt.Sprintf("%s; %d run(s)", used, metrics.RunCount)
+	label += fmt.Sprintf("; avg %.0f results", metrics.AverageResults)
+	if metrics.TimedRunCount > 0 {
+		label += fmt.Sprintf("; avg %s", metrics.AverageDuration.Round(time.Second))
+	} else {
+		label += "; no completed run timed yet"
+	}
+	if parameters := template.Configuration.Parameters; parameters != nil && !parameters.Empty() {
+		label += fmt.Sprintf("; parameterised (%d × %d)",
+			len(parameters.Categories), len(parameters.Locations))
+	}
+
+	return label
 }
 
 func (s *Server) reusablePage(w http.ResponseWriter, r *http.Request) {
@@ -80,6 +109,7 @@ func (s *Server) reusablePage(w http.ResponseWriter, r *http.Request) {
 			Performance: fmt.Sprintf("depth %d; %s; concurrency %d; last run %s",
 				template.Configuration.Depth, template.Configuration.MaxTime,
 				template.Configuration.Concurrency, lastRun),
+			History:   s.templateHistoryLabel(r, template),
 			UpdatedAt: template.UpdatedAt.Format(time.RFC3339),
 		})
 	}

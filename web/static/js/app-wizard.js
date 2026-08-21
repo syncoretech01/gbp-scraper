@@ -635,6 +635,46 @@
         }
     }
 
+    // --- Parameterised configurations ---------------------------------------
+    // The server owns the expansion rules, so the preview asks it rather than
+    // reimplementing them here and drifting.
+
+    async function previewParameters(trigger) {
+        const categories = splitCategoryList(value("parameter_categories", ""));
+        const locations = splitCategoryList(value("parameter_locations", ""));
+        const list = wizard.querySelector("[data-parameter-preview]");
+        if (list) list.replaceChildren();
+        if (!categories.length || !locations.length) {
+            setStatus("[data-parameter-status]", "Add at least one category and one location.");
+            return;
+        }
+        trigger.disabled = true;
+        try {
+            const response = await fetch("/api/v1/templates/parameters/preview", {
+                method: "POST", credentials: "same-origin",
+                headers: { "Accept": "application/json", "Content-Type": "application/json", "X-CSRF-Token": value("csrf_token", "") },
+                body: JSON.stringify({ categories: categories, locations: locations, query_pattern: value("parameter_pattern", "") })
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error((payload.error && payload.error.message) || "Could not expand the parameters");
+            const queries = Array.isArray(payload.data) ? payload.data : [];
+            if (list) {
+                queries.forEach((query) => {
+                    const item = document.createElement("li");
+                    item.textContent = query;
+                    list.appendChild(item);
+                });
+            }
+            const total = (payload.meta && payload.meta.count) || queries.length;
+            setStatus("[data-parameter-status]", total + " queries will be generated on every run" +
+                (payload.meta && payload.meta.truncated ? "; showing the first " + queries.length + "." : "."));
+        } catch (error) {
+            setStatus("[data-parameter-status]", error.message || "Could not expand the parameters.");
+        } finally {
+            trigger.disabled = false;
+        }
+    }
+
     function applySanFranciscoPreset() {
         const values = {
             name: "San Francisco dentists",
@@ -998,6 +1038,7 @@
         else if (trigger.dataset.action === "insert-category-group") { event.preventDefault(); insertCategoryGroup(); }
         else if (trigger.dataset.action === "save-category-group") { event.preventDefault(); saveCategoryGroup(trigger); }
         else if (trigger.dataset.action === "delete-category-group") { event.preventDefault(); deleteCategoryGroup(trigger); }
+        else if (trigger.dataset.action === "preview-parameters") { event.preventDefault(); previewParameters(trigger); }
     });
 
     wizard.addEventListener("change", (event) => {

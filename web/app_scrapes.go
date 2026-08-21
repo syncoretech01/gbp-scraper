@@ -121,7 +121,19 @@ func parseWizardJob(r *http.Request) (Job, jobruntime.State, error) {
 		return Job{}, "", fmt.Errorf("responsible-use acknowledgement is required")
 	}
 
-	keywords, err := wizardKeywords(r)
+	// A parameterised configuration generates its own query lines, so the
+	// typed list may legitimately be empty in that case and only in that case.
+	parameters := (&JobParameters{
+		Categories: splitFilterList(r.FormValue("parameter_categories")),
+		Locations:  splitFilterList(r.FormValue("parameter_locations")),
+		Pattern:    strings.TrimSpace(r.FormValue("parameter_pattern")),
+		Replace:    r.FormValue("parameter_replace") == "on",
+	}).Normalized()
+	if err := parameters.Validate(); err != nil {
+		return Job{}, "", err
+	}
+
+	keywords, err := wizardKeywords(r, parameters != nil)
 	if err != nil {
 		return Job{}, "", err
 	}
@@ -266,6 +278,15 @@ func parseWizardJob(r *http.Request) (Job, jobruntime.State, error) {
 	}
 
 	data.ResultFilters = filters
+	data.TemplateID = strings.TrimSpace(r.FormValue("template_id"))
+	data.Parameters = parameters
+
+	// Parameterised configurations regenerate their query lines here, so a
+	// template saved with them produces a fresh plan on every future run.
+	data, err = ApplyJobParameters(data)
+	if err != nil {
+		return Job{}, "", err
+	}
 	if websiteEnrichment {
 		if enrichmentMaxPages == 0 {
 			enrichmentMaxPages = 3
@@ -370,7 +391,10 @@ func parseWizardJob(r *http.Request) (Job, jobruntime.State, error) {
 	return job, state, nil
 }
 
-func wizardKeywords(r *http.Request) ([]string, error) {
+// wizardKeywords collects the typed and uploaded query lines. allowEmpty is
+// true only when the configuration carries parameters that generate their own
+// lines, so an ordinary job still cannot be created without a query.
+func wizardKeywords(r *http.Request, allowEmpty bool) ([]string, error) {
 	values := splitNonEmptyLines(r.FormValue("keywords"))
 
 	if r.MultipartForm != nil {
@@ -405,7 +429,7 @@ func wizardKeywords(r *http.Request) ([]string, error) {
 		unique = append(unique, strings.TrimSpace(value))
 	}
 
-	if len(unique) == 0 {
+	if len(unique) == 0 && !allowEmpty {
 		return nil, fmt.Errorf("at least one query is required")
 	}
 

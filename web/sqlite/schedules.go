@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -495,24 +496,91 @@ func (repo *repo) StartDueScheduleRetries(ctx context.Context, now time.Time, li
 	return jobs, nil
 }
 
+// expiredScheduleRunSelect is the one definition of "past its schedule's
+// retention window". Queued and pending-retry rows are never expired, and a
+// schedule with retention 0 keeps everything.
+const expiredScheduleRunSelect = "SELECT schedule_runs.id AS run_id, schedule_runs.job_id AS job_id " +
+	"FROM schedule_runs " +
+	"JOIN schedules ON schedules.id = schedule_runs.schedule_id " +
+	"WHERE schedules.runs_retention_days > 0 " +
+	"AND schedule_runs.state NOT IN (?, ?) " +
+	"AND COALESCE(schedule_runs.finished_at, schedule_runs.scheduled_for) < " +
+	"? - (schedules.runs_retention_days * 86400)"
+
 // PruneScheduleRuns deletes finished run-history rows older than each
-// schedule's own runs_retention_days. Schedules with retention 0 keep all
-// rows, and queued or pending-retry rows are never deleted.
+// schedule's own runs_retention_days, together with the operational log those
+// runs produced.
+//
+// What is deliberately NOT removed: the job row, its runtime counters, its
+// normalized results, and its per-job CSV. Those are collected data. Only the
+// run-history row and the job_events log — both reproducible operational
+// evidence — expire with the window. Export FILES are removed by the service,
+// which owns the data directory; ExpiredScheduleRunExports reports them.
 func (repo *repo) PruneScheduleRuns(ctx context.Context, now time.Time) (int64, error) {
-	result, err := repo.db.ExecContext(ctx,
-		"DELETE FROM schedule_runs WHERE id IN ("+
-			"SELECT schedule_runs.id FROM schedule_runs "+
-			"JOIN schedules ON schedules.id = schedule_runs.schedule_id "+
-			"WHERE schedules.runs_retention_days > 0 "+
-			"AND schedule_runs.state NOT IN (?, ?) "+
-			"AND COALESCE(schedule_runs.finished_at, schedule_runs.scheduled_for) < "+
-			"? - (schedules.runs_retention_days * 86400))",
-		scheduleRunStateQueued, scheduleRunStateRetryPending, now.UTC().Unix(),
+	tx, err := repo.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("start schedule run prune: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	cutoff := now.UTC().Unix()
+	// Logs first: once the run rows are gone the jobs are no longer
+	// identifiable as expired, so ordering here is what makes the pass
+	// idempotent rather than leaving orphaned logs behind forever.
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM job_events WHERE job_id IN (SELECT job_id FROM ("+expiredScheduleRunSelect+
+			") WHERE job_id IS NOT NULL AND job_id <> '')",
+		scheduleRunStateQueued, scheduleRunStateRetryPending, cutoff,
+	); err != nil {
+		return 0, fmt.Errorf("prune expired schedule run logs: %w", err)
+	}
+
+	result, err := tx.ExecContext(ctx,
+		"DELETE FROM schedule_runs WHERE id IN (SELECT run_id FROM ("+expiredScheduleRunSelect+"))",
+		scheduleRunStateQueued, scheduleRunStateRetryPending, cutoff,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("prune schedule runs: %w", err)
 	}
-	return result.RowsAffected()
+	pruned, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count pruned schedule runs: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit schedule run prune: %w", err)
+	}
+
+	return pruned, nil
+}
+
+// ExpiredScheduleRunExports lists completed exports produced from jobs whose
+// schedule run has passed its retention window. The service deletes the files
+// through its ordinary export-deletion path, which is the only code that may
+// touch the data directory.
+func (repo *repo) ExpiredScheduleRunExports(ctx context.Context, now time.Time) ([]string, error) {
+	rows, err := repo.db.QueryContext(ctx,
+		"SELECT exports.id FROM exports "+
+			"WHERE exports.source_type = 'job' AND exports.state = 'completed' "+
+			"AND exports.source_id IN ("+
+			"SELECT job_id FROM ("+expiredScheduleRunSelect+") WHERE job_id IS NOT NULL AND job_id <> '') "+
+			"ORDER BY exports.id",
+		scheduleRunStateQueued, scheduleRunStateRetryPending, now.UTC().Unix(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("read expired schedule run exports: %w", err)
+	}
+	defer rows.Close()
+
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan expired schedule run export: %w", err)
+		}
+		ids = append(ids, id)
+	}
+
+	return ids, rows.Err()
 }
 
 // ListDueReplaceableScheduleJobs returns still-active jobs belonging to due
@@ -631,6 +699,23 @@ func (repo *repo) createScheduleJob(
 	if attempt > 1 {
 		name += fmt.Sprintf(" (retry %d)", attempt-1)
 	}
+	// An incremental-only schedule stamps its mode onto every run it creates,
+	// overriding whatever mode the template stored. An empty schedule mode
+	// leaves the template untouched, which is the historical behaviour.
+	if mode := strings.TrimSpace(schedule.Spec.IncrementalMode); mode != "" {
+		if !web.ValidIncrementalMode(mode) {
+			return web.Job{}, fmt.Errorf("%w: unsupported incremental mode %q", errInvalidScheduleConfiguration, mode)
+		}
+		template.IncrementalMode = mode
+	}
+	// A parameterised template regenerates its query lines on every run, so
+	// adding a city to the template changes the next run without editing
+	// query text. A template without parameters is returned untouched.
+	template, err = web.ApplyJobParameters(template)
+	if err != nil {
+		return web.Job{}, fmt.Errorf("%w: %v", errInvalidScheduleConfiguration, err)
+	}
+	template.TemplateID = schedule.TemplateID
 	job := web.Job{
 		ID: uuid.NewString(), Name: name,
 		Date: now, Status: web.StatusPending, Data: template,

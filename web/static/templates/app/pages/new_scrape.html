@@ -122,6 +122,26 @@ in Basic is identical to the same job created in Advanced.
                 </div>
                 <div class="form-actions"><span class="field-hint" data-combo-status aria-live="polite"></span><button class="button" type="button" data-action="generate-combinations">Generate combinations</button></div>
             </div></details>
+            <details class="card disclosure" data-wizard-advanced><summary>Parameterise this configuration (one category, many cities)</summary><div class="card-body">
+                {{/*
+                Unlike the generator above, which writes query lines once,
+                parameters are SAVED with the job and its template. Every future
+                run — including every scheduled run — regenerates its query
+                lines from them, so adding a city updates the plan without
+                editing query text.
+                */}}
+                <p class="field-hint">The generator above writes query lines once. Parameters are saved with the configuration instead: every future run, including every scheduled run, regenerates its queries from them.</p>
+                <div class="grid grid-2">
+                    <div class="field"><label for="parameter-categories">Categories</label><textarea class="textarea" id="parameter-categories" name="parameter_categories" rows="3" placeholder="dentist&#10;dental clinic"></textarea><p class="field-hint">One per line or comma separated.</p></div>
+                    <div class="field"><label for="parameter-locations">Locations</label><textarea class="textarea" id="parameter-locations" name="parameter_locations" rows="3" placeholder="San Francisco, CA&#10;Oakland, CA"></textarea></div>
+                </div>
+                <div class="form-grid form-grid-4">
+                    <div class="field"><label for="parameter-pattern">Query pattern</label><input class="input" id="parameter-pattern" name="parameter_pattern" maxlength="200" placeholder="{category} in {location}" autocomplete="off"><p class="field-hint">Use <code>{category}</code>, <code>{location}</code>, or both. Empty uses <code>{category} in {location}</code>.</p></div>
+                </div>
+                <label class="check-row"><input id="parameter-replace" name="parameter_replace" type="checkbox" value="on"><span>Generated queries replace the typed list<small>Leave off to add the generated lines to whatever is typed above.</small></span></label>
+                <div class="form-actions"><span class="field-hint" data-parameter-status aria-live="polite"></span><button class="button" type="button" data-action="preview-parameters">Preview expansion</button></div>
+                <ol class="query-preview" data-parameter-preview></ol>
+            </div></details>
             {{if .Page.ProspectQueriesSupported}}<details class="card disclosure" data-gbp-coverage data-wizard-gbp><summary>GBP prospecting coverage (ZIP &times; synonym queries)<span class="disclosure-tag">GBP</span></summary><div class="card-body">
                 <div class="grid grid-3">
                     <div class="field"><label for="gbp-state">State (2-letter)</label><input class="input" id="gbp-state" maxlength="2" minlength="2" autocomplete="off" placeholder="CA" data-gbp-state></div>

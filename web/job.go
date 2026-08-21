@@ -115,6 +115,14 @@ type JobData struct {
 	// them: they are applied to stored results after collection, which is
 	// what every surface built from them says. See web/job_filters.go.
 	ResultFilters *JobResultFilters `json:"result_filters,omitempty"`
+	// Parameters make one saved configuration reusable across many inputs
+	// (one category applied to many cities). Query lines are regenerated
+	// from them at job-creation time. See web/job_parameters.go.
+	Parameters *JobParameters `json:"parameters,omitempty"`
+	// TemplateID records which saved template this job was created from, so
+	// a template can report its own run history. It is descriptive only and
+	// never changes how the job runs.
+	TemplateID string `json:"template_id,omitempty"`
 	// Coverage enables the adaptive discovery engine for this job. A nil
 	// value keeps exactly the historical behaviour: no saturation stop and
 	// no mid-run expansion.
@@ -233,6 +241,12 @@ func (d *JobData) Validate() error {
 	}
 	if err := d.ResultFilters.Validate(); err != nil {
 		return err
+	}
+	if err := d.Parameters.Validate(); err != nil {
+		return err
+	}
+	if d.TemplateID != "" && !validMapEntityID(d.TemplateID) {
+		return errors.New("template ID is invalid")
 	}
 	if d.SavedAreaID != "" && !validMapEntityID(d.SavedAreaID) {
 		return errors.New("saved area ID is invalid")
