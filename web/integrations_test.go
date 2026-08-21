@@ -294,7 +294,12 @@ func TestSQLiteDatabaseDestinationLoadsACSVExportInsideTheDataDirectory(t *testi
 func TestDatabaseDestinationValidationContainsPathsAndHidesCredentials(t *testing.T) {
 	t.Parallel()
 
-	for _, target := range []string{"", "../escape.sqlite", "/etc/passwd.db", "notes.txt", "C:/leads.sqlite"} {
+	// The last three are rejected on every host, not only the one whose
+	// filepath rules happen to call them absolute.
+	for _, target := range []string{
+		"", "../escape.sqlite", "/etc/passwd.db", "notes.txt",
+		"C:/leads.sqlite", `C:\leads.sqlite`, "//server/share/leads.sqlite",
+	} {
 		if _, err := validateSQLiteDestinationPath(target); err == nil {
 			t.Fatalf("unsafe SQLite destination %q was accepted", target)
 		}

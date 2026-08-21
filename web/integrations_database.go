@@ -107,6 +107,12 @@ func validateSQLiteDestinationPath(value string) (string, error) {
 	default:
 		return "", fmt.Errorf("SQLite destination file must end in .sqlite, .sqlite3, or .db")
 	}
+	// The rejection has to be platform-independent: a Windows drive letter or a
+	// UNC prefix is not "absolute" to a Linux filepath, so the workspace would
+	// otherwise accept a path on one host that it refuses on another.
+	if strings.Contains(value, ":") || strings.HasPrefix(value, "//") {
+		return "", fmt.Errorf("SQLite destination must be a relative path inside the data directory")
+	}
 	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(value)))
 	if strings.HasPrefix(clean, "/") || strings.HasPrefix(clean, "../") || clean == ".." ||
 		strings.Contains(clean, "\x00") || filepath.IsAbs(filepath.FromSlash(clean)) {
