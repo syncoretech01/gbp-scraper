@@ -105,6 +105,30 @@ var exportColumnDefinitions = []exportColumnDefinition{
 	{Key: "prospect_tier", Label: "prospect_tier", DataType: "text"},
 	{Key: "prospect_reasons", Label: "prospect_reasons", DataType: "json"},
 	{Key: "call_opener", Label: "call_opener", DataType: "text"},
+	// Specification section 08 core columns that the normalized row now
+	// carries. Every one is additive: no default export changes shape.
+	{Key: "description", Label: "description", DataType: "text"},
+	{Key: "street", Label: "street", DataType: "text"},
+	{Key: "plus_code", Label: "plus_code", DataType: "text"},
+	{Key: "input_id", Label: "input_id", DataType: "text"},
+	{Key: "phone_type", Label: "phone_type", DataType: "text"},
+	{Key: "emails", Label: "emails", DataType: "text"},
+	{Key: "email_type", Label: "email_type", DataType: "text"},
+	{Key: "email_status", Label: "email_status", DataType: "text"},
+	{Key: "facebook", Label: "facebook", DataType: "text"},
+	{Key: "instagram", Label: "instagram", DataType: "text"},
+	{Key: "linkedin", Label: "linkedin", DataType: "text"},
+	{Key: "x", Label: "x", DataType: "text"},
+	{Key: "youtube", Label: "youtube", DataType: "text"},
+	{Key: "tiktok", Label: "tiktok", DataType: "text"},
+	{Key: "whatsapp", Label: "whatsapp", DataType: "text"},
+	{Key: "reviews_per_rating", Label: "reviews_per_rating", DataType: "text"},
+	{Key: "user_reviews", Label: "user_reviews", DataType: "text"},
+	{Key: "popular_times", Label: "popular_times", DataType: "text"},
+	{Key: "technologies", Label: "technologies", DataType: "text"},
+	{Key: "last_checked_at", Label: "last_checked_at", DataType: "datetime"},
+	{Key: "first_seen_at", Label: "first_seen_at", DataType: "datetime"},
+	{Key: "last_seen_at", Label: "last_seen_at", DataType: "datetime"},
 }
 
 var defaultExportColumnKeys = []string{
@@ -911,6 +935,41 @@ func exportColumnValue(row exportDataRow, key string) (any, error) {
 		return json.RawMessage(encoded), nil
 	case "call_opener":
 		return exportProspectValue(row).Opener, nil
+	case "description":
+		return business.Description, nil
+	case "street":
+		return business.Street, nil
+	case "plus_code":
+		return business.PlusCode, nil
+	case "input_id":
+		return business.InputID, nil
+	case "phone_type":
+		return business.PhoneType, nil
+	case "emails":
+		return strings.Join(business.Emails, "; "), nil
+	case "email_type":
+		return business.EmailType, nil
+	case "email_status":
+		return business.EmailStatus, nil
+	case "facebook", "instagram", "linkedin", "x", "youtube", "tiktok", "whatsapp":
+		return business.Social.URL(key), nil
+	case "reviews_per_rating":
+		return business.ReviewsPerRating, nil
+	case "user_reviews":
+		return business.UserReviews, nil
+	case "popular_times":
+		return business.PopularTimes, nil
+	case "technologies":
+		return strings.Join(business.Technologies, "; "), nil
+	case "last_checked_at":
+		if business.LastCheckedAt == nil {
+			return nil, nil
+		}
+		return exportTimeValue(*business.LastCheckedAt), nil
+	case "first_seen_at":
+		return exportTimeValue(business.FirstSeenAt), nil
+	case "last_seen_at":
+		return exportTimeValue(business.LastSeenAt), nil
 	default:
 		return nil, fmt.Errorf("unsupported export column %q", key)
 	}

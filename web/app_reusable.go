@@ -118,7 +118,7 @@ func (s *Server) reusablePage(w http.ResponseWriter, r *http.Request) {
 			ID:        view.ID,
 			Name:      view.Name,
 			Summary:   savedViewSummary(view.Search),
-			ResultURL: savedViewURL(view.Search),
+			ResultURL: savedViewLayoutURL(view),
 			UpdatedAt: view.UpdatedAt.Format(time.RFC3339),
 		})
 	}
@@ -186,6 +186,29 @@ func savedViewURL(search ResultSearch) string {
 	return "/app/results?" + values.Encode()
 }
 
+// savedViewLayoutURL is savedViewURL plus the stored table layout, so opening
+// a saved view restores its visible columns and grouping as well as its query.
+func savedViewLayoutURL(view SavedResultView) string {
+	target := savedViewURL(view.Search)
+	columns, group := NormalizeSavedViewLayout(view.Columns, view.Group)
+	if len(columns) == 0 && group == "none" {
+		return target
+	}
+	values := url.Values{}
+	if len(columns) > 0 {
+		values.Set("columns", strings.Join(columns, ","))
+	}
+	if group != "none" {
+		values.Set("group", group)
+	}
+	separator := "&"
+	if !strings.Contains(target, "?") {
+		separator = "?"
+	}
+
+	return target + separator + values.Encode()
+}
+
 func (s *Server) saveResultView(w http.ResponseWriter, r *http.Request) {
 	if !s.requireCSRF(w, r) {
 		return
@@ -200,8 +223,14 @@ func (s *Server) saveResultView(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
+	// The Results toolbar posts the table layout alongside the query so a
+	// reopened view restores the same visible columns, order, and grouping.
+	columns, group := NormalizeSavedViewLayout(r.Form["columns"], r.FormValue("group"))
 	now := time.Now().UTC()
-	view := SavedResultView{ID: uuid.NewString(), Name: name, Search: search, CreatedAt: now, UpdatedAt: now}
+	view := SavedResultView{
+		ID: uuid.NewString(), Name: name, Search: search,
+		Columns: columns, Group: group, CreatedAt: now, UpdatedAt: now,
+	}
 	if err := s.svc.SaveResultView(r.Context(), view); err != nil {
 		http.Error(w, "could not save result view", http.StatusInternalServerError)
 		return

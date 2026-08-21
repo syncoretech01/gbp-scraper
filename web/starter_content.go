@@ -392,6 +392,33 @@ func starterResultViews(now time.Time) []SavedResultView {
 				{Field: "rating", Operator: "gte", Value: "4.5"},
 			},
 		}),
+		// A well-reviewed business whose own site scores badly is the clearest
+		// rebuild pitch, so the view pairs the rating floor with a low
+		// explainable quality score on a site that actually exists.
+		view("Highly rated, low-quality website", ResultSearch{
+			Filters: []ResultFilter{
+				{Field: "rating", Operator: "gte", Value: "4.5"},
+				{Field: "website", Operator: "not_empty"},
+				{Field: "quality_score", Operator: "lte", Value: "60"},
+			},
+		}),
+		view("Email and LinkedIn", ResultSearch{
+			Filters: []ResultFilter{
+				{Field: "email", Operator: "not_empty"},
+				{Field: "social", Operator: "eq", Value: "linkedin"},
+			},
+		}),
+		// Imports classify each observation as new, updated, or unchanged, so
+		// "since the last scrape" is the pair of statuses the last import set.
+		view("New or changed since the last scrape", ResultSearch{
+			FilterGroup: &ResultFilterGroup{
+				Logic: "or",
+				Filters: []ResultFilter{
+					{Field: "change_status", Operator: "eq", Value: "new"},
+					{Field: "change_status", Operator: "eq", Value: "updated"},
+				},
+			},
+		}),
 		view("50+ reviews, open", ResultSearch{
 			Filters: []ResultFilter{
 				{Field: "review_count", Operator: "gte", Value: "50"},

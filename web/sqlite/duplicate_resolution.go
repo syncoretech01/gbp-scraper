@@ -72,6 +72,16 @@ func (repo *repo) ResolveDuplicateCandidate(
 			return web.DuplicateResolution{}, err
 		}
 
+		// The operator may also ask the surviving record to adopt the better
+		// value of each conflicting field. Nothing is lost either way: the
+		// replaced value is superseded, not deleted.
+		adopted, err := applyPreferredValues(ctx, tx, mergeID, keepID, decision.FieldStrategy, now)
+		if err != nil {
+			return web.DuplicateResolution{}, err
+		}
+
+		resolution.FieldStrategy = decision.FieldStrategy
+		resolution.PreferredFields = adopted
 		resolution.State = "merged"
 	case "keep_both":
 		// A permanent non-match rule stops the same pair being suggested again.
@@ -104,7 +114,8 @@ func (repo *repo) ResolveDuplicateCandidate(
 
 	details, err := json.Marshal(map[string]any{
 		"candidate_id": candidateID, "kept": keepID, "merged": resolution.MergedBusinessID,
-		"note": truncateResolutionNote(decision.Note),
+		"note":           truncateResolutionNote(decision.Note),
+		"field_strategy": resolution.FieldStrategy, "preferred_fields": resolution.PreferredFields,
 	})
 	if err != nil {
 		return web.DuplicateResolution{}, fmt.Errorf("encode duplicate audit detail: %w", err)

@@ -29,6 +29,39 @@ const (
 	maximumResultLimit = 250
 )
 
+// businessCoreColumnSQL completes the specification's core column set for one
+// business row. Every expression is a correlated read over an already indexed
+// child table, so the Results query stays a single statement. List values are
+// packed with the unit separator used elsewhere in this file, and social
+// profiles pair platform and URL with the record separator.
+const businessCoreColumnSQL = `businesses.description,
+	businesses.street,
+	businesses.plus_code,
+	businesses.input_id,
+	COALESCE((SELECT kind FROM phones WHERE phones.business_id = businesses.id
+		ORDER BY confidence DESC, id LIMIT 1), ''),
+	COALESCE((SELECT GROUP_CONCAT(normalized_value, char(31)) FROM
+		(SELECT normalized_value FROM emails WHERE emails.business_id = businesses.id
+			ORDER BY confidence DESC, id)), ''),
+	COALESCE((SELECT kind FROM emails WHERE emails.business_id = businesses.id
+		ORDER BY confidence DESC, id LIMIT 1), ''),
+	COALESCE((SELECT status FROM emails WHERE emails.business_id = businesses.id
+		ORDER BY confidence DESC, id LIMIT 1), ''),
+	COALESCE((SELECT GROUP_CONCAT(platform || char(30) || url, char(31)) FROM
+		(SELECT platform, url FROM social_profiles WHERE social_profiles.business_id = businesses.id
+			ORDER BY platform, confidence DESC, id)), ''),
+	businesses.reviews_per_rating,
+	businesses.user_reviews,
+	businesses.popular_times,
+	COALESCE((SELECT GROUP_CONCAT(technology, char(31)) FROM
+		(SELECT DISTINCT technology.value AS technology FROM websites,
+			json_each(CASE WHEN json_valid(websites.technologies)
+				THEN websites.technologies ELSE '[]' END) AS technology
+			WHERE websites.business_id = businesses.id ORDER BY technology.value)), ''),
+	(SELECT MAX(last_checked_at) FROM websites WHERE websites.business_id = businesses.id),
+	businesses.first_seen_at,
+	businesses.last_seen_at`
+
 var _ web.ResultRepository = (*repo)(nil)
 
 // ImportLegacyCSV streams an untouched legacy result file into the normalized
@@ -886,6 +919,7 @@ func ensureBusiness(
 			reviews_per_rating = CASE WHEN ? <> '' THEN ? ELSE reviews_per_rating END,
 			open_hours = CASE WHEN ? <> '' THEN ? ELSE open_hours END,
 			popular_times = CASE WHEN ? <> '' THEN ? ELSE popular_times END,
+			user_reviews = CASE WHEN ? <> '' THEN ? ELSE user_reviews END,
 			price_range = COALESCE(NULLIF(?, ''), price_range),
 			quality_score = MAX(quality_score, ?),
 			quality_confidence = MAX(quality_confidence, ?),
@@ -931,6 +965,8 @@ func ensureBusiness(
 		canonicalJSONValue(business.Structured.OpenHours),
 		canonicalJSONValue(business.Structured.PopularTimes),
 		canonicalJSONValue(business.Structured.PopularTimes),
+		canonicalJSONValue(business.Structured.UserReviews),
+		canonicalJSONValue(business.Structured.UserReviews),
 		business.PriceRange,
 		quality,
 		confidence,
@@ -1748,7 +1784,8 @@ func (repo *repo) SearchBusinesses(ctx context.Context, search web.ResultSearch)
 		businesses.updated_at,
 		COALESCE((SELECT GROUP_CONCAT(tags.name, char(31)) FROM business_tags
 			JOIN tags ON tags.id = business_tags.tag_id
-			WHERE business_tags.business_id = businesses.id), '')
+			WHERE business_tags.business_id = businesses.id), ''),
+		` + businessCoreColumnSQL + `
 	` + fromSQL + `
 	WHERE ` + whereSQL + `
 	ORDER BY ` + orderSQL + `
@@ -2359,6 +2396,9 @@ func scanBusinessResult(scanner resultScanner) (web.BusinessResult, error) {
 	var websiteResponse, reviewCount sql.NullInt64
 	var reviewed int
 	var scrapedAt, updatedAt int64
+	var emails, socials, technologies string
+	var lastCheckedAt sql.NullInt64
+	var firstSeenAt, lastSeenAt int64
 	err := scanner.Scan(
 		&result.ID,
 		&result.Name,
@@ -2401,10 +2441,38 @@ func scanBusinessResult(scanner resultScanner) (web.BusinessResult, error) {
 		&scrapedAt,
 		&updatedAt,
 		&tags,
+		&result.Description,
+		&result.Street,
+		&result.PlusCode,
+		&result.InputID,
+		&result.PhoneType,
+		&emails,
+		&result.EmailType,
+		&result.EmailStatus,
+		&socials,
+		&result.ReviewsPerRating,
+		&result.UserReviews,
+		&result.PopularTimes,
+		&technologies,
+		&lastCheckedAt,
+		&firstSeenAt,
+		&lastSeenAt,
 	)
 	if err != nil {
 		return web.BusinessResult{}, fmt.Errorf("scan normalized business: %w", err)
 	}
+	result.Emails = splitUnitSeparator(emails)
+	result.Technologies = splitUnitSeparator(technologies)
+	result.Social = decodeSocialColumn(socials)
+	result.ReviewsPerRating = emptyJSONToBlank(result.ReviewsPerRating)
+	result.UserReviews = emptyJSONToBlank(result.UserReviews)
+	result.PopularTimes = emptyJSONToBlank(result.PopularTimes)
+	if lastCheckedAt.Valid {
+		checked := time.Unix(lastCheckedAt.Int64, 0).UTC()
+		result.LastCheckedAt = &checked
+	}
+	result.FirstSeenAt = time.Unix(firstSeenAt, 0).UTC()
+	result.LastSeenAt = time.Unix(lastSeenAt, 0).UTC()
 	result.Claimed = claimed.Valid && claimed.Bool
 	result.Reviewed = reviewed != 0
 	result.Latitude = nullFloatPointer(latitude)
@@ -3046,6 +3114,39 @@ func splitUnitSeparator(value string) []string {
 	}
 
 	return strings.Split(value, string(rune(31)))
+}
+
+// decodeSocialColumn unpacks the packed "platform\x1eurl" list produced by
+// businessCoreColumnSQL. The query orders the rows so the highest-confidence
+// profile for a platform arrives first; later rows for the same platform are
+// discarded rather than overwriting it.
+func decodeSocialColumn(value string) web.BusinessSocial {
+	var social web.BusinessSocial
+	for _, entry := range splitUnitSeparator(value) {
+		platform, profileURL, ok := strings.Cut(entry, string(rune(30)))
+		if !ok {
+			continue
+		}
+		platform = strings.ToLower(strings.TrimSpace(platform))
+		profileURL = strings.TrimSpace(profileURL)
+		if profileURL == "" || social.URL(platform) != "" {
+			continue
+		}
+		social.Set(platform, profileURL)
+	}
+
+	return social
+}
+
+// emptyJSONToBlank hides the empty structured-data placeholders so a column
+// that was never collected renders as missing instead of as "{}" or "[]".
+func emptyJSONToBlank(value string) string {
+	switch strings.TrimSpace(value) {
+	case "", "{}", "[]", "null":
+		return ""
+	default:
+		return value
+	}
 }
 
 func additionalCategories(value, primary string) string {

@@ -146,7 +146,8 @@ func (repo *repo) RecordScrapeTemplateUse(ctx context.Context, id string, usedAt
 }
 
 func (repo *repo) ListSavedResultViews(ctx context.Context, query string) ([]web.SavedResultView, error) {
-	statement := "SELECT id, name, filters, created_at, updated_at FROM saved_views WHERE entity_type = 'businesses'"
+	statement := "SELECT id, name, filters, columns, grouping, created_at, updated_at " +
+		"FROM saved_views WHERE entity_type = 'businesses'"
 	args := []any{}
 	if query = strings.TrimSpace(query); query != "" {
 		statement += " AND name LIKE ? ESCAPE '\\'"
@@ -171,7 +172,8 @@ func (repo *repo) ListSavedResultViews(ctx context.Context, query string) ([]web
 
 func (repo *repo) GetSavedResultView(ctx context.Context, id string) (web.SavedResultView, error) {
 	row := repo.db.QueryRowContext(ctx,
-		"SELECT id, name, filters, created_at, updated_at FROM saved_views WHERE id = ? AND entity_type = 'businesses'",
+		"SELECT id, name, filters, columns, grouping, created_at, updated_at "+
+			"FROM saved_views WHERE id = ? AND entity_type = 'businesses'",
 		id,
 	)
 	view, err := scanSavedResultView(row)
@@ -194,11 +196,26 @@ func (repo *repo) SaveResultView(ctx context.Context, view web.SavedResultView) 
 	if createdAt.IsZero() {
 		createdAt = now
 	}
+	// The table layout the view was saved with lives in the columns and
+	// grouping columns the schema already provides, so no migration is needed
+	// to reopen a view with its own columns, order, and grouping.
+	columns, group := web.NormalizeSavedViewLayout(view.Columns, view.Group)
+	encodedColumns, err := json.Marshal(columns)
+	if err != nil {
+		return fmt.Errorf("encode saved result view columns: %w", err)
+	}
+	encodedGroup, err := json.Marshal([]string{group})
+	if err != nil {
+		return fmt.Errorf("encode saved result view grouping: %w", err)
+	}
+
 	_, err = repo.db.ExecContext(ctx,
 		"INSERT INTO saved_views(id, name, entity_type, filters, columns, sort, grouping, created_at, updated_at) "+
-			"VALUES (?, ?, 'businesses', ?, '[]', '[]', '[]', ?, ?) "+
-			"ON CONFLICT(id) DO UPDATE SET name = excluded.name, filters = excluded.filters, updated_at = excluded.updated_at",
-		view.ID, view.Name, string(search), createdAt.Unix(), now.Unix(),
+			"VALUES (?, ?, 'businesses', ?, ?, '[]', ?, ?, ?) "+
+			"ON CONFLICT(id) DO UPDATE SET name = excluded.name, filters = excluded.filters, "+
+			"columns = excluded.columns, grouping = excluded.grouping, updated_at = excluded.updated_at",
+		view.ID, view.Name, string(search), string(encodedColumns), string(encodedGroup),
+		createdAt.Unix(), now.Unix(),
 	)
 	if err != nil {
 		return fmt.Errorf("save result view: %w", err)
@@ -248,14 +265,26 @@ type savedResultViewScanner interface {
 
 func scanSavedResultView(scanner savedResultViewScanner) (web.SavedResultView, error) {
 	var view web.SavedResultView
-	var search string
+	var search, columns, grouping string
 	var createdAt, updatedAt int64
-	if err := scanner.Scan(&view.ID, &view.Name, &search, &createdAt, &updatedAt); err != nil {
+	if err := scanner.Scan(&view.ID, &view.Name, &search, &columns, &grouping, &createdAt, &updatedAt); err != nil {
 		return web.SavedResultView{}, err
 	}
 	if err := json.Unmarshal([]byte(search), &view.Search); err != nil {
 		return web.SavedResultView{}, fmt.Errorf("decode saved result view %s: %w", view.ID, err)
 	}
+	var storedColumns, storedGrouping []string
+	if err := json.Unmarshal([]byte(columns), &storedColumns); err != nil {
+		return web.SavedResultView{}, fmt.Errorf("decode saved result view columns %s: %w", view.ID, err)
+	}
+	if err := json.Unmarshal([]byte(grouping), &storedGrouping); err != nil {
+		return web.SavedResultView{}, fmt.Errorf("decode saved result view grouping %s: %w", view.ID, err)
+	}
+	group := ""
+	if len(storedGrouping) > 0 {
+		group = storedGrouping[0]
+	}
+	view.Columns, view.Group = web.NormalizeSavedViewLayout(storedColumns, group)
 	view.CreatedAt = time.Unix(createdAt, 0).UTC()
 	view.UpdatedAt = time.Unix(updatedAt, 0).UTC()
 	return view, nil

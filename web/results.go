@@ -122,6 +122,99 @@ type BusinessResult struct {
 	SourceCell           string    `json:"source_cell,omitempty"`
 	ScrapedAt            time.Time `json:"scraped_at"`
 	UpdatedAt            time.Time `json:"updated_at"`
+	// The fields below complete the specification's core column set. They are
+	// additive: every one is omitted from the JSON response when empty, so
+	// existing API consumers keep the shape they already parse.
+	Description      string         `json:"description,omitempty"`
+	Street           string         `json:"street,omitempty"`
+	PlusCode         string         `json:"plus_code,omitempty"`
+	InputID          string         `json:"input_id,omitempty"`
+	PhoneType        string         `json:"phone_type,omitempty"`
+	Emails           []string       `json:"emails,omitempty"`
+	EmailType        string         `json:"email_type,omitempty"`
+	EmailStatus      string         `json:"email_status,omitempty"`
+	Social           BusinessSocial `json:"social,omitzero"`
+	ReviewsPerRating string         `json:"reviews_per_rating,omitempty"`
+	UserReviews      string         `json:"user_reviews,omitempty"`
+	PopularTimes     string         `json:"popular_times,omitempty"`
+	Technologies     []string       `json:"technologies,omitempty"`
+	LastCheckedAt    *time.Time     `json:"last_checked_at,omitempty"`
+	FirstSeenAt      time.Time      `json:"first_seen_at,omitzero"`
+	LastSeenAt       time.Time      `json:"last_seen_at,omitzero"`
+}
+
+// BusinessSocial holds the canonical profile URL per platform recognised by
+// the local extractor. Empty platforms are omitted so a row that has no social
+// evidence adds nothing to the API response.
+type BusinessSocial struct {
+	Facebook  string `json:"facebook,omitempty"`
+	Instagram string `json:"instagram,omitempty"`
+	LinkedIn  string `json:"linkedin,omitempty"`
+	X         string `json:"x,omitempty"`
+	YouTube   string `json:"youtube,omitempty"`
+	TikTok    string `json:"tiktok,omitempty"`
+	WhatsApp  string `json:"whatsapp,omitempty"`
+}
+
+// SocialPlatforms lists the platform keys stored by the local extractor in the
+// order the Results table and exports present them.
+func SocialPlatforms() []string {
+	return []string{"facebook", "instagram", "linkedin", "x", "youtube", "tiktok", "whatsapp"}
+}
+
+// URL returns the stored profile URL for one platform key, or an empty string
+// when the platform is unknown or has no evidence.
+func (s BusinessSocial) URL(platform string) string {
+	switch platform {
+	case "facebook":
+		return s.Facebook
+	case "instagram":
+		return s.Instagram
+	case "linkedin":
+		return s.LinkedIn
+	case "x":
+		return s.X
+	case "youtube":
+		return s.YouTube
+	case "tiktok":
+		return s.TikTok
+	case "whatsapp":
+		return s.WhatsApp
+	default:
+		return ""
+	}
+}
+
+// Set stores one platform's canonical profile URL, ignoring platforms the
+// local extractor does not recognise.
+func (s *BusinessSocial) Set(platform, profileURL string) {
+	switch platform {
+	case "facebook":
+		s.Facebook = profileURL
+	case "instagram":
+		s.Instagram = profileURL
+	case "linkedin":
+		s.LinkedIn = profileURL
+	case "x":
+		s.X = profileURL
+	case "youtube":
+		s.YouTube = profileURL
+	case "tiktok":
+		s.TikTok = profileURL
+	case "whatsapp":
+		s.WhatsApp = profileURL
+	}
+}
+
+// Any reports whether at least one platform has a stored profile.
+func (s BusinessSocial) Any() bool {
+	for _, platform := range SocialPlatforms() {
+		if s.URL(platform) != "" {
+			return true
+		}
+	}
+
+	return false
 }
 
 // ResultPage contains one deterministic page plus the total match count.

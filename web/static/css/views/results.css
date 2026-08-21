@@ -292,6 +292,54 @@
 .cell-chips .badge { text-decoration: none; }
 .cell-chips a.badge:hover { text-decoration: underline; }
 
+/* ---------------------------------------------------------------------------
+   Detail drawer location card — the drawer frames Map Explorer rather than
+   shipping a second map, so it only needs a bounded, rounded viewport.
+   --------------------------------------------------------------------------- */
+.detail-map {
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-muted);
+}
+
+.detail-map iframe {
+    display: block;
+    width: 100%;
+    min-height: min(38vh, 22rem);
+    border: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   Inline cell editing — an editable cell swaps its rendered value for a small
+   value + reason pair. The editor is deliberately the same width as the cell
+   so the table never reflows while a correction is being typed.
+   --------------------------------------------------------------------------- */
+.results-workspace .results-table td[data-edit-field] { cursor: text; }
+
+.results-workspace .results-table td.is-editing {
+    padding-block: var(--space-1);
+    background: var(--surface-raised);
+    box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+.inline-edit {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-1);
+    min-width: 11rem;
+}
+
+.inline-edit .field { gap: 0; }
+.inline-edit-actions { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+
+.inline-edit-error {
+    margin: 0;
+    color: var(--danger);
+    font-size: var(--text-xs);
+    line-height: 1.35;
+}
+
 .results-workspace .results-table th.num .sort-button { justify-content: flex-end; }
 .results-workspace .results-table .table-actions { justify-content: flex-end; }
 .results-workspace .inline-review input { margin: 0; }

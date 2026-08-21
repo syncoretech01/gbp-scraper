@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -1232,6 +1233,19 @@ var schemaMigrations = []schemaMigration{
 			ON job_listing_keys(job_id, created_at)`,
 		},
 	},
+	{
+		// Reserved for the results/filters/dedup group.
+		version: 15,
+		name:    "results-core-columns",
+		statements: []string{
+			// The legacy CSV carries a user_reviews cell that the normalized
+			// schema had nowhere to keep, so the Results explorer could not
+			// offer the specification's "user reviews" reputation column.
+			// Additive and defaulted, so existing rows keep behaving exactly
+			// as they do today.
+			`ALTER TABLE businesses ADD COLUMN user_reviews TEXT NOT NULL DEFAULT '[]'`,
+		},
+	},
 }
 
 func migrateDatabase(db *sql.DB, path string) error {
@@ -1503,6 +1517,19 @@ func declaredMigrationsThrough(version int) []schemaMigration {
 	}
 
 	return declared
+}
+
+// init keeps schemaMigrations in ascending version order.
+//
+// Migration numbers are reserved per work stream, so parallel streams land
+// their blocks in whatever order they merge. Application order, the declared
+// list used for metadata validation, and the recorded history must all agree,
+// and every one of them walks this slice, so the slice itself is the single
+// place to enforce the invariant.
+func init() {
+	sort.SliceStable(schemaMigrations, func(i, j int) bool {
+		return schemaMigrations[i].version < schemaMigrations[j].version
+	})
 }
 
 func migrationChecksum(migration schemaMigration) string {

@@ -68,7 +68,24 @@
         group: "none",
         mode: "table"
     };
-    let layout = normalizeLayout(readStoredJSON(currentLayoutKey) || defaultLayout);
+    // A saved view may carry its own visible columns and grouping. When the
+    // URL supplies them they win over whatever this browser last stored, so
+    // opening a shared view shows the table the view was saved with.
+    function savedViewLayout() {
+        const columns = String(explorer.dataset.viewColumns || "").split(",").filter(Boolean);
+        const group = String(explorer.dataset.viewGroup || "").trim();
+        if (!columns.length && !group) return null;
+        const base = readStoredJSON(currentLayoutKey) || defaultLayout;
+        const seeded = Object.assign({}, base);
+        if (columns.length) {
+            seeded.order = columns.concat(knownColumnKeys.filter((key) => !columns.includes(key)));
+            seeded.visible = columns.slice();
+        }
+        if (group) seeded.group = group;
+        return seeded;
+    }
+
+    let layout = normalizeLayout(savedViewLayout() || readStoredJSON(currentLayoutKey) || defaultLayout);
     let activeLayoutName = "";
 
     resultRows().forEach((row, index) => { row.dataset.originalIndex = String(index); });
@@ -152,6 +169,25 @@
             group: value.group,
             mode: value.mode
         };
+    }
+
+    // syncSavedViewLayout keeps the save-as-view form carrying the layout the
+    // operator can actually see, so a saved view stores filters, sorting,
+    // visible columns, and grouping together.
+    function syncSavedViewLayout() {
+        const holder = explorer.querySelector("[data-save-view-columns]");
+        const groupInput = explorer.querySelector("[data-save-view-group]");
+        if (groupInput) groupInput.value = layout.group || "none";
+        if (!holder) return;
+        const visible = layout.order.filter((key) => layout.visible.includes(key));
+        holder.replaceChildren();
+        visible.forEach((key) => {
+            const field = document.createElement("input");
+            field.type = "hidden";
+            field.name = "columns";
+            field.value = key;
+            holder.appendChild(field);
+        });
     }
 
     function persistCurrentLayout() {
@@ -495,6 +531,7 @@
         renderColumnControls();
         window.requestAnimationFrame(applyFrozenColumns);
         if (persist) persistCurrentLayout();
+        syncSavedViewLayout();
         updateLayoutState();
         ensureFocusableCell();
     }
@@ -774,6 +811,16 @@
         const cell = event.target.closest && event.target.closest("td[data-column]");
         const row = cell && cell.closest("[data-result-row]");
         if (!cell || !row) return;
+        if (event.target.closest("[data-inline-edit]")) {
+            if (event.key === "Escape") { event.preventDefault(); cancelInlineEdit(); }
+            else if (event.key === "Enter") { event.preventDefault(); saveInlineEdit(); }
+            return;
+        }
+        if (event.key === "F2" && cell.dataset.editField) {
+            event.preventDefault();
+            beginInlineEdit(cell);
+            return;
+        }
         if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "c") {
             event.preventDefault();
             clipboardText(cell.dataset.copyValue || cell.textContent.trim(), "cell");
@@ -809,6 +856,203 @@
         if (target) {
             event.preventDefault();
             focusCell(target);
+        }
+    }
+
+    // Inline editing routes every correction through the audited manual-edit
+    // endpoint: a reason is mandatory, the server keeps the previous value as
+    // superseded provenance plus a change row, and the toolbar keeps the last
+    // edit undoable by posting the previous value back through the same route.
+    const editableFieldLimits = { name: 200, phone: 40, website: 2048, category: 100 };
+    const minimumEditReasonLength = 3;
+    const maximumEditReasonLength = 300;
+    const inlineEditTemplate = document.getElementById("inline-edit-template");
+    const inlineEditUndo = explorer.querySelector("[data-inline-edit-undo]");
+    let activeInlineEdit = null;
+    let lastInlineEdit = null;
+
+    function editableCell(candidate) {
+        return candidate && candidate.dataset && candidate.dataset.editField ? candidate : null;
+    }
+
+    function validateInlineEdit(field, value, reason) {
+        if (reason.length < minimumEditReasonLength || reason.length > maximumEditReasonLength) {
+            return "Give a reason between " + minimumEditReasonLength + " and " + maximumEditReasonLength + " characters.";
+        }
+        const limit = editableFieldLimits[field];
+        if (!limit) return "This field cannot be corrected here.";
+        if (value.length > limit) return "This value must be at most " + limit + " characters.";
+        if (field === "name" && !value) return "A business name is required.";
+        if (field === "website" && value) {
+            let parsed = null;
+            try { parsed = new URL(value); } catch (_) { parsed = null; }
+            if (!parsed || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) {
+                return "Enter an absolute http or https URL, or clear the field.";
+            }
+        }
+        return "";
+    }
+
+    function hostOf(value) {
+        try { return new URL(value).hostname.replace(/^www\./, ""); } catch (_) { return ""; }
+    }
+
+    // renderEditedCell writes the accepted value back into the cell that was
+    // edited, keeping the rendered structure (link, stacked subtitle) intact so
+    // an edited row still matches every other row on the page.
+    function renderEditedCell(cell, field, value) {
+        const row = cell.closest("[data-result-row]");
+        cell.dataset.editValue = value;
+        if (field === "name") {
+            const link = cell.querySelector("a");
+            if (link) { link.textContent = value; link.title = value; }
+            cell.dataset.copyValue = value;
+        } else if (field === "category") {
+            const target = cell.querySelector(".truncate");
+            if (target) { target.textContent = value || "—"; target.title = value; }
+            cell.dataset.copyValue = value;
+            if (row) row.dataset.groupCategory = value;
+        } else if (field === "website") {
+            const host = hostOf(value);
+            const stack = cell.querySelector(".cell-stack");
+            let target = stack ? stack.querySelector(".text-muted") : null;
+            if (stack && !target) {
+                target = document.createElement("span");
+                target.className = "truncate text-muted";
+                stack.appendChild(target);
+            }
+            if (target) target.textContent = host;
+            cell.dataset.copyValue = host;
+            if (row) { row.dataset.website = value; row.dataset.domain = host; }
+        } else if (field === "phone") {
+            const link = cell.querySelector("a");
+            if (link && value) { link.textContent = value; link.setAttribute("href", "tel:" + value); }
+            else {
+                const text = document.createElement("span");
+                text.textContent = value || "—";
+                cell.replaceChildren(text);
+            }
+            cell.dataset.copyValue = value;
+            if (row) row.dataset.phone = value;
+        }
+        if (layout.group === "category") groupRows();
+    }
+
+    function closeInlineEdit(restore) {
+        if (!activeInlineEdit) return null;
+        const state = activeInlineEdit;
+        activeInlineEdit = null;
+        state.cell.classList.remove("is-editing");
+        if (restore) state.cell.replaceChildren.apply(state.cell, state.saved);
+        return state;
+    }
+
+    function cancelInlineEdit() {
+        const state = closeInlineEdit(true);
+        if (state) focusCell(state.cell);
+    }
+
+    function beginInlineEdit(candidate) {
+        const cell = editableCell(candidate);
+        if (!cell || !inlineEditTemplate) return;
+        if (activeInlineEdit && activeInlineEdit.cell === cell) return;
+        cancelInlineEdit();
+        const editor = inlineEditTemplate.content.firstElementChild.cloneNode(true);
+        const valueInput = editor.querySelector("[data-inline-edit-value]");
+        const valueLabel = editor.querySelector("[data-inline-edit-value-label]");
+        const description = cell.dataset.editLabel || "New value";
+        if (valueLabel) valueLabel.textContent = description;
+        if (valueInput) {
+            valueInput.value = cell.dataset.editValue || "";
+            valueInput.setAttribute("aria-label", description);
+            valueInput.maxLength = editableFieldLimits[cell.dataset.editField] || 200;
+        }
+        activeInlineEdit = { cell: cell, editor: editor, saved: Array.from(cell.childNodes) };
+        cell.replaceChildren(editor);
+        cell.classList.add("is-editing");
+        if (valueInput) { valueInput.focus(); valueInput.select(); }
+    }
+
+    function inlineEditError(message) {
+        if (!activeInlineEdit) return;
+        const banner = activeInlineEdit.editor.querySelector("[data-inline-edit-error]");
+        if (!banner) return;
+        banner.textContent = message;
+        banner.hidden = !message;
+    }
+
+    async function postFieldEdit(businessId, field, value, reason) {
+        const csrf = explorer.querySelector('[name="csrf_token"]');
+        const response = await fetch("/api/v1/results/" + encodeURIComponent(businessId) + "/fields", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: {
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "X-CSRF-Token": csrf ? csrf.value : ""
+            },
+            body: JSON.stringify({ field: field, value: value, reason: reason })
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error((payload.error && payload.error.message) || payload.message || "Could not save this correction.");
+        }
+        return payload.data || {};
+    }
+
+    async function saveInlineEdit() {
+        if (!activeInlineEdit) return;
+        const cell = activeInlineEdit.cell;
+        const editor = activeInlineEdit.editor;
+        const row = cell.closest("[data-result-row]");
+        const businessId = row ? row.dataset.businessId : "";
+        const field = cell.dataset.editField;
+        const valueInput = editor.querySelector("[data-inline-edit-value]");
+        const reasonInput = editor.querySelector("[data-inline-edit-reason]");
+        const value = String(valueInput ? valueInput.value : "").trim();
+        const reason = String(reasonInput ? reasonInput.value : "").trim();
+        const problem = validateInlineEdit(field, value, reason);
+        if (problem) {
+            inlineEditError(problem);
+            if (problem.indexOf("reason") !== -1 && reasonInput) reasonInput.focus();
+            else if (valueInput) valueInput.focus();
+            return;
+        }
+        inlineEditError("");
+        const controls = Array.from(editor.querySelectorAll("input, button"));
+        controls.forEach((control) => { control.disabled = true; });
+        try {
+            const saved = await postFieldEdit(businessId, field, value, reason);
+            const previous = typeof saved.previous_value === "string" ? saved.previous_value : (cell.dataset.editValue || "");
+            closeInlineEdit(true);
+            renderEditedCell(cell, field, value);
+            lastInlineEdit = { businessId: businessId, field: field, previous: previous, reason: reason };
+            if (inlineEditUndo) { inlineEditUndo.hidden = false; inlineEditUndo.disabled = false; }
+            focusCell(cell);
+            announce("Saved the " + field + " correction. The previous value is kept in provenance.");
+        } catch (error) {
+            controls.forEach((control) => { control.disabled = false; });
+            inlineEditError(error.message || "Could not save this correction.");
+            announce(error.message || "Could not save this correction.", "error");
+        }
+    }
+
+    async function undoInlineEdit(trigger) {
+        if (!lastInlineEdit) return;
+        const edit = lastInlineEdit;
+        trigger.disabled = true;
+        try {
+            await postFieldEdit(edit.businessId, edit.field, edit.previous, "Undo of: " + edit.reason);
+            const row = resultRows().find((candidate) => candidate.dataset.businessId === edit.businessId);
+            const cell = row ? row.querySelector('[data-edit-field="' + edit.field + '"]') : null;
+            if (cell) renderEditedCell(cell, edit.field, edit.previous);
+            lastInlineEdit = null;
+            if (inlineEditUndo) inlineEditUndo.hidden = true;
+            announce("Restored the previous " + edit.field + " value. Both corrections stay in the record history.");
+        } catch (error) {
+            announce(error.message || "Could not undo this correction.", "error");
+        } finally {
+            trigger.disabled = false;
         }
     }
 
@@ -974,6 +1218,15 @@
                 body.replaceChildren(errorBlock(error.message || "Could not load this business.", trigger.getAttribute("href")));
                 announce(error.message || "Could not load this business.", "error");
             } finally { body.removeAttribute("aria-busy"); }
+        } else if (action === "save-inline-edit") {
+            event.preventDefault();
+            saveInlineEdit();
+        } else if (action === "cancel-inline-edit") {
+            event.preventDefault();
+            cancelInlineEdit();
+        } else if (action === "undo-inline-edit") {
+            event.preventDefault();
+            undoInlineEdit(trigger);
         } else if (action === "clear-selection") {
             event.preventDefault();
             clearSelection();
@@ -1031,6 +1284,12 @@
 
     if (table) {
         table.addEventListener("keydown", handleTableKeydown);
+        table.addEventListener("dblclick", (event) => {
+            const cell = event.target.closest && event.target.closest("td[data-edit-field]");
+            if (!cell || event.target.closest("a, button, input, textarea, select")) return;
+            event.preventDefault();
+            beginInlineEdit(cell);
+        });
         table.addEventListener("focusin", (event) => {
             const cell = event.target.closest && event.target.closest("td[data-column]");
             if (cell) table.querySelectorAll("tbody td[tabindex]").forEach((candidate) => { candidate.tabIndex = candidate === cell ? 0 : -1; });
