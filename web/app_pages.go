@@ -67,7 +67,11 @@ type dashboardPageData struct {
 	CollectionByDate []dashboardChartPoint
 	CollectionMax    int
 	Availability     []dashboardAvailability
-	Cities           []dashboardChartPoint
+	// WebsiteStatus splits the discovered websites into reachable, unreachable,
+	// and never-checked. It is deliberately separate from Availability: one
+	// answers "does the business have a website", the other "did ours load".
+	WebsiteStatus []dashboardAvailability
+	Cities        []dashboardChartPoint
 	Categories       []dashboardChartPoint
 	Statuses         []dashboardChartPoint
 	RatingBands      []dashboardChartPoint
@@ -196,9 +200,15 @@ type dashboardChartPoint struct {
 	Percent int
 }
 
+// dashboardAvailability is one contact-field availability row. Percent is the
+// share of unique businesses carrying the field and Count is the number of
+// businesses behind it, so the meter always states the evidence as well as
+// the ratio.
 type dashboardAvailability struct {
 	Label   string
 	Percent int
+	Count   int
+	Total   int
 }
 
 type dashboardJob struct {
@@ -229,6 +239,10 @@ type dashboardJob struct {
 	CanResume    bool
 	CanCancel    bool
 	CanRetry     bool
+	// CanDuplicate offers "run this configuration again" from the command
+	// centre. It follows the lifecycle repository rather than the job state,
+	// because copying a configuration is safe at any point in a run.
+	CanDuplicate bool
 	HasResults   bool
 }
 
@@ -699,11 +713,35 @@ func (s *Server) buildDashboard(r *http.Request) (dashboardPageData, appActivity
 		page.Metrics.SocialCoverage = percentage(page.Metrics.SocialProfiles, page.Metrics.UniqueBusinesses)
 	}
 
+	total := page.Metrics.UniqueBusinesses
 	page.Availability = []dashboardAvailability{
-		{Label: "Website", Percent: page.Metrics.WebsiteCoverage},
-		{Label: "Email", Percent: percentage(page.Metrics.Emails, page.Metrics.UniqueBusinesses)},
-		{Label: "Phone", Percent: percentage(page.Metrics.Phones, page.Metrics.UniqueBusinesses)},
-		{Label: "Social profile", Percent: page.Metrics.SocialCoverage},
+		{Label: "Website", Percent: page.Metrics.WebsiteCoverage, Count: page.Metrics.Websites, Total: total},
+		{Label: "Email", Percent: page.Metrics.EmailCoverage, Count: page.Metrics.Emails, Total: total},
+		{Label: "Phone", Percent: page.Metrics.PhoneCoverage, Count: page.Metrics.Phones, Total: total},
+		{Label: "Social profile", Percent: page.Metrics.SocialCoverage, Count: page.Metrics.SocialProfiles, Total: total},
+	}
+	// Website reachability is a different question from website discovery, so
+	// the active/inactive split gets its own pair of rows rather than being
+	// folded into the discovery meter above.
+	page.WebsiteStatus = []dashboardAvailability{
+		{
+			Label:   "Website reachable",
+			Percent: percentage(page.Metrics.ActiveWebsites, page.Metrics.Websites),
+			Count:   page.Metrics.ActiveWebsites,
+			Total:   page.Metrics.Websites,
+		},
+		{
+			Label:   "Website unreachable",
+			Percent: percentage(page.Metrics.InactiveWebsites, page.Metrics.Websites),
+			Count:   page.Metrics.InactiveWebsites,
+			Total:   page.Metrics.Websites,
+		},
+		{
+			Label:   "Website never checked",
+			Percent: percentage(page.Metrics.UncheckedWebsites, page.Metrics.Websites),
+			Count:   page.Metrics.UncheckedWebsites,
+			Total:   page.Metrics.Websites,
+		},
 	}
 
 	labels := make([]string, 0, len(byDate))
@@ -828,7 +866,8 @@ func (s *Server) dashboardJobRow(
 		CanCancel:      lifecycleControlAllowed(runtime, jobruntime.ControlCancel),
 		CanRetry: lifecycleControlAllowed(runtime, jobruntime.ControlRestart) &&
 			(state == "partial" || state == "failed" || state == "cancelled"),
-		HasResults: stats.Rows > 0,
+		CanDuplicate: s.lifecycleAvailable(),
+		HasResults:   stats.Rows > 0,
 	}
 }
 

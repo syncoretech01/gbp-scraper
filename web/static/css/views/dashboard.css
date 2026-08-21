@@ -71,6 +71,12 @@
    bars across the full width of the card. */
 .dashboard .dash-availability { display: grid; gap: var(--space-4) var(--space-6); grid-template-columns: repeat(2, minmax(0, 1fr)); padding: var(--space-4) var(--space-5) !important; }
 .dashboard .dash-availability .metric-label { margin: 0 0 var(--space-1); }
+/* The heading of the reachability group spans both meter columns so the two
+   groups never read as one eight-row list. */
+.dashboard .dash-availability > .t-overline { grid-column: 1 / -1; margin: 0; }
+/* A percentage without its count is a ratio with no denominator, so the
+   evidence sits directly under the bar it explains. */
+.dashboard .dash-availability-count { margin: var(--space-1) 0 0; color: var(--text-muted); }
 .dashboard .dash-availability-footer { justify-content: space-between; }
 .dashboard .dash-availability-footer p { margin: 0; }
 

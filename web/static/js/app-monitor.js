@@ -152,9 +152,9 @@
          * every such value is dropped to the design system's inline empty
          * treatment instead — the same rule the benchmark report follows. */
         const EMPTY_VALUES = [
-            "not reported by worker", "not reported", "not recorded", "not measured",
-            "not available", "not started", "no data", "none", "unknown", "n/a",
-            "-", "–", "—", ""
+            "not reported by worker", "not reported", "not reported yet", "not recorded",
+            "not measured", "not available", "not started", "not created yet", "no data",
+            "none", "unknown", "n/a", "-", "–", "—", ""
         ];
 
         function markEmpty(node) {
@@ -190,8 +190,9 @@
             line.hidden = !known;
         }
 
-        monitor.querySelectorAll("[data-progress-field], .ops-fact dd, .ops-current strong, .stat-value, .ops-readout b")
-            .forEach(markEmpty);
+        monitor.querySelectorAll(
+            "[data-progress-field], .ops-fact dd, .ops-stage-metric dd, .ops-current strong, .stat-value, .ops-readout b"
+        ).forEach(markEmpty);
         syncCurrentLine();
 
         const TERMINAL_STATES = ["completed", "failed", "cancelled", "canceled", "ok", "archived"];
@@ -313,16 +314,92 @@
             }
         }
 
+        /* ----------------------------------------------------------------
+         * Log viewer.
+         *
+         * The server classifies every event into one of the ten operator log
+         * levels and resolves its target link, so nothing here re-implements
+         * that mapping: a streamed line and a server-rendered line are built
+         * from the same two fields and read identically.
+         * -------------------------------------------------------------- */
+        const logViewer = monitor.querySelector("[data-log-viewer]");
+        const logStatus = monitor.querySelector("[data-log-status]");
+        const autoscrollBox = monitor.querySelector("[data-log-autoscroll]");
+
+        function followingTail() {
+            return !autoscrollBox || autoscrollBox.checked;
+        }
+
+        function scrollLogToTail() {
+            if (logViewer && followingTail()) logViewer.scrollTop = logViewer.scrollHeight;
+        }
+
         function appendLog(entry) {
-            const viewer = monitor.querySelector("[data-log-viewer]");
-            if (!viewer || !entry) return;
-            const line = element("div", "log-line log-" + (entry.severity || "information"));
-            [entry.occurred_at || "", entry.severity || "info", entry.message || ""].forEach((value) => {
-                line.appendChild(element("span", null, value));
+            if (!logViewer || !entry) return;
+            const level = entry.level || entry.severity || "information";
+            const line = element("div", "log-line log-" + level);
+            line.dataset.logLine = "";
+            line.dataset.logLevel = level;
+
+            const time = element("time", null, entry.occurred_at || "");
+            if (entry.occurred_at) time.setAttribute("datetime", entry.occurred_at);
+            line.appendChild(time);
+            line.appendChild(element("span", "log-level", level));
+
+            const body = element("span", null, entry.message || "");
+            if (entry.target_url) {
+                body.appendChild(document.createTextNode(" "));
+                const link = element("a", "log-target", "Open affected item");
+                link.href = entry.target_url;
+                link.dataset.endpoint = entry.target_url;
+                body.appendChild(link);
+            }
+            line.appendChild(body);
+
+            // The empty-state line is a placeholder, not a record: the first
+            // streamed entry replaces it rather than stacking under it.
+            const placeholder = logViewer.querySelector(".log-line:not([data-log-line])");
+            if (placeholder) placeholder.remove();
+
+            logViewer.appendChild(line);
+            scrollLogToTail();
+        }
+
+        if (autoscrollBox) {
+            autoscrollBox.addEventListener("change", scrollLogToTail);
+            scrollLogToTail();
+        }
+
+        const copyButton = monitor.querySelector("[data-log-copy]");
+        if (copyButton && logViewer) {
+            copyButton.addEventListener("click", () => {
+                const lines = Array.prototype.map.call(
+                    logViewer.querySelectorAll("[data-log-line]"),
+                    (line) => Array.prototype.map.call(
+                        line.querySelectorAll("time, span"),
+                        (cell) => cell.textContent.trim()
+                    ).join("\t")
+                );
+                const text = lines.join("\n");
+                if (!text) {
+                    if (logStatus) logStatus.textContent = "There is nothing to copy for the current filter.";
+
+                    return;
+                }
+                // Clipboard access can be refused (an insecure origin, or a
+                // denied permission). Saying so is better than a button that
+                // silently does nothing.
+                const report = (message) => { if (logStatus) logStatus.textContent = message; };
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(text).then(
+                        () => report(lines.length + " log line(s) copied to the clipboard."),
+                        () => report("The browser refused clipboard access; use Download logs instead.")
+                    );
+
+                    return;
+                }
+                report("This browser does not allow clipboard writes; use Download logs instead.");
             });
-            viewer.appendChild(line);
-            const autoscroll = monitor.querySelector('[name="log_autoscroll"]');
-            if (!autoscroll || autoscroll.checked) viewer.scrollTop = viewer.scrollHeight;
         }
 
         // Stream frames arrive in two shapes: a whole job snapshot, and a
@@ -339,11 +416,23 @@
             return data;
         }
 
+        // The stream carries two shapes on purpose. "snapshot" is the whole
+        // job; every other frame is one durable lifecycle event, named after
+        // the worker's own event type ("proxy-failure", "task-pool", …), so
+        // the frame name can never be used to recognise a log line. An event
+        // is recognised by what it carries instead: a message and a timestamp.
+        function isLogFrame(name, data) {
+            if (name === "snapshot") return false;
+
+            return Boolean(data && typeof data === "object" &&
+                data.message != null && data.occurred_at != null && data.state == null);
+        }
+
         function consume(event) {
             let payload;
             try { payload = JSON.parse(event.data); } catch (_) { return; }
             const data = payload.data || payload;
-            if (event.type === "log" || payload.type === "log") appendLog(data);
+            if (isLogFrame(event.type, data)) appendLog(data);
             else render(snapshotOf(data));
         }
 

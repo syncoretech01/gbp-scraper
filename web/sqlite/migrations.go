@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	currentSchemaVersion           = 13
+	currentSchemaVersion           = 14
 	migrationChecksumSchemaVersion = 4
 )
 
@@ -1178,6 +1178,23 @@ var schemaMigrations = []schemaMigration{
 			)`,
 			`CREATE INDEX IF NOT EXISTS idx_job_benchmark_snapshots_time
 			ON job_benchmark_snapshots(captured_at DESC, job_id)`,
+		},
+	},
+	{
+		// Dashboard/Jobs/Monitor group. Job organisation already stored an
+		// archive flag, a folder, and notes on job_runtime, and job_tags
+		// already existed; the only missing label was an owner. One additive
+		// column completes the set, so tags, folders, notes, and ownership can
+		// all be applied from the job pages.
+		version: 14,
+		name:    "job-ownership-labels",
+		statements: []string{
+			`ALTER TABLE job_runtime ADD COLUMN owner_label TEXT NOT NULL DEFAULT ''`,
+			`CREATE INDEX IF NOT EXISTS idx_job_runtime_folder
+			ON job_runtime(folder, job_id) WHERE folder <> ''`,
+			`CREATE INDEX IF NOT EXISTS idx_job_runtime_owner
+			ON job_runtime(owner_label, job_id) WHERE owner_label <> ''`,
+			`CREATE INDEX IF NOT EXISTS idx_job_tags_tag ON job_tags(tag_id, job_id)`,
 		},
 	},
 }

@@ -44,6 +44,53 @@ type jobsPageData struct {
 	Sparse          bool
 	CanViewArchived bool
 	ShowArchived    bool
+	// ActiveFolder is the folder filter in force; CanApplyLabels gates the
+	// folder picker and the tag column so neither renders without storage
+	// behind it.
+	ActiveFolder   string
+	CanApplyLabels bool
+}
+
+// jobFolderOptions turns the folders in use into a sorted picker. A folder
+// that no job carries is never offered, so the control can never filter the
+// table down to nothing.
+func jobFolderOptions(folders map[string]struct{}) []appSelectOption {
+	names := make([]string, 0, len(folders))
+	for name := range folders {
+		names = append(names, name)
+	}
+	sort.SliceStable(names, func(left, right int) bool {
+		return strings.ToLower(names[left]) < strings.ToLower(names[right])
+	})
+
+	options := make([]appSelectOption, 0, len(names))
+	for _, name := range names {
+		options = append(options, appSelectOption{Value: name, Label: name})
+	}
+
+	return options
+}
+
+// jobLabelsMatchQuery lets the jobs search find a job by a tag, a folder, or an
+// owner, which is what the search field has always promised.
+func jobLabelsMatchQuery(labels JobLabels, query string) bool {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return false
+	}
+
+	if strings.Contains(strings.ToLower(labels.Folder), query) ||
+		strings.Contains(strings.ToLower(labels.Owner), query) {
+		return true
+	}
+
+	for _, tag := range labels.Tags {
+		if strings.Contains(strings.ToLower(tag), query) {
+			return true
+		}
+	}
+
+	return false
 }
 
 type appSelectOption struct {
@@ -79,6 +126,8 @@ type jobsPageJob struct {
 	QuerySummary    string
 	LocationSummary string
 	Tags            []string
+	Folder          string
+	Owner           string
 	HasResults      bool
 	CanStart        bool
 	CanPause        bool
@@ -96,22 +145,57 @@ type jobsPageJob struct {
 }
 
 type jobMonitorPageData struct {
-	Job             jobMonitorJob
-	QueueNotice     string
-	Pipeline        []jobPipelineStep
-	Checkpoint      jobCheckpointView
-	ProxyPools      []jobProxyPoolView
-	Logs            []jobLogView
-	LogQuery        string
+	Job         jobMonitorJob
+	QueueNotice string
+	Pipeline    []jobPipelineStep
+	Checkpoint  jobCheckpointView
+	ProxyPools  []jobProxyPoolView
+	Logs        []jobLogView
+	LogQuery    string
+	// LogLevels is generated from web.JobLogLevels, so the severity filter can
+	// never offer a class that classifyJobLogLevel does not produce.
+	LogLevels   []appSelectOption
+	LogSeverity string
+	// LogAutoscroll keeps the "follow live" preference across a filter submit,
+	// which is a form round trip and would otherwise reset it every time.
+	LogAutoscroll   bool
 	CanDownloadLogs bool
 	HasResources    bool
+	// Labels and Notes are the operator-applied organisation for this job.
+	// CanApplyLabels gates the whole editor: without label storage there is no
+	// form, rather than a form that cannot save.
+	Labels         JobLabels
+	TagsValue      string
+	Notes          string
+	CanApplyLabels bool
+	CanEditNotes   bool
+}
+
+// jobLogLevelOptions renders the severity filter, marking the active level.
+func jobLogLevelOptions() []appSelectOption {
+	options := make([]appSelectOption, 0, len(JobLogLevels))
+	for _, level := range JobLogLevels {
+		label := strings.ReplaceAll(level, "-", " ")
+		options = append(options, appSelectOption{
+			Value: level,
+			Label: strings.ToUpper(label[:1]) + label[1:],
+		})
+	}
+
+	return options
 }
 
 type jobMonitorJob struct {
-	ID                string
-	Name              string
-	CreatedAt         string
+	ID        string
+	Name      string
+	CreatedAt string
+	// ScraperVersion is the build identity recorded when a worker started this
+	// job, or "not recorded" for a run that predates version stamping. It is
+	// never back-filled from the binary running today, because that build did
+	// not necessarily produce the committed rows. LocalBuild states the
+	// version of the binary serving the page, so both facts stay separable.
 	ScraperVersion    string
+	LocalBuild        string
 	State             string
 	Stage             string
 	Percent           int
@@ -145,10 +229,24 @@ type jobMonitorJob struct {
 	WorkerConcurrency string
 	DatabaseWrites    string
 	// ProxyPoolLabel names the pool this job routes through together with its
-	// stored health counts. Per-job proxy success and block rates are not
-	// recorded anywhere, so the monitor states pool health instead of
-	// printing a rate the workspace cannot substantiate.
-	ProxyPoolLabel       string
+	// stored health counts, and BlockRate is this job's own refusal rate,
+	// measured from its durable proxy-failure, rate-limit, and captcha events
+	// against the tasks that finished.
+	ProxyPoolLabel string
+	BlockRate      string
+	// Queries and Cells describe the plan this run executed: how many distinct
+	// searches were generated and how many grid cells they covered. Cells is a
+	// string because "no grid cells recorded" is a real answer for a radius
+	// search, and a zero there would read as a failure.
+	Queries        int64
+	Cells          string
+	SocialProfiles int64
+	// Retries, Warnings, and Errors are run-wide totals for the job-detail
+	// readout, taken from whichever of the runtime row, the task plan, and the
+	// event log has the most evidence.
+	Retries              int64
+	Warnings             int64
+	Errors               int64
 	QuerySummary         string
 	LocationSummary      string
 	Depth                int
@@ -177,6 +275,11 @@ type jobPipelineStep struct {
 	Label  string
 	Detail string
 	State  string
+	// Metrics are the named per-stage measurements the specification lists for
+	// this stage. They are built in web/job_pipeline_view.go from durable
+	// evidence only, so a stage that has not run says so instead of showing a
+	// zero that reads as a result.
+	Metrics []jobPipelineMetric
 }
 
 type jobCheckpointView struct {
@@ -354,6 +457,23 @@ func (s *Server) buildJobsPage(r *http.Request) (jobsPageData, appActivity, erro
 	activity := appActivity{}
 	states := parseStateFilter(page.ActiveState)
 
+	// Labels are read once for the whole page rather than per row, and a
+	// repository without label support simply renders no tags and no folder
+	// filter instead of an empty control.
+	labels := map[string]JobLabels{}
+	page.CanApplyLabels = s.svc.SupportsJobLabels()
+	if page.CanApplyLabels {
+		loaded, labelErr := s.svc.AllJobLabels(r.Context())
+		if labelErr != nil && !errors.Is(labelErr, ErrJobLabelsUnsupported) {
+			return jobsPageData{}, appActivity{}, labelErr
+		}
+		if loaded != nil {
+			labels = loaded
+		}
+	}
+	page.ActiveFolder = strings.TrimSpace(r.URL.Query().Get("folder"))
+	folders := map[string]struct{}{}
+
 	// Archived jobs stay out of the default queue view but remain one query
 	// parameter away, so nothing is hidden permanently.
 	archived := map[string]struct{}{}
@@ -392,13 +512,24 @@ func (s *Server) buildJobsPage(r *http.Request) (jobsPageData, appActivity, erro
 			page.Counts.Attention++
 		}
 
+		// Folder options are collected from every job, not only the visible
+		// ones, so choosing a folder never empties the picker that produced it.
+		jobLabels := labels[job.ID]
+		if jobLabels.Folder != "" {
+			folders[jobLabels.Folder] = struct{}{}
+		}
+
 		if len(states) > 0 {
 			if _, included := states[state]; !included {
 				continue
 			}
 		}
 
-		if !jobMatchesQuery(job, page.Query) {
+		if page.ActiveFolder != "" && jobLabels.Folder != page.ActiveFolder {
+			continue
+		}
+
+		if !jobMatchesQuery(job, page.Query) && !jobLabelsMatchQuery(jobLabels, page.Query) {
 			continue
 		}
 
@@ -436,6 +567,9 @@ func (s *Server) buildJobsPage(r *http.Request) (jobsPageData, appActivity, erro
 			CanRetry: lifecycleAvailable &&
 				(runtime.State == jobruntime.StatePartial || runtime.State == jobruntime.StateFailed) &&
 				canApplyControl(runtime, jobruntime.ControlRestart),
+			Tags:      jobLabels.Tags,
+			Folder:    jobLabels.Folder,
+			Owner:     jobLabels.Owner,
 			CanRename: organisationAvailable,
 			// Archiving is only offered once a job has stopped, so an operator
 			// cannot hide work that is still running.
@@ -458,9 +592,9 @@ func (s *Server) buildJobsPage(r *http.Request) (jobsPageData, appActivity, erro
 	}
 
 	sortJobRows(rows, page.Sort)
+	page.Folders = jobFolderOptions(folders)
 	start, end, previousURL, nextURL := paginationWindow(r, len(rows))
-	page.Filtered = page.Query != "" || page.ActiveState != "" ||
-		strings.TrimSpace(r.URL.Query().Get("folder")) != ""
+	page.Filtered = page.Query != "" || page.ActiveState != "" || page.ActiveFolder != ""
 	// Three or fewer jobs is a workspace that is still being set up, not a
 	// queue an operator is managing.
 	page.Sparse = !page.Filtered && len(rows) > 0 && len(rows) <= 3
@@ -557,6 +691,7 @@ func (s *Server) buildJobMonitorPage(r *http.Request, id string) (jobMonitorPage
 			Name:              job.Name,
 			CreatedAt:         formatDate(job.Date),
 			ScraperVersion:    "not recorded",
+			LocalBuild:        ScraperVersion(),
 			State:             string(runtime.State),
 			Stage:             humanStage(runtime.Stage),
 			Percent:           roundedPercent(runtime.Progress, runtime.State),
@@ -605,7 +740,6 @@ func (s *Server) buildJobMonitorPage(r *http.Request, id string) (jobMonitorPage
 				(runtime.State == jobruntime.StatePartial || runtime.State == jobruntime.StateFailed) &&
 				canApplyControl(runtime, jobruntime.ControlRestart),
 		},
-		Pipeline:        buildPipeline(runtime),
 		CanDownloadLogs: lifecycleAvailable,
 		Checkpoint: jobCheckpointView{
 			Available:      false,
@@ -614,18 +748,60 @@ func (s *Server) buildJobMonitorPage(r *http.Request, id string) (jobMonitorPage
 			RemainingTasks: remaining,
 			Version:        "not available",
 		},
-		LogQuery: strings.TrimSpace(r.URL.Query().Get("log_q")),
+		LogQuery:    strings.TrimSpace(r.URL.Query().Get("log_q")),
+		LogLevels:   jobLogLevelOptions(),
+		LogSeverity: strings.ToLower(strings.TrimSpace(r.URL.Query().Get("severity"))),
+		// Following the tail is the default; only an explicit unchecked box in
+		// a submitted filter form turns it off.
+		LogAutoscroll: !r.URL.Query().Has("log_q") || r.URL.Query().Get("log_autoscroll") != "",
 	}
 
 	if lifecycleAvailable {
-		logs, logErr := s.monitorLogs(r.Context(), job.ID, page.LogQuery, r.URL.Query().Get("severity"))
+		logs, logErr := s.monitorLogs(r.Context(), job.ID, page.LogQuery, page.LogSeverity)
 		if logErr != nil && !errors.Is(logErr, ErrLifecycleNotFound) {
 			return jobMonitorPageData{}, logErr
 		}
 		page.Logs = logs
 	}
 
-	if execution, executionErr := s.svc.GetJobExecution(r.Context(), job.ID); executionErr == nil {
+	page.CanApplyLabels = s.svc.SupportsJobLabels()
+	if page.CanApplyLabels {
+		labels, labelErr := s.svc.JobLabels(r.Context(), job.ID)
+		if labelErr != nil && !errors.Is(labelErr, ErrJobLabelsUnsupported) &&
+			!errors.Is(labelErr, ErrLifecycleNotFound) {
+			return jobMonitorPageData{}, labelErr
+		}
+		page.Labels = labels
+		page.TagsValue = strings.Join(labels.Tags, ", ")
+		page.Job.Owner = labels.Owner
+	}
+	if page.Job.Owner == "" {
+		page.Job.Owner = "not recorded"
+	}
+
+	page.CanEditNotes = s.jobOrganisationAvailable()
+	if page.CanEditNotes {
+		organisation, organisationErr := s.svc.GetJobOrganisation(r.Context(), job.ID)
+		if organisationErr != nil && !errors.Is(organisationErr, ErrJobOrganisationUnsupported) &&
+			!errors.Is(organisationErr, ErrLifecycleNotFound) {
+			return jobMonitorPageData{}, organisationErr
+		}
+		page.Notes = organisation.Notes
+	}
+
+	// A recorded build identity is evidence about this run; an unsupported
+	// repository or an unstamped legacy job simply keeps "not recorded".
+	if recorded, versionErr := s.svc.JobScraperVersion(r.Context(), job.ID); versionErr == nil && recorded != "" {
+		page.Job.ScraperVersion = recorded
+	} else if versionErr != nil &&
+		!errors.Is(versionErr, ErrScraperVersionUnsupported) &&
+		!errors.Is(versionErr, ErrLifecycleNotFound) {
+		return jobMonitorPageData{}, versionErr
+	}
+
+	var execution JobExecutionSnapshot
+	if snapshot, executionErr := s.svc.GetJobExecution(r.Context(), job.ID); executionErr == nil {
+		execution = snapshot
 		page.Job.TasksTotal = execution.Tasks.Total
 		page.Job.TasksComplete = execution.Tasks.Completed
 		page.Job.TasksFailed = execution.Tasks.Failed
@@ -648,7 +824,24 @@ func (s *Server) buildJobMonitorPage(r *http.Request, id string) (jobMonitorPage
 		page.Job.HasRuntimeControls = page.Job.CanAddRuntime || page.Job.CanChangeConcurrency ||
 			page.Job.CanChangeProxyPool || page.Job.CanRetryCurrent
 
-		if page.Job.CanChangeProxyPool || job.Data.ProxyPoolID != "" {
+		// A live control can reroute a running job, so the effective pool is
+		// the override when one is pending and the configured pool otherwise.
+		// Printing the configured pool while the worker is using another one
+		// would be a diagnostic that lies.
+		effectivePool := job.Data.ProxyPoolID
+		if liveControlsAvailable {
+			if controls, controlErr := s.svc.JobLiveControls(r.Context(), job.ID); controlErr == nil &&
+				controls.ProxyPoolOverride != "" {
+				effectivePool = controls.ProxyPoolOverride
+				page.Job.ActiveProxy = "pending override at the next task boundary"
+				if controls.ProxyPoolOverride == DirectConnectionPool {
+					effectivePool = ""
+					page.Job.ActiveProxy = "direct connection (override pending)"
+				}
+			}
+		}
+
+		if page.Job.CanChangeProxyPool || effectivePool != "" {
 			if pools, poolsErr := s.svc.ListProxyPools(r.Context()); poolsErr == nil {
 				for _, pool := range pools {
 					if page.Job.CanChangeProxyPool {
@@ -656,10 +849,17 @@ func (s *Server) buildJobMonitorPage(r *http.Request, id string) (jobMonitorPage
 							ID: pool.ID, Name: pool.Name, Healthy: int(pool.HealthyCount),
 						})
 					}
-					if pool.ID == job.Data.ProxyPoolID {
+					if pool.ID == effectivePool {
 						page.Job.ProxyPoolLabel = fmt.Sprintf(
 							"%s — %d of %d proxies healthy",
 							pool.Name, pool.HealthyCount, pool.TotalCount,
+						)
+						// The worker binds a specific proxy per task and never
+						// publishes which one, so the honest answer is the pool
+						// the next task will draw from.
+						page.Job.ActiveProxy = fmt.Sprintf(
+							"%s pool, %d healthy proxy(ies) available",
+							pool.Name, pool.HealthyCount,
 						)
 					}
 				}
@@ -713,7 +913,62 @@ func (s *Server) buildJobMonitorPage(r *http.Request, id string) (jobMonitorPage
 		return jobMonitorPageData{}, executionErr
 	}
 
+	// Per-stage evidence is optional capability: a repository without it keeps
+	// the pipeline, which then reports "not reported yet" for the metrics that
+	// need durable joins rather than inventing them.
+	var facts JobPipelineFacts
+	hasFacts := false
+	if loaded, factsErr := s.svc.JobPipelineFacts(r.Context(), job.ID); factsErr == nil {
+		facts, hasFacts = loaded, true
+	} else if !errors.Is(factsErr, ErrJobPipelineFactsUnsupported) {
+		return jobMonitorPageData{}, factsErr
+	}
+
+	page.Pipeline = buildPipeline(jobPipelineInput{
+		Job:        job,
+		Runtime:    runtime,
+		Stats:      stats,
+		Execution:  execution,
+		Facts:      facts,
+		HasFacts:   hasFacts,
+		RawRecords: rawRecords,
+	})
+	applyJobDetailCounters(&page, runtime, execution, facts, hasFacts)
+
 	return page, nil
+}
+
+// applyJobDetailCounters fills the job-detail readouts the specification names
+// alongside the pipeline: planned cells, retries, warnings, and errors. Each
+// one prefers the durable evidence over the live worker frame, because a
+// worker that has stopped no longer republishes its counters.
+func applyJobDetailCounters(
+	page *jobMonitorPageData,
+	runtime JobRuntime,
+	execution JobExecutionSnapshot,
+	facts JobPipelineFacts,
+	hasFacts bool,
+) {
+	page.Job.Retries = max(execution.Tasks.Retries, execution.Progress.Retries)
+	page.Job.Warnings = runtime.Warnings
+	page.Job.Errors = runtime.Errors
+	page.Job.Cells = notReported
+
+	if !hasFacts {
+		return
+	}
+
+	page.Job.Retries = max(page.Job.Retries, facts.Retries)
+	page.Job.Warnings = max(page.Job.Warnings, facts.Warnings)
+	page.Job.Errors = max(page.Job.Errors, facts.Errors)
+	page.Job.Queries = facts.QueriesPlanned
+	page.Job.SocialProfiles = facts.WithSocial
+	page.Job.BlockRate = fmt.Sprintf("%.1f%% (%d blocks)", facts.BlockRatePercent(), facts.BlockEvents())
+	if facts.CellsPlanned > 0 {
+		page.Job.Cells = strconv.FormatInt(facts.CellsPlanned, 10)
+	} else {
+		page.Job.Cells = "no grid cells recorded"
+	}
 }
 
 func (s *Server) jobLogsDownload(w http.ResponseWriter, r *http.Request) {
@@ -1218,54 +1473,6 @@ func safeJobConfigJSON(job Job) (string, error) {
 	return string(encoded), nil
 }
 
-func buildPipeline(runtime JobRuntime) []jobPipelineStep {
-	stages := []struct {
-		stage jobruntime.Stage
-		label string
-	}{
-		{jobruntime.StagePreparingQueries, "Preparing queries"},
-		{jobruntime.StageGeneratingGrid, "Generating grid"},
-		{jobruntime.StageSearchingMaps, "Searching Maps"},
-		{jobruntime.StageExtractingDetails, "Extracting details"},
-		{jobruntime.StageCrawlingWebsites, "Crawling websites"},
-		{jobruntime.StageExtractingContacts, "Extracting contacts"},
-		{jobruntime.StageDeduplicating, "Deduplicating"},
-		{jobruntime.StageSavingExporting, "Saving/exporting"},
-	}
-
-	active := 0
-	for index, stage := range stages {
-		if stage.stage == runtime.Stage {
-			active = index
-			break
-		}
-	}
-
-	steps := make([]jobPipelineStep, 0, len(stages))
-	for index, stage := range stages {
-		state := "pending"
-		detail := "Waiting"
-		switch {
-		case runtime.State == jobruntime.StateCompleted:
-			state, detail = "complete", "Completed"
-		case index < active:
-			state, detail = "complete", "Completed"
-		case index == active && runtime.State == jobruntime.StatePaused:
-			state, detail = "paused", "Paused"
-		case index == active && runtime.State == jobruntime.StateFailed:
-			state, detail = "failed", "Stopped with an error"
-		case index == active && runtime.State.Active():
-			state, detail = "active", currentTaskLabel(runtime)
-		case index == active && runtime.State == jobruntime.StatePartial:
-			state, detail = "partial", "Stopped with partial results"
-		}
-
-		steps = append(steps, jobPipelineStep{Order: index, Label: stage.label, Detail: detail, State: state})
-	}
-
-	return steps
-}
-
 func (s *Server) monitorLogs(
 	ctx context.Context,
 	jobID string,
@@ -1281,21 +1488,24 @@ func (s *Server) monitorLogs(
 	severity = strings.ToLower(strings.TrimSpace(severity))
 	logs := make([]jobLogView, 0, len(events))
 	for _, event := range events {
-		if query != "" && !strings.Contains(strings.ToLower(event.Message+" "+event.Type), query) {
+		// The search covers the redacted context too, so an operator can find
+		// every line about one query, cell, or task key.
+		haystack := strings.ToLower(event.Message + " " + event.Type + " " + event.Context)
+		if query != "" && !strings.Contains(haystack, query) {
 			continue
 		}
-		level := strings.TrimSpace(event.Severity)
-		if level == "" || level == "info" {
-			level = "information"
-		}
+
+		level := classifyJobLogLevel(event)
 		if severity != "" && !strings.EqualFold(level, severity) {
 			continue
 		}
+
 		logs = append(logs, jobLogView{
 			OccurredAtISO: event.OccurredAt.UTC().Format(time.RFC3339),
 			OccurredAt:    formatDate(event.OccurredAt),
 			Severity:      level,
 			Message:       event.Message,
+			TargetURL:     jobLogTarget(jobID, event),
 		})
 	}
 

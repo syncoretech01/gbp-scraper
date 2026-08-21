@@ -49,7 +49,7 @@ Page data is jobsPageData in web/app_read_pages.go.
             {{if .Page.Folders}}
             <div class="toolbar-group">
                 <label class="toolbar-label" for="job-folder">Folder</label>
-                <select class="select input-sm" id="job-folder" name="folder"><option value="">All folders</option>{{range .Page.Folders}}<option value="{{.Value}}">{{.Label}}</option>{{end}}</select>
+                <select class="select input-sm" id="job-folder" name="folder"><option value="">All folders</option>{{range .Page.Folders}}<option value="{{.Value}}"{{if eq .Value $.Page.ActiveFolder}} selected{{end}}>{{.Label}}</option>{{end}}</select>
             </div>
             {{end}}
             <div class="toolbar-group">
@@ -84,7 +84,7 @@ Page data is jobsPageData in web/app_read_pages.go.
                         <td>
                             <a class="jobs-name" href="/app/jobs/{{.ID}}" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}">{{.Name}}</a>
                             <small class="cell-subtitle t-mono">{{.ID}}</small>
-                            {{if or .Tags .Archived}}<span class="tag-list">{{if .Archived}}<span class="tag">archived</span>{{end}}{{range .Tags}}<span class="tag">{{.}}</span>{{end}}</span>{{end}}
+                            {{if or .Tags .Archived .Folder .Owner}}<span class="tag-list" data-job-labels>{{if .Archived}}<span class="tag">archived</span>{{end}}{{if .Folder}}<a class="tag" href="/app/jobs?folder={{.Folder}}" data-action="navigate" data-endpoint="/app/jobs?folder={{.Folder}}">{{.Folder}}</a>{{end}}{{range .Tags}}<span class="tag">{{.}}</span>{{end}}{{if .Owner}}<span class="tag" data-job-owner>{{.Owner}}</span>{{end}}</span>{{end}}
                         </td>
                         <td class="jobs-state-col">
                             <span class="status status-{{.State}}">{{.State}}</span>

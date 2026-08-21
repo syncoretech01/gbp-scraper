@@ -16,6 +16,9 @@ var (
 	// ErrLifecycleConflict indicates that another actor changed the lifecycle
 	// between reading and applying a compare-and-swap update.
 	ErrLifecycleConflict = errors.New("job lifecycle conflict")
+	// ErrScraperVersionUnsupported indicates that the active repository cannot
+	// store or read the build identity of the binary that ran a job.
+	ErrScraperVersionUnsupported = errors.New("job scraper version storage is unavailable")
 )
 
 // JobRuntime is the durable lifecycle projection used by the upgraded local
@@ -120,6 +123,38 @@ func (s *Service) SetOutcome(
 	}
 
 	return repository.SetOutcome(ctx, id, outcome, message)
+}
+
+// scraperVersionRepository is an additive capability: it records which build
+// of the local binary executed a job so a finished run can state its exact
+// scraper version instead of a placeholder.
+type scraperVersionRepository interface {
+	RecordJobScraperVersion(context.Context, string, string) error
+	JobScraperVersion(context.Context, string) (string, error)
+}
+
+// RecordJobScraperVersion stamps the running binary's build identity onto a
+// job. It is idempotent: the first recorded version wins, so a job restarted
+// under a newer build keeps the version that produced its committed rows.
+func (s *Service) RecordJobScraperVersion(ctx context.Context, id, version string) error {
+	repository, ok := s.repo.(scraperVersionRepository)
+	if !ok {
+		return ErrScraperVersionUnsupported
+	}
+
+	return repository.RecordJobScraperVersion(ctx, id, version)
+}
+
+// JobScraperVersion returns the build identity recorded for a job. An empty
+// string means the run predates version stamping, which callers must present
+// as "not recorded" rather than substituting the version running today.
+func (s *Service) JobScraperVersion(ctx context.Context, id string) (string, error) {
+	repository, ok := s.repo.(scraperVersionRepository)
+	if !ok {
+		return "", ErrScraperVersionUnsupported
+	}
+
+	return repository.JobScraperVersion(ctx, id)
 }
 
 // EventsAfter returns durable redacted events after an exclusive cursor.
