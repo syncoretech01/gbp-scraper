@@ -123,15 +123,15 @@ type JobData struct {
 	// CheckpointSeconds is how often the running job writes a time-based safe
 	// resume boundary in addition to the one written after every completed
 	// task. Zero keeps the default interval.
-	CheckpointSeconds int    `json:"checkpoint_seconds,omitempty"`
-	LowDiskBytes      uint64 `json:"low_disk_bytes,omitempty"`
-	ProxyPoolID     string                `json:"proxy_pool_id,omitempty"`
-	Proxies         []string              `json:"proxies"`
-	SavedAreaID     string                `json:"saved_area_id,omitempty"`
-	AreaGeoJSON     string                `json:"area_geojson,omitempty"`
-	GridBBox        string                `json:"grid_bbox,omitempty"`
-	GridCellKM      float64               `json:"grid_cell_km,omitempty"`
-	IncrementalMode string                `json:"incremental_mode,omitempty"`
+	CheckpointSeconds int      `json:"checkpoint_seconds,omitempty"`
+	LowDiskBytes      uint64   `json:"low_disk_bytes,omitempty"`
+	ProxyPoolID       string   `json:"proxy_pool_id,omitempty"`
+	Proxies           []string `json:"proxies"`
+	SavedAreaID       string   `json:"saved_area_id,omitempty"`
+	AreaGeoJSON       string   `json:"area_geojson,omitempty"`
+	GridBBox          string   `json:"grid_bbox,omitempty"`
+	GridCellKM        float64  `json:"grid_cell_km,omitempty"`
+	IncrementalMode   string   `json:"incremental_mode,omitempty"`
 	// Coverage enables the adaptive discovery engine for this job. A nil
 	// value keeps exactly the historical behaviour: no saturation stop and
 	// no mid-run expansion.

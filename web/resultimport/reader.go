@@ -349,6 +349,9 @@ func (r *Reader) normalizeRow(values []string) Record {
 			break
 		}
 	}
+	if hasMismatchedEmailDomain(website, emails) {
+		warnings = append(warnings, warning("emails", IssueDomainMismatch))
+	}
 
 	reviewCount := parseInteger(raw.Value("review_count"), "review_count", &warnings)
 	if reviewCount != nil && *reviewCount < 0 {
@@ -641,6 +644,64 @@ func isSuspiciousWebsite(raw string, website URLValue) bool {
 	}
 }
 
+// freeMailboxDomains are consumer mailbox providers. An address at one of
+// them is expected not to match the business website, so it is not treated as
+// a mismatch worth reviewing.
+var freeMailboxDomains = map[string]struct{}{
+	"gmail.com": {}, "googlemail.com": {}, "outlook.com": {}, "hotmail.com": {},
+	"live.com": {}, "msn.com": {}, "yahoo.com": {}, "ymail.com": {},
+	"icloud.com": {}, "me.com": {}, "aol.com": {}, "gmx.com": {}, "gmx.net": {},
+	"web.de": {}, "mail.com": {}, "protonmail.com": {}, "proton.me": {},
+	"yandex.com": {}, "zoho.com": {},
+}
+
+// hasMismatchedEmailDomain reports whether every usable email belongs to a
+// domain other than the business's own website domain. It only fires when a
+// website domain is actually known, and never for a consumer mailbox, so the
+// warning means "this contact does not come from the site we recorded" rather
+// than "this contact is wrong".
+func hasMismatchedEmailDomain(website URLValue, emails []Email) bool {
+	if !website.Valid || website.Domain == "" {
+		return false
+	}
+
+	mismatched := false
+
+	for _, email := range emails {
+		if !email.Valid || email.Domain == "" {
+			continue
+		}
+
+		if _, free := freeMailboxDomains[email.Domain]; free {
+			continue
+		}
+
+		if sharesRegistrableDomain(email.Domain, website.Domain) {
+			return false
+		}
+
+		mismatched = true
+	}
+
+	return mismatched
+}
+
+// sharesRegistrableDomain reports whether two hosts belong to the same site.
+// It accepts an exact match and a sub-domain in either direction, which covers
+// mail.example.com against example.com without a public-suffix list.
+func sharesRegistrableDomain(left, right string) bool {
+	left = strings.ToLower(strings.TrimSpace(left))
+	right = strings.ToLower(strings.TrimSpace(right))
+
+	if left == "" || right == "" {
+		return false
+	}
+
+	return left == right ||
+		strings.HasSuffix(left, "."+right) ||
+		strings.HasSuffix(right, "."+left)
+}
+
 // isSuspiciousEmail reports whether a syntactically valid email is a
 // placeholder: a documentation or test domain, or a no-reply sender.
 func isSuspiciousEmail(email Email) bool {
@@ -685,6 +746,8 @@ func warningMessage(code IssueCode) string {
 		return "URL scheme is not HTTP or HTTPS"
 	case IssueMissingIdentity:
 		return "row has no exact identity key"
+	case IssueDomainMismatch:
+		return "contact domain does not match the recorded website domain"
 	default:
 		return "value needs review"
 	}

@@ -122,7 +122,7 @@ func (s *Server) proxiesPage(w http.ResponseWriter, r *http.Request) {
 			ID: proxy.ID, PoolName: proxy.PoolName, MaskedURL: proxy.MaskedURL, Protocol: proxy.Protocol,
 			Enabled: proxy.Enabled, Status: proxy.EffectiveStatus(now), StatusClass: proxyStatusClass(proxy.EffectiveStatus(now)),
 			Latency: optionalMilliseconds(proxy.LatencyMS),
-			ExitIP: missingLabel(proxy.ExitIP, "not reported"), ExitIPHint: exitIPHint(proxy.ExitIPSource),
+			ExitIP:  missingLabel(proxy.ExitIP, "not reported"), ExitIPHint: exitIPHint(proxy.ExitIPSource),
 			Country:      missingLabel(proxy.Country, "unknown"),
 			SuccessCount: proxy.SuccessCount, FailureCount: proxy.FailureCount, BlockCount: proxy.BlockCount,
 			UsageCount: proxy.UsageCount, LastSuccess: optionalTimeLabel(proxy.LastSuccessAt),
