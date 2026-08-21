@@ -5,6 +5,43 @@
     if (!workspace) return;
     const csrf = workspace.dataset.csrfToken || "";
 
+    // The quick-start card shows one language at a time. Every panel is in the
+    // document, so the page still works — and stays copyable — without script.
+    const exampleBlock = workspace.querySelector("[data-example-block]");
+    if (exampleBlock) exampleBlock.addEventListener("click", (event) => {
+        const tab = event.target.closest("[data-example-tab]");
+        if (!tab) return;
+        const language = tab.dataset.exampleTab;
+        exampleBlock.querySelectorAll("[data-example-tab]").forEach((option) => {
+            option.setAttribute("aria-selected", option.dataset.exampleTab === language ? "true" : "false");
+        });
+        exampleBlock.querySelectorAll("[data-example-panel]").forEach((panel) => {
+            panel.hidden = panel.dataset.examplePanel !== language;
+        });
+    });
+
+    // Filtering the generated reference is a local text match over the method,
+    // path, and purpose of each row; groups with no visible row are hidden so
+    // the page never shows an empty heading.
+    const reference = workspace.querySelector("[data-reference]");
+    const referenceFilter = workspace.querySelector("[data-reference-filter]");
+    if (reference && referenceFilter) referenceFilter.addEventListener("input", () => {
+        const needle = referenceFilter.value.trim().toLowerCase();
+        let visible = 0;
+        reference.querySelectorAll("[data-reference-group]").forEach((group) => {
+            let shown = 0;
+            group.querySelectorAll("[data-reference-row]").forEach((row) => {
+                const match = !needle || (row.dataset.referenceText || "").toLowerCase().includes(needle);
+                row.hidden = !match;
+                if (match) shown += 1;
+            });
+            group.hidden = shown === 0;
+            visible += shown;
+        });
+        const empty = reference.querySelector("[data-reference-empty]");
+        if (empty) empty.hidden = visible !== 0;
+    });
+
     async function request(endpoint, options) {
         const settings = Object.assign({ credentials: "same-origin", headers: {} }, options || {});
         settings.headers = Object.assign({ Accept: "application/json", "X-CSRF-Token": csrf }, settings.headers || {});
@@ -74,23 +111,47 @@
     });
 
     const integrationForm = workspace.querySelector("[data-integration-form]");
-    if (integrationForm) integrationForm.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        try {
-            await withBusy(submitControl(integrationForm, event), () => request(integrationForm.action, { method: "POST", body: new FormData(integrationForm) }));
-            window.location.reload();
-        } catch (error) { report(error); }
-    });
+
+    // Only the fields that belong to the selected destination stay visible, so
+    // a webhook never shows a database DSN and the form cannot be submitted
+    // with contradictory configuration.
+    function syncIntegrationKind() {
+        if (!integrationForm) return;
+        const picker = integrationForm.querySelector("[data-integration-kind]");
+        const kind = picker ? picker.value : "webhook";
+        integrationForm.querySelectorAll("[data-integration-field]").forEach((group) => {
+            group.hidden = group.dataset.integrationField !== kind;
+        });
+    }
+
+    if (integrationForm) {
+        syncIntegrationKind();
+        integrationForm.addEventListener("change", (event) => {
+            if (event.target.matches("[data-integration-kind]")) syncIntegrationKind();
+        });
+        integrationForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            try {
+                await withBusy(submitControl(integrationForm, event), () => request(integrationForm.action, { method: "POST", body: new FormData(integrationForm) }));
+                window.location.reload();
+            } catch (error) { report(error); }
+        });
+    }
 
     workspace.addEventListener("click", async (event) => {
         const key = event.target.closest("[data-api-key-toggle]");
-        const integration = event.target.closest("[data-integration-delete]");
+        const remove = event.target.closest("[data-integration-delete]");
+        const test = event.target.closest("[data-integration-test]");
         try {
             if (key) {
                 await withBusy(key, () => request("/api/v1/api-keys/" + encodeURIComponent(key.dataset.keyId) + "/" + key.dataset.apiKeyToggle, { method: "POST" }));
                 window.location.reload();
-            } else if (integration && window.confirm("Delete this local integration?")) {
-                await withBusy(integration, () => request("/api/v1/integrations/" + encodeURIComponent(integration.dataset.integrationId), { method: "DELETE" }));
+            } else if (test) {
+                await withBusy(test, () => request("/api/v1/integrations/" + encodeURIComponent(test.dataset.integrationId) + "/test", { method: "POST" }));
+                if (window.GMapsApp) window.GMapsApp.toast("Signed test delivery sent.", "success");
+                window.location.reload();
+            } else if (remove && window.confirm("Delete this local integration? Earlier delivery history is removed with it.")) {
+                await withBusy(remove, () => request("/api/v1/integrations/" + encodeURIComponent(remove.dataset.integrationId), { method: "DELETE" }));
                 window.location.reload();
             }
         } catch (error) { report(error); }

@@ -91,6 +91,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		Expires:  expires,
 		HttpOnly: true,
+		Secure:   secureRequest(r),
 		SameSite: http.SameSiteStrictMode,
 	})
 
@@ -110,7 +111,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 
 	http.SetCookie(w, &http.Cookie{
 		Name: authSessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
+		Secure: secureRequest(r), SameSite: http.SameSiteStrictMode,
 	})
 
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
@@ -187,7 +188,7 @@ func (s *Server) changeLocalPassword(w http.ResponseWriter, r *http.Request) {
 		if token, expires, sessionErr := s.createSession(); sessionErr == nil {
 			http.SetCookie(w, &http.Cookie{
 				Name: authSessionCookie, Value: token, Path: "/", Expires: expires,
-				HttpOnly: true, SameSite: http.SameSiteStrictMode,
+				HttpOnly: true, Secure: secureRequest(r), SameSite: http.SameSiteStrictMode,
 			})
 		}
 	}
@@ -208,4 +209,17 @@ func clientAddress(r *http.Request) string {
 	}
 
 	return address
+}
+
+// secureRequest reports whether the session cookie may carry the Secure
+// attribute. The default local workspace is plain HTTP on loopback, where a
+// Secure cookie would simply never be sent back; behind an operator's own TLS
+// proxy, or on a direct TLS listener, the attribute is set so the session
+// token can never leak over a downgraded connection.
+func secureRequest(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+
+	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }

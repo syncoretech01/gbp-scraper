@@ -35,6 +35,32 @@ type BackupRecord struct {
 	CreatedAt     time.Time
 	FinishedAt    *time.Time
 	Error         string
+	Encrypted     bool
+}
+
+// encryptedBackupRepository records that a registered backup was rewritten as
+// an encrypted container. It is additive: an embedder without it simply cannot
+// offer encrypted backups.
+type encryptedBackupRepository interface {
+	MarkBackupEncrypted(ctx context.Context, id, checksum string, size int64) error
+}
+
+// SupportsEncryptedBackups reports whether encrypted backups can be recorded.
+func (s *Service) SupportsEncryptedBackups() bool {
+	_, ok := s.repo.(encryptedBackupRepository)
+
+	return ok
+}
+
+// MarkBackupEncrypted updates a backup's checksum, size, and encrypted flag
+// after the file has been rewritten as a container.
+func (s *Service) MarkBackupEncrypted(ctx context.Context, id, checksum string, size int64) error {
+	repository, ok := s.repo.(encryptedBackupRepository)
+	if !ok {
+		return ErrMaintenanceUnsupported
+	}
+
+	return repository.MarkBackupEncrypted(ctx, id, checksum, size)
 }
 
 type maintenanceRepository interface {

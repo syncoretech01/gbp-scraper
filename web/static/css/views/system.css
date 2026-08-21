@@ -1,0 +1,243 @@
+/* ===========================================================================
+   views/system.css — Platform pages: Local API, Exports, System, Settings,
+   and the first-run checklist.
+   ---------------------------------------------------------------------------
+   Owner: the platform/API/system agent.
+
+   Every rule is scoped to a page-local wrapper so this file can never reach
+   another view. Nothing from app.css is redefined: the components (.card,
+   .data-table, .badge, .segmented, .chip, .empty-state, .button, …) are
+   composed in the templates and only layout, page-specific affordances, and a
+   few missing form sub-parts are added here. All colour, space, radius, and
+   duration values come from app.css tokens so both themes stay correct.
+
+   Loaded after the other view stylesheets by templates/app/layout.html.
+
+   Scope
+   -----
+     [data-api-workspace]        pages/api.html
+     [data-system-diagnostics]   pages/system.html
+     [data-export-workspace]     pages/exports.html
+     [data-settings-workspace]   pages/settings.html
+     [data-onboarding]           pages/onboarding.html
+   =========================================================================== */
+
+/* ---------------------------------------------------------------------------
+   Shared form sub-parts.
+   .choice is a checkbox/radio row whose label carries a title and a hint;
+   .field-help is the explanatory line under a control. Both are already used
+   by these templates and had no styling of their own.
+   --------------------------------------------------------------------------- */
+[data-api-workspace] .choice,
+[data-export-workspace] .choice,
+[data-settings-workspace] .choice {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2);
+    min-width: 0;
+    padding: var(--space-2) 0;
+    cursor: pointer;
+}
+
+[data-api-workspace] .choice input,
+[data-export-workspace] .choice input,
+[data-settings-workspace] .choice input {
+    margin-top: .15rem;
+    flex: none;
+}
+
+[data-api-workspace] .choice > span,
+[data-export-workspace] .choice > span,
+[data-settings-workspace] .choice > span {
+    display: grid;
+    gap: .1rem;
+    min-width: 0;
+    font-size: var(--text-sm);
+}
+
+[data-api-workspace] .choice small,
+[data-export-workspace] .choice small,
+[data-settings-workspace] .choice small {
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    line-height: 1.4;
+}
+
+[data-api-workspace] .field-help,
+[data-export-workspace] .field-help,
+[data-settings-workspace] .field-help,
+[data-system-diagnostics] .field-help {
+    display: block;
+    margin: 0;
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+[data-api-workspace] .field-inline {
+    align-self: center;
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+}
+
+/* ---------------------------------------------------------------------------
+   Local API reference.
+   The reference is generated from the route catalogue, so it is long: each
+   group is its own scrollable table and the language samples stay collapsed
+   until an operator opens them.
+   --------------------------------------------------------------------------- */
+[data-api-workspace] .reference-group {
+    display: grid;
+    gap: var(--space-2);
+    min-width: 0;
+}
+
+[data-api-workspace] .reference-group h3 {
+    margin: 0;
+    color: var(--text);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-semibold);
+    letter-spacing: var(--tracking-tight);
+}
+
+[data-api-workspace] .badge-method {
+    font-variant-numeric: normal;
+    letter-spacing: .02em;
+}
+
+[data-api-workspace] .reference-examples > summary {
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    cursor: pointer;
+}
+
+[data-api-workspace] .reference-example {
+    display: grid;
+    gap: var(--space-2);
+    justify-items: start;
+    margin: var(--space-3) 0 0;
+    min-width: 0;
+}
+
+[data-api-workspace] .reference-example figcaption {
+    color: var(--text-muted);
+    font-size: var(--text-2xs);
+    font-weight: var(--weight-bold);
+    text-transform: uppercase;
+    letter-spacing: .06em;
+}
+
+[data-api-workspace] .reference-example .code-block,
+[data-api-workspace] [data-example-panel] .code-block {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+}
+
+/* The quick-start card switches languages with buttons rather than the radio
+   inputs .segmented expects, so the button variant is defined here. */
+[data-api-workspace] .segmented-option {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 1.75rem;
+    padding: 0 var(--space-4);
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+
+[data-api-workspace] .segmented-option:hover {
+    background: var(--surface-hover);
+    color: var(--text);
+}
+
+[data-api-workspace] .segmented-option[aria-selected="true"] {
+    background: var(--surface);
+    box-shadow: var(--shadow-xs);
+    color: var(--text);
+    font-weight: var(--weight-semibold);
+}
+
+[data-api-workspace] .segmented-option:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 1px;
+}
+
+/* ---------------------------------------------------------------------------
+   System, Settings, and first-run layout helpers.
+   --------------------------------------------------------------------------- */
+[data-system-diagnostics] .directory-usage {
+    display: grid;
+    gap: var(--space-2);
+    grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+    min-width: 0;
+}
+
+[data-system-diagnostics] .directory-usage > div,
+[data-settings-workspace] .directory-usage > div {
+    display: grid;
+    gap: .15rem;
+    min-width: 0;
+    padding: var(--space-3);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--surface-muted);
+}
+
+[data-system-diagnostics] .directory-usage dt,
+[data-settings-workspace] .directory-usage dt {
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+}
+
+[data-system-diagnostics] .directory-usage dd,
+[data-settings-workspace] .directory-usage dd {
+    margin: 0;
+    color: var(--text);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-semibold);
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+}
+
+[data-settings-workspace] .directory-usage {
+    display: grid;
+    gap: var(--space-2);
+    grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+    min-width: 0;
+    margin: 0;
+}
+
+[data-settings-workspace] .directory-usage small {
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-regular);
+}
+
+/* The optional local-AI console degrades to an explanatory panel when Ollama
+   is unreachable, so the busy and unavailable states are both styled. */
+[data-settings-workspace] .ai-console {
+    display: grid;
+    gap: var(--space-3);
+    min-width: 0;
+}
+
+[data-settings-workspace] .ai-output {
+    min-width: 0;
+    max-height: 22rem;
+    overflow: auto;
+}
+
+[data-settings-workspace] .ai-console[aria-busy="true"] .ai-output {
+    opacity: .6;
+}

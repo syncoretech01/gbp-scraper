@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,14 +15,17 @@ import (
 )
 
 type integrationAPIInput struct {
-	Name          string   `json:"name"`
-	Kind          string   `json:"kind"`
-	Enabled       *bool    `json:"enabled,omitempty"`
-	URL           string   `json:"url,omitempty"`
-	Folder        string   `json:"folder,omitempty"`
-	Executable    string   `json:"executable,omitempty"`
-	Arguments     []string `json:"arguments,omitempty"`
-	ArgumentsText string   `json:"-"`
+	Name    string   `json:"name"`
+	Kind    string   `json:"kind"`
+	Enabled *bool    `json:"enabled,omitempty"`
+	URL     string   `json:"url,omitempty"`
+	Secret  string   `json:"secret,omitempty"`
+	Events  []string `json:"events,omitempty"`
+	Folder  string   `json:"folder,omitempty"`
+	Driver  string   `json:"driver,omitempty"`
+	Target  string   `json:"target,omitempty"`
+	Table   string   `json:"table,omitempty"`
+	DSN     string   `json:"dsn,omitempty"`
 }
 
 func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
@@ -31,6 +35,8 @@ func (s *Server) registerIntegrationRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/integrations/{id}", s.deleteIntegrationAPI)
 	mux.HandleFunc("POST /api/v1/integrations/{id}/delete", s.deleteIntegrationAPI)
 	mux.HandleFunc("POST /api/v1/integrations/{id}/test", s.testIntegrationAPI)
+	mux.HandleFunc("GET /api/v1/integrations/deliveries", s.listIntegrationDeliveriesAPI)
+	mux.HandleFunc("GET /api/v1/integrations/{id}/deliveries", s.listIntegrationDeliveriesAPI)
 }
 
 func (s *Server) listIntegrationsAPI(w http.ResponseWriter, r *http.Request) {
@@ -46,6 +52,32 @@ func (s *Server) listIntegrationsAPI(w http.ResponseWriter, r *http.Request) {
 	renderJSON(w, http.StatusOK, localAPIEnvelope{Data: records})
 }
 
+// listIntegrationDeliveriesAPI returns recent delivery history so an operator
+// can prove what a local automation tool was actually sent.
+func (s *Server) listIntegrationDeliveriesAPI(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id != "" && !validBusinessID(id) {
+		renderLocalAPIError(w, http.StatusUnprocessableEntity, "invalid_integration_id", "Invalid integration ID")
+		return
+	}
+	limit := maximumDeliveryHistory
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > maximumDeliveryHistory {
+			renderLocalAPIError(w, http.StatusUnprocessableEntity, "invalid_limit",
+				fmt.Sprintf("limit must be between 1 and %d", maximumDeliveryHistory))
+			return
+		}
+		limit = value
+	}
+	deliveries, err := s.svc.ListIntegrationDeliveries(r.Context(), id, limit)
+	if err != nil {
+		renderLocalAPIError(w, http.StatusInternalServerError, "delivery_history_failed", "Could not read delivery history")
+		return
+	}
+	renderJSON(w, http.StatusOK, localAPIEnvelope{Data: deliveries})
+}
+
 func (s *Server) saveIntegrationAPI(w http.ResponseWriter, r *http.Request) {
 	input, err := decodeIntegrationAPIInput(w, r)
 	if err != nil {
@@ -59,8 +91,10 @@ func (s *Server) saveIntegrationAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	publicConfig, secretConfig, err := validateIntegrationConfiguration(input.Kind, integrationConfiguration{
-		URL: strings.TrimSpace(input.URL), Folder: strings.TrimSpace(input.Folder),
-		Executable: strings.TrimSpace(input.Executable), Arguments: input.Arguments,
+		URL: strings.TrimSpace(input.URL), Secret: strings.TrimSpace(input.Secret), Events: input.Events,
+		Folder: strings.TrimSpace(input.Folder), Driver: strings.TrimSpace(input.Driver),
+		Target: strings.TrimSpace(input.Target), Table: strings.TrimSpace(input.Table),
+		DSN: strings.TrimSpace(input.DSN),
 	})
 	if err != nil {
 		renderLocalAPIError(w, http.StatusUnprocessableEntity, "invalid_integration_configuration", err.Error())
@@ -112,11 +146,11 @@ func decodeIntegrationAPIInput(w http.ResponseWriter, r *http.Request) (integrat
 		return integrationAPIInput{}, fmt.Errorf("invalid form")
 	}
 	enabled := formBoolean(r, "enabled", true)
-	arguments := splitNonEmptyLines(r.FormValue("arguments"))
 	return integrationAPIInput{
 		Name: r.FormValue("name"), Kind: r.FormValue("kind"), Enabled: &enabled,
-		URL: r.FormValue("url"), Folder: r.FormValue("folder"),
-		Executable: r.FormValue("executable"), Arguments: arguments,
+		URL: r.FormValue("url"), Secret: r.FormValue("secret"), Events: r.Form["events"],
+		Folder: r.FormValue("folder"), Driver: r.FormValue("driver"),
+		Target: r.FormValue("target"), Table: r.FormValue("table"), DSN: r.FormValue("dsn"),
 	}, nil
 }
 
@@ -141,31 +175,49 @@ func (s *Server) deleteIntegrationAPI(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/app/api?notice=Integration+deleted", http.StatusSeeOther)
 }
 
+// testIntegrationAPI performs one on-demand delivery. Without an export ID it
+// sends the signed integration.test event, which is what a local automation
+// tool needs while wiring up a trigger; with one it replays a real export
+// delivery end to end.
 func (s *Server) testIntegrationAPI(w http.ResponseWriter, r *http.Request) {
-	exportID := strings.TrimSpace(r.FormValue("export_id"))
-	if !validBusinessID(exportID) {
-		renderLocalAPIError(w, http.StatusUnprocessableEntity, "invalid_export_id", "A completed export ID is required")
-		return
-	}
-	record, path, err := s.svc.GetExport(r.Context(), exportID)
-	if err != nil {
-		renderLocalAPIError(w, http.StatusNotFound, "export_not_found", "Completed export not found")
-		return
-	}
 	id := strings.TrimSpace(r.PathValue("id"))
 	if !validBusinessID(id) {
 		renderLocalAPIError(w, http.StatusUnprocessableEntity, "invalid_integration_id", "Invalid integration ID")
 		return
 	}
-	err = s.deliverExportIntegration(r.Context(), id, record, path)
-	message := ""
+	integration, err := s.svc.GetIntegrationSecret(r.Context(), id)
 	if err != nil {
-		message = jobruntime.RedactString(err.Error())
+		renderLocalAPIError(w, http.StatusNotFound, "integration_not_found", "Integration not found")
+		return
+	}
+	event := integrationEvent{
+		Name: IntegrationEventTest, OccurredAt: time.Now().UTC(),
+		Data: map[string]any{"message": "Local integration test delivery", "integration_id": id},
+	}
+	if exportID := strings.TrimSpace(r.FormValue("export_id")); exportID != "" {
+		if !validBusinessID(exportID) {
+			renderLocalAPIError(w, http.StatusUnprocessableEntity, "invalid_export_id", "Invalid export ID")
+			return
+		}
+		record, path, exportErr := s.svc.GetExport(r.Context(), exportID)
+		if exportErr != nil {
+			renderLocalAPIError(w, http.StatusNotFound, "export_not_found", "Completed export not found")
+			return
+		}
+		event.Name = IntegrationEventExportCompleted
+		event.Data = exportEventData(record)
+		event.Export = &record
+		event.ExportPath = path
+	}
+	deliveryErr := s.deliverIntegrationEvent(r.Context(), integration, event)
+	message := ""
+	if deliveryErr != nil {
+		message = jobruntime.RedactString(deliveryErr.Error())
 	}
 	if repository, repositoryErr := s.svc.integrationRepository(); repositoryErr == nil {
 		_ = repository.RecordIntegrationRun(r.Context(), id, time.Now().UTC(), message)
 	}
-	if err != nil {
+	if deliveryErr != nil {
 		renderLocalAPIError(w, http.StatusBadGateway, "integration_delivery_failed", message)
 		return
 	}

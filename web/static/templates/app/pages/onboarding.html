@@ -3,7 +3,7 @@
 {{define "app/page-actions"}}<div class="page-actions"><form action="/api/v1/onboarding/self-test" method="post"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button" type="submit">Run live self-test</button></form>{{if .Page.Complete}}<a class="button button-primary" href="/app/dashboard">Dashboard</a>{{else}}<form action="/api/v1/onboarding/complete" method="post"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button button-primary" type="submit">Finish setup</button></form>{{end}}</div>{{end}}
 
 {{define "app/content"}}
-<div class="section-stack">
+<div class="section-stack" data-onboarding>
     {{if .Page.Notice}}<div class="notice notice-success" role="status"><div><strong>{{.Page.Notice}}</strong></div></div>{{end}}
 
     <section class="onboarding-hero-card">

@@ -278,12 +278,15 @@ func localAIPrompt(request localAIAssistRequest) (string, error) {
 		"result_filters":       `Return a Results Explorer expression as {"logic":"and|or","filters":[{"field":string,"operator":string,"value":string}],"groups":[]}. Use only documented local fields and operators.`,
 		"classify_business":    `Return {"categories":[string],"quality_band":"low|medium|high","confidence":number,"reasoning":[string]}. Base every statement only on supplied data.`,
 		"explain_quality":      `Return {"summary":string,"positive_factors":[string],"negative_factors":[string],"next_actions":[string]}. Explain supplied score evidence without adding facts.`,
+		"explain_duplicate":    `Return {"summary":string,"matching_evidence":[string],"conflicting_evidence":[string],"recommendation":"merge|keep_both|needs_review","confidence":number}. Compare only the supplied candidate records and never assert that either record is authoritative.`,
 		"summarize_changes":    `Return {"summary":string,"important_changes":[string],"follow_up":[string]}. Describe only supplied before/after evidence.`,
+		"summarize_business":   `Return {"summary":string,"services":[string],"audience":[string],"caveats":[string]}. Summarize only the supplied description, categories, and website text; never invent services or claims the source does not state.`,
 		"suggest_coverage":     `Return {"cities":[string],"categories":[string],"exclude_keywords":[string],"warnings":[string]}. Suggestions must be clearly labelled and not treated as verified facts.`,
 	}
 	instruction, ok := instructions[strings.TrimSpace(request.Task)]
 	if !ok {
-		return "", fmt.Errorf("task must be keyword_variations, scrape_configuration, result_filters, classify_business, explain_quality, summarize_changes, or suggest_coverage")
+		return "", fmt.Errorf("task must be one of keyword_variations, scrape_configuration, result_filters, " +
+			"classify_business, explain_quality, explain_duplicate, summarize_changes, summarize_business, or suggest_coverage")
 	}
 	contextValue := "null"
 	if len(request.Context) > 0 {

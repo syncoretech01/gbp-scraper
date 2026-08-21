@@ -734,6 +734,8 @@ func newExportPartWriter(
 		return newXLSXExportWriter(destination, columns)
 	case "sqlite":
 		return newSQLiteExportWriter(destination, columns, options)
+	case "parquet":
+		return newParquetExportWriter(destination, columns, options)
 	case "discovered_companies":
 		return newDiscoveredCompaniesExportWriter(destination)
 	default:
@@ -812,6 +814,8 @@ func verifyExportFile(format, path string) error {
 		return verifyXLSX(path)
 	case "sqlite":
 		return verifySQLiteExport(path)
+	case "parquet":
+		return verifyParquetExport(path)
 	case "discovered_companies":
 		return verifyDiscoveredCompaniesExport(path)
 	default:

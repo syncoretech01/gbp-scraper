@@ -1,11 +1,11 @@
 {{define "app/page/settings"}}{{template "app/layout" .}}{{end}}
 
-{{define "app/head"}}<script defer src="/static/js/app-prospects.js"></script>{{end}}
+{{define "app/head"}}<script defer src="/static/js/app-prospects.js"></script><script defer src="/static/js/app-ai.js"></script>{{end}}
 
 {{define "app/page-actions"}}<div class="page-actions"><a class="button" href="/app/scrapes/new">Preview in New Scrape</a></div>{{end}}
 
 {{define "app/content"}}
-<div class="section-stack">
+<div class="section-stack" data-settings-workspace data-csrf-token="{{.CSRFToken}}">
     {{if .Page.Notice}}<div class="notice notice-success" role="status"><div><strong>{{.Page.Notice}}</strong></div></div>{{end}}
     <form class="section-stack" action="/api/v1/settings" method="post">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
@@ -48,7 +48,7 @@
             <div class="field"><label for="setting-cleanup-days">Automatic cleanup age (days)</label><input class="input" id="setting-cleanup-days" name="automatic_cleanup_days" type="number" min="0" max="3650" value="{{.Page.Storage.AutomaticCleanupDays}}"><span class="field-hint">0 disables age-based cleanup.</span></div>
             <div class="field"><label for="setting-backup-count">Backups to retain</label><input class="input" id="setting-backup-count" name="backup_count" type="number" min="1" max="1000" value="{{.Page.Storage.BackupCount}}"></div>
             <div class="field"><label for="setting-version-retention">Business history retention (days)</label><input class="input" id="setting-version-retention" name="version_retention_days" type="number" min="0" max="36500" value="{{.Page.Storage.VersionRetentionDays}}"><span class="field-hint">0 retains version history indefinitely.</span></div>
-        </div></section>
+        </div><div class="card-body section-stack"><h3 class="section-header">Current directory usage</h3><dl class="directory-usage">{{range .Page.Directories}}<div><dt>{{.Label}} <code>{{.Path}}</code></dt><dd>{{.Size}}<small>{{.Retention}}</small></dd></div>{{end}}</dl><p class="field-help">The database directory is <code>{{.Page.DataFolder}}</code>; it is fixed by the <code>-data-folder</code> start-up flag so a running workspace can never be pointed at a different database. Every path above is relative to it and is created with private permissions when you save.</p></div></section>
 
         <section class="card"><div class="card-header"><div><h2>Appearance and privacy</h2><p>Preferences are stored locally in SQLite. Per-browser theme and sidebar toggles can temporarily override their defaults.</p></div></div><div class="card-body section-stack"><div class="grid grid-4">
             <div class="field"><label for="setting-theme">Theme</label><select class="select" id="setting-theme" name="theme"><option value="system" {{if eq .Page.Theme "system"}}selected{{end}}>System</option><option value="light" {{if eq .Page.Theme "light"}}selected{{end}}>Light</option><option value="dark" {{if eq .Page.Theme "dark"}}selected{{end}}>Dark</option></select></div>
@@ -60,7 +60,7 @@
             <label class="check-row"><input name="compact_tables" type="checkbox" value="on" {{if .Page.Preferences.CompactTables}}checked{{end}}><span>Compact tables</span></label>
             <label class="check-row"><input name="reduced_motion" type="checkbox" value="on" {{if .Page.Preferences.ReducedMotion}}checked{{end}}><span>Reduce motion</span></label>
             <label class="check-row"><input name="high_contrast" type="checkbox" value="on" {{if .Page.Preferences.HighContrast}}checked{{end}}><span>Higher contrast borders</span></label>
-        </div><div class="grid grid-2"><div class="notice notice-success"><div><strong>Telemetry disabled</strong><p>The provided Docker Compose configuration sets DISABLE_TELEMETRY=1.</p></div></div><div class="notice notice-info"><div><strong>Secrets are redacted</strong><p>Runtime logs and local API job responses mask proxy credentials and token-like fields.</p></div></div></div></div></section>
+        </div><div class="grid grid-2"><div class="notice {{if .Page.Privacy.TelemetryDisabled}}notice-success{{else}}notice-warning{{end}}"><div><strong>Telemetry {{if .Page.Privacy.TelemetryDisabled}}disabled{{else}}not disabled in this process{{end}}</strong><p>{{.Page.Privacy.TelemetrySource}}. The provided Docker Compose configuration sets it for you.</p></div></div><div class="notice notice-info"><div><strong>Secrets are redacted</strong><p>Runtime logs, local API job responses, integration errors, and exports mask proxy credentials and token-like fields.</p></div></div><div class="notice notice-info"><div><strong>Encrypted at rest</strong><ul>{{range .Page.Privacy.EncryptedSecrets}}<li>{{.}}</li>{{end}}</ul></div></div><div class="notice notice-info"><div><strong>Browser profiles</strong><p>Reusable Chromium profiles currently hold {{.Page.Privacy.BrowserProfiles}} of cookies and site data. Clear them from <a href="/app/system">System</a>.</p></div></div></div></div></section>
 
         <section class="card"><div class="card-header"><div><h2>Optional local AI</h2><p>Connect to an Ollama server running on this machine or private network. It is disabled by default and never calls a hosted model.</p></div><a class="button button-small" href="/api/v1/ai/status" target="_blank" rel="noopener">Check status</a></div><div class="card-body grid grid-4">
             <label class="check-row"><input name="ai_enabled" type="checkbox" value="on" {{if .Page.LocalAI.Enabled}}checked{{end}}><span>Enable local AI assistance<small>Model downloads and inference remain under your control.</small></span></label>
@@ -71,6 +71,27 @@
 
         <div class="form-actions"><button class="button button-primary" type="submit">Save settings</button></div>
     </form>
+
+    <section class="card ai-console" aria-labelledby="ai-console-title" data-ai-console data-csrf-token="{{.CSRFToken}}" data-ai-enabled="{{.Page.LocalAI.Enabled}}" hidden>
+        <div class="card-header"><div><h2 id="ai-console-title">Local AI assistant</h2><p>Optional helpers that run entirely on your own Ollama server. Every answer is a suggestion to review, never a verified fact, and nothing leaves this machine.</p></div><span class="badge" data-ai-state>Checking</span></div>
+        <div class="card-body section-stack">
+            <div class="grid grid-2">
+                <div class="field"><label for="ai-task">Assistant</label><select class="select" id="ai-task" data-ai-task>
+                    <option value="scrape_configuration">Turn a request into a scrape configuration</option>
+                    <option value="classify_business">Classify a business and its website quality</option>
+                    <option value="explain_quality">Explain a quality score</option>
+                    <option value="explain_duplicate">Explain a duplicate match</option>
+                    <option value="summarize_business">Summarize a business description</option>
+                    <option value="summarize_changes">Summarize a change history</option>
+                    <option value="suggest_coverage">Suggest missing cities, categories, or exclusions</option>
+                </select><span class="field-help" data-ai-task-help></span></div>
+                <div class="field"><label for="ai-context">Structured context (optional JSON)</label><textarea class="textarea" id="ai-context" rows="3" spellcheck="false" placeholder="{&#34;city&#34;:&#34;San Francisco&#34;}" data-ai-context></textarea><span class="field-help">Paste a record from Results or an export to give the model evidence to work from.</span></div>
+            </div>
+            <div class="field"><label for="ai-input">Request</label><textarea class="textarea" id="ai-input" rows="4" maxlength="16384" data-ai-input></textarea></div>
+            <div class="table-actions"><button class="button button-primary" type="button" data-ai-run>Ask the local model</button><button class="button" type="button" data-ai-clear>Clear</button></div>
+            <div class="ai-output" role="status" aria-live="polite" data-ai-output><p class="field-help">Answers appear here. Review every suggestion before acting on it.</p></div>
+        </div>
+    </section>
 
     <form class="card section-stack" action="/api/v1/security/password" method="post">
         <div class="card-header"><div><h2>Local access password</h2><p>Optional. When set, every page requires a sign-in and API requests require an API key. Sessions live in memory, so restarting the application signs everyone out.</p></div></div>

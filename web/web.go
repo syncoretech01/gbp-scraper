@@ -234,6 +234,7 @@ func New(svc *Service, addr string) (*Server, error) {
 	mux.HandleFunc("POST /api/v1/system/jobs/stop-all", ans.apiSystemStopAll)
 	mux.HandleFunc("GET /api/v1/system/diagnostics/download", ans.downloadSystemDiagnostics)
 	mux.HandleFunc("GET /api/v1/system/update-info", ans.apiSystemUpdateInfo)
+	ans.registerSystemMaintenanceRoutes(mux)
 	mux.HandleFunc("POST /api/v1/settings", ans.saveSettings)
 	mux.HandleFunc("POST /api/v1/saved-views", ans.saveResultView)
 	mux.HandleFunc("POST /api/v1/saved-views/{id}/delete", ans.deleteSavedResultView)
@@ -291,6 +292,11 @@ func wildcardBind(addr string) bool {
 }
 
 func (s *Server) Start(ctx context.Context) error {
+	// Local automation subscribers are told about terminal jobs. The watcher
+	// claims each delivery durably, so it is safe to start unconditionally and
+	// costs nothing when no integration subscribes.
+	go s.watchTerminalJobEvents(ctx)
+
 	go func() {
 		<-ctx.Done()
 

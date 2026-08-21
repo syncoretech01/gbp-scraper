@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	currentSchemaVersion           = 17
+	currentSchemaVersion           = 18
 	migrationChecksumSchemaVersion = 4
 )
 
@@ -1244,6 +1244,43 @@ var schemaMigrations = []schemaMigration{
 			// Additive and defaulted, so existing rows keep behaving exactly
 			// as they do today.
 			`ALTER TABLE businesses ADD COLUMN user_reviews TEXT NOT NULL DEFAULT '[]'`,
+		},
+	},
+	{
+		// Reserved for the platform/API/system group.
+		version: 18,
+		name:    "integration-deliveries-and-encrypted-backups",
+		statements: []string{
+			// Outbound local automation (n8n, Activepieces, any local
+			// listener) needs a durable delivery record: which event was
+			// sent, how many attempts it took, and what the receiver said.
+			// The row is claimed before the request is made so a restart or
+			// a second worker can never deliver the same subject twice.
+			`CREATE TABLE IF NOT EXISTS integration_deliveries (
+				id TEXT PRIMARY KEY,
+				integration_id TEXT NOT NULL REFERENCES integrations(id) ON DELETE CASCADE,
+				event TEXT NOT NULL,
+				subject_id TEXT NOT NULL DEFAULT '',
+				state TEXT NOT NULL DEFAULT 'pending',
+				attempts INTEGER NOT NULL DEFAULT 0,
+				http_status INTEGER NOT NULL DEFAULT 0,
+				message TEXT NOT NULL DEFAULT '',
+				payload_bytes INTEGER NOT NULL DEFAULT 0,
+				duration_ms INTEGER NOT NULL DEFAULT 0,
+				created_at INTEGER NOT NULL,
+				finished_at INTEGER
+			)`,
+			// A named subject is delivered at most once per integration; the
+			// partial index leaves ad-hoc test deliveries (empty subject)
+			// unconstrained.
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_integration_deliveries_subject
+			ON integration_deliveries(integration_id, event, subject_id) WHERE subject_id <> ''`,
+			`CREATE INDEX IF NOT EXISTS idx_integration_deliveries_recent
+			ON integration_deliveries(integration_id, created_at DESC, id)`,
+			// Backups may be written through an operator passphrase. The flag
+			// records how the artifact must be read back; existing rows are
+			// plain SQLite copies and default to 0.
+			`ALTER TABLE backups ADD COLUMN encrypted INTEGER NOT NULL DEFAULT 0`,
 		},
 	},
 }
