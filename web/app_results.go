@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -37,6 +38,41 @@ type resultsPageData struct {
 	PreviousURL       string
 	NextURL           string
 	Capabilities      appResultCapabilities
+	// QuickFilters are the one-click lead workflows rendered as chips above
+	// the table. Each one is a real URL into the existing filter language.
+	QuickFilters []resultQuickFilter
+	// ActiveChips describe every filter currently narrowing the table, each
+	// with the URL that removes just that condition.
+	ActiveChips []resultActiveChip
+	// ExportPresets hand the current view to the export builder already
+	// narrowed to a practical outreach slice.
+	ExportPresets []resultExportPreset
+}
+
+// resultQuickFilter is one prominent lead workflow. URL always points back at
+// /app/results with the preset's nested filter expression applied; an active
+// chip's URL clears it again so the control toggles.
+type resultQuickFilter struct {
+	Key    string
+	Label  string
+	Hint   string
+	URL    string
+	Active bool
+}
+
+// resultActiveChip is one removable condition in the filter bar.
+type resultActiveChip struct {
+	Label     string
+	Value     string
+	RemoveURL string
+}
+
+// resultExportPreset is a practical export starting point built from the
+// current search rather than a saved server-side preset.
+type resultExportPreset struct {
+	Label string
+	Hint  string
+	URL   string
 }
 
 type appResultStats struct {
@@ -116,6 +152,26 @@ type appBusinessDetail struct {
 	DuplicateMatches []appDuplicateMatch
 	Quality          appQualityReport
 	Prospect         appProspectDetail
+	// Identity explains how this row's identity was established, so the
+	// operator can judge whether the record really is one business.
+	Identity appIdentityDetail
+}
+
+// appIdentityDetail is the drawer view of the stored identity provenance.
+type appIdentityDetail struct {
+	HasMethod       bool
+	Method          string
+	MethodLabel     string
+	ConfidenceLabel string
+	Evidence        []appIdentityEvidence
+}
+
+// appIdentityEvidence is one stored {"signal","value","detail"} entry backing
+// the identity decision.
+type appIdentityEvidence struct {
+	Signal string
+	Value  string
+	Detail string
 }
 
 // appProspectDetail is the drawer view of the stored GBP-prospecting signals.
@@ -131,11 +187,30 @@ type appProspectDetail struct {
 }
 
 // appProspectReason is one explainable score component parsed from the
-// stored prospect_reasons JSON array.
+// stored prospect_reasons JSON array. Weight is the contribution's magnitude
+// as a percentage of the largest contribution in the same explanation, so the
+// drawer can draw a comparable bar next to every printed number.
 type appProspectReason struct {
 	Signal            string
 	ContributionLabel string
 	Detail            string
+	Weight            int
+	Tone              string
+}
+
+// contributionTone maps a signed score component onto a semantic state token
+// name so the printed number and its bar agree: a component that added points
+// reads as success, one that removed them as danger, and one that scored
+// nothing stays neutral instead of implying a failure.
+func contributionTone(value float64) string {
+	switch {
+	case value > 0:
+		return "success"
+	case value < 0:
+		return "danger"
+	default:
+		return "neutral"
+	}
 }
 
 type appBusinessSource struct {
@@ -207,6 +282,11 @@ type appQualityContribution struct {
 	QualityContribution
 	ContributionLabel string
 	MaximumLabel      string
+	// Weight is the share of this component's available points that were
+	// actually awarded, so the drawer can draw a meter beside the number,
+	// and Tone keeps that meter's colour honest about the sign.
+	Weight int
+	Tone   string
 }
 
 func (s *Server) resultsPage(w http.ResponseWriter, r *http.Request) {
@@ -351,6 +431,10 @@ func (s *Server) buildResultsPage(r *http.Request, search ResultSearch) (results
 		})
 	}
 
+	page.QuickFilters = resultQuickFilters(r.URL, page.FilterJSON, page.Capabilities)
+	page.ActiveChips = resultActiveChips(r.URL, page)
+	page.ExportPresets = resultExportPresets(r.URL, page.Capabilities)
+
 	if len(page.Results) > 0 {
 		first := resultPage.Offset + 1
 		last := resultPage.Offset + len(page.Results)
@@ -365,6 +449,263 @@ func (s *Server) buildResultsPage(r *http.Request, search ResultSearch) (results
 	}
 
 	return page, activity, nil
+}
+
+// resultLeadFilters returns the nested filter expression behind one lead
+// workflow. Every field and operator used here is part of the bounded query
+// language implemented by web/sqlite/results.go; nothing is invented.
+func resultLeadFilters(key string) *ResultFilterGroup {
+	eq := func(field string, values ...string) []ResultFilter {
+		filters := make([]ResultFilter, 0, len(values))
+		for _, value := range values {
+			filters = append(filters, ResultFilter{Field: field, Operator: "eq", Value: value})
+		}
+
+		return filters
+	}
+	switch key {
+	case "no-website":
+		return &ResultFilterGroup{Logic: "and", Filters: []ResultFilter{{Field: "website", Operator: "empty"}}}
+	case "weak-website":
+		return &ResultFilterGroup{Logic: "or", Filters: eq("prospect_status",
+			"DEAD", "PARKED", "SSL_BROKEN", "SOCIAL_ONLY", "FREE_BUILDER", "NO_HTTPS")}
+	case "contactable":
+		return &ResultFilterGroup{Logic: "or", Filters: []ResultFilter{
+			{Field: "email", Operator: "not_empty"},
+			{Field: "phone", Operator: "not_empty"},
+		}}
+	case "never-checked":
+		return &ResultFilterGroup{Logic: "and", Filters: []ResultFilter{{Field: "last_checked_at", Operator: "empty"}}}
+	case "top-tier":
+		return &ResultFilterGroup{Logic: "or", Filters: eq("prospect_tier", "A", "B")}
+	case "needs-review":
+		return &ResultFilterGroup{Logic: "and", Filters: []ResultFilter{{Field: "reviewed", Operator: "eq", Value: "false"}}}
+	default:
+		return nil
+	}
+}
+
+// resultQuickFilters builds the lead-workflow chips. A chip is active when the
+// canonical filter expression on the request equals the preset, and an active
+// chip links back to the unfiltered view so the control toggles.
+func resultQuickFilters(source *url.URL, activeJSON string, capabilities appResultCapabilities) []resultQuickFilter {
+	definitions := []struct {
+		key, label, hint string
+		needsProspects   bool
+	}{
+		{"no-website", "No website", "The listing links no website at all", false},
+		{"weak-website", "Weak website", "Dead, parked, SSL-broken, social-only, free-builder, or HTTP-only", true},
+		{"contactable", "Contactable", "Has a stored email address or phone number", false},
+		{"never-checked", "Never checked", "No website audit has ever run for this business", false},
+		{"top-tier", "Top tier A/B", "The highest worth-calling tiers", true},
+		{"needs-review", "Needs review", "Not yet marked reviewed by an operator", false},
+	}
+	quick := make([]resultQuickFilter, 0, len(definitions))
+	for _, definition := range definitions {
+		if definition.needsProspects && !capabilities.CanProspect {
+			continue
+		}
+		group := resultLeadFilters(definition.key)
+		if group == nil {
+			continue
+		}
+		encoded := resultFilterGroupJSON(group)
+		active := encoded != "" && encoded == activeJSON
+		target := encoded
+		if active {
+			target = ""
+		}
+		quick = append(quick, resultQuickFilter{
+			Key:    definition.key,
+			Label:  definition.label,
+			Hint:   definition.hint,
+			URL:    resultLeadFilterURL(source, target),
+			Active: active,
+		})
+	}
+
+	return quick
+}
+
+// resultLeadFilterURL replaces the whole filter expression while keeping the
+// text search, source job, sort, and duplicate scope the operator chose.
+func resultLeadFilterURL(source *url.URL, filterJSON string) string {
+	values := source.Query()
+	for _, key := range []string{"page", "notice", "view", "filter_field", "filter_operator", "filter_value", "filter_logic"} {
+		values.Del(key)
+	}
+	if filterJSON == "" {
+		values.Del("filter_json")
+	} else {
+		values.Set("filter_json", filterJSON)
+	}
+
+	return "/app/results?" + values.Encode()
+}
+
+// resultActiveChips lists every condition narrowing the current table with the
+// URL that removes exactly that condition.
+func resultActiveChips(source *url.URL, page resultsPageData) []resultActiveChip {
+	chips := make([]resultActiveChip, 0, len(page.Filters)+4)
+	if page.Query != "" {
+		chips = append(chips, resultActiveChip{
+			Label: "Search", Value: page.Query, RemoveURL: resultDropParameterURL(source, "q"),
+		})
+	}
+	if page.JobID != "" {
+		name := page.JobID
+		for _, option := range page.JobOptions {
+			if option.ID == page.JobID {
+				name = option.Name
+			}
+		}
+		chips = append(chips, resultActiveChip{
+			Label: "Job", Value: name, RemoveURL: resultDropParameterURL(source, "job_id"),
+		})
+	}
+	for index, filter := range page.Filters {
+		chips = append(chips, resultActiveChip{
+			Label:     filter.FieldLabel,
+			Value:     strings.TrimSpace(filter.OperatorLabel + " " + filter.Value),
+			RemoveURL: resultDropFilterRowURL(source, page.Filters, index),
+		})
+	}
+	if page.FilterJSON != "" {
+		label := "Filter group"
+		if quick := resultQuickFilterLabel(page.FilterJSON, page.Capabilities); quick != "" {
+			label = "Lead workflow"
+		}
+		chips = append(chips, resultActiveChip{
+			Label:     label,
+			Value:     resultFilterGroupSummary(page.FilterJSON, page.Capabilities),
+			RemoveURL: resultDropParameterURL(source, "filter_json"),
+		})
+	}
+	if page.IncludeDuplicates {
+		chips = append(chips, resultActiveChip{
+			Label: "Rows", Value: "duplicate source rows included",
+			RemoveURL: resultDropParameterURL(source, "include_duplicates"),
+		})
+	}
+
+	return chips
+}
+
+// resultQuickFilterLabel names the lead workflow behind a filter expression,
+// or returns an empty string when the expression was hand written.
+func resultQuickFilterLabel(filterJSON string, capabilities appResultCapabilities) string {
+	for _, quick := range resultQuickFilters(&url.URL{Path: "/app/results"}, filterJSON, capabilities) {
+		if quick.Active {
+			return quick.Label
+		}
+	}
+
+	return ""
+}
+
+// resultFilterGroupSummary describes a nested expression in one short phrase.
+func resultFilterGroupSummary(filterJSON string, capabilities appResultCapabilities) string {
+	if label := resultQuickFilterLabel(filterJSON, capabilities); label != "" {
+		return label
+	}
+	var group ResultFilterGroup
+	if err := json.Unmarshal([]byte(filterJSON), &group); err != nil {
+		return "advanced expression"
+	}
+	conditions := 0
+	var count func(ResultFilterGroup)
+	count = func(current ResultFilterGroup) {
+		conditions += len(current.Filters)
+		for _, child := range current.Groups {
+			count(child)
+		}
+	}
+	count(group)
+	if conditions == 1 {
+		return "1 nested condition"
+	}
+
+	return fmt.Sprintf("%d nested conditions", conditions)
+}
+
+// resultDropParameterURL removes one query parameter and returns to page 1.
+func resultDropParameterURL(source *url.URL, parameter string) string {
+	values := source.Query()
+	values.Del(parameter)
+	values.Del("page")
+	values.Del("notice")
+	values.Del("view")
+
+	return "/app/results?" + values.Encode()
+}
+
+// resultDropFilterRowURL re-emits the simple filter rows without the one at
+// index, so a chip removes a single condition instead of the whole search.
+func resultDropFilterRowURL(source *url.URL, filters []appResultFilter, skip int) string {
+	values := source.Query()
+	for _, key := range []string{"filter_field", "filter_operator", "filter_value", "page", "notice", "view"} {
+		values.Del(key)
+	}
+	for index, filter := range filters {
+		if index == skip {
+			continue
+		}
+		values.Add("filter_field", filter.Field)
+		values.Add("filter_operator", filter.Operator)
+		values.Add("filter_value", filter.Value)
+	}
+
+	return "/app/results?" + values.Encode()
+}
+
+// resultExportPresets hand the current view to the export builder, optionally
+// narrowed to a practical outreach slice. Every URL is the real export route.
+func resultExportPresets(source *url.URL, capabilities appResultCapabilities) []resultExportPreset {
+	if !capabilities.CanExport {
+		return nil
+	}
+	presets := []resultExportPreset{{
+		Label: "Full data from this view",
+		Hint:  "Every column the export builder offers, filtered exactly as the table is now",
+		URL:   resultExportURL(source),
+	}, {
+		Label: "Call sheet",
+		Hint:  "Only businesses that already have a phone number or an email address",
+		URL:   resultPresetExportURL(source, resultLeadFilters("contactable")),
+	}, {
+		Label: "No-website leads",
+		Hint:  "Listings with no website stored at all",
+		URL:   resultPresetExportURL(source, resultLeadFilters("no-website")),
+	}}
+	if capabilities.CanProspect {
+		presets = append(presets, resultExportPreset{
+			Label: "Weak-website leads",
+			Hint:  "Dead, parked, SSL-broken, social-only, free-builder, or HTTP-only sites",
+			URL:   resultPresetExportURL(source, resultLeadFilters("weak-website")),
+		})
+	}
+
+	return presets
+}
+
+// resultPresetExportURL keeps the operator's text search, source job, and
+// duplicate scope while replacing the filter expression with the preset's.
+func resultPresetExportURL(source *url.URL, group *ResultFilterGroup) string {
+	values := source.Query()
+	for _, key := range []string{
+		"page", "page_size", "sort", "notice", "view",
+		"filter_field", "filter_operator", "filter_value", "filter_logic",
+	} {
+		values.Del(key)
+	}
+	if encoded := resultFilterGroupJSON(group); encoded != "" {
+		values.Set("filter_json", encoded)
+	} else {
+		values.Del("filter_json")
+	}
+	values.Set("source", "results")
+
+	return "/app/exports?" + values.Encode()
 }
 
 func resultExportURL(source *url.URL) string {
@@ -458,6 +799,7 @@ func (s *Server) loadAppBusinessDetail(r *http.Request) (appBusinessDetail, int,
 		Phones:         detail.Phones,
 		SocialProfiles: detail.SocialProfiles,
 		Prospect:       s.newAppProspectDetail(r.Context(), detail),
+		Identity:       newAppIdentityDetail(detail),
 		Quality: appQualityReport{
 			BusinessQualityReport: detail.Quality,
 			ScoreLabel:            strconv.FormatFloat(detail.Quality.Score, 'f', 0, 64),
@@ -466,10 +808,16 @@ func (s *Server) loadAppBusinessDetail(r *http.Request) (appBusinessDetail, int,
 		},
 	}
 	for _, item := range detail.Quality.Contributions {
+		weight := 0
+		if item.Maximum > 0 {
+			weight = int(math.Round(math.Max(0, math.Min(1, item.Contribution/item.Maximum)) * 100))
+		}
 		page.Quality.Contributions = append(page.Quality.Contributions, appQualityContribution{
 			QualityContribution: item,
 			ContributionLabel:   fmt.Sprintf("%+.2f", item.Contribution),
 			MaximumLabel:        fmt.Sprintf("%.2f", item.Maximum),
+			Weight:              weight,
+			Tone:                contributionTone(item.Contribution),
 		})
 	}
 	if detail.Business.Latitude != nil && detail.Business.Longitude != nil {
@@ -632,6 +980,76 @@ func prospectStateClass(value string) string {
 	return safeCSSState(value)
 }
 
+// newAppIdentityDetail turns the stored identity provenance into drawer rows.
+// A record written before identity provenance existed simply has no method,
+// and the drawer says so rather than inventing one.
+func newAppIdentityDetail(detail BusinessDetail) appIdentityDetail {
+	method := strings.TrimSpace(detail.IdentityMethod)
+	if method == "" {
+		return appIdentityDetail{}
+	}
+	confidence := "not recorded"
+	if detail.IdentityConfidence != nil {
+		confidence = fmt.Sprintf("%.0f%%", *detail.IdentityConfidence*100)
+	}
+
+	return appIdentityDetail{
+		HasMethod:       true,
+		Method:          method,
+		MethodLabel:     resultIdentityMethodLabel(method),
+		ConfidenceLabel: confidence,
+		Evidence:        parseIdentityEvidence(detail.IdentityEvidence),
+	}
+}
+
+// resultIdentityMethodLabel spells out the stored identity method codes.
+func resultIdentityMethodLabel(value string) string {
+	labels := map[string]string{
+		"exact":                 "Exact identifier match",
+		"new":                   "First time this business was seen",
+		"phone_corroborated":    "Matched on a corroborating phone number",
+		"website_corroborated":  "Matched on a corroborating website",
+		"address_corroborated":  "Matched on a corroborating address",
+		"name_corroborated":     "Matched on a corroborating name",
+		"geo_corroborated":      "Matched on corroborating coordinates",
+		"place_id":              "Matched on the Google place ID",
+		"cid":                   "Matched on the Google CID",
+		"data_id":               "Matched on the Google data ID",
+		"merged":                "Merged from a duplicate record",
+		"operator":              "Set by an operator decision",
+		"fallback":              "Matched by a corroborated fallback signal",
+		"normalized_name_geo":   "Matched on normalized name and coordinates",
+		"normalized_name_phone": "Matched on normalized name and phone number",
+	}
+	if label := labels[strings.ToLower(strings.TrimSpace(value))]; label != "" {
+		return label
+	}
+
+	return value
+}
+
+// parseIdentityEvidence tolerantly decodes the stored identity evidence array;
+// malformed JSON simply yields no evidence rows.
+func parseIdentityEvidence(raw string) []appIdentityEvidence {
+	var stored []struct {
+		Signal string `json:"signal"`
+		Value  string `json:"value"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		return nil
+	}
+	evidence := make([]appIdentityEvidence, 0, len(stored))
+	for _, item := range stored {
+		if strings.TrimSpace(item.Signal) == "" && strings.TrimSpace(item.Detail) == "" {
+			continue
+		}
+		evidence = append(evidence, appIdentityEvidence(item))
+	}
+
+	return evidence
+}
+
 // parseProspectReasons tolerantly decodes the stored prospect_reasons JSON
 // into displayable rows; malformed JSON simply yields no explanation.
 func parseProspectReasons(raw string) []appProspectReason {
@@ -643,15 +1061,25 @@ func parseProspectReasons(raw string) []appProspectReason {
 	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
 		return nil
 	}
+	largest := 0.0
+	for _, reason := range stored {
+		largest = math.Max(largest, math.Abs(reason.Contribution))
+	}
 	reasons := make([]appProspectReason, 0, len(stored))
 	for _, reason := range stored {
 		if strings.TrimSpace(reason.Signal) == "" && strings.TrimSpace(reason.Detail) == "" {
 			continue
 		}
+		weight := 0
+		if largest > 0 {
+			weight = int(math.Round(math.Abs(reason.Contribution) / largest * 100))
+		}
 		reasons = append(reasons, appProspectReason{
 			Signal:            reason.Signal,
 			ContributionLabel: fmt.Sprintf("%+.1f", reason.Contribution),
 			Detail:            reason.Detail,
+			Weight:            weight,
+			Tone:              contributionTone(reason.Contribution),
 		})
 	}
 

@@ -1,77 +1,217 @@
+{{/*
+Benchmark report for one job — a diagnostics document, not a dashboard.
+
+Reading order: identity, then the evidence strip an operator judges the run by,
+then dense sections in the order a diagnosis actually follows — what the plan
+did, how long it took, where the yield came from, when it saturated, what
+failed, which proxies were responsible, and what the businesses look like.
+
+Values the run never recorded render through the design system's muted inline
+empty state (see .empty-inline / .stat-value[data-empty]); they are never
+printed as a placeholder sentence at value weight.
+
+The compare control posts nothing: it reads GET /api/v1/benchmark/compare,
+which already exists in web/benchmark_api.go. app-monitor.js binds it
+defensively and also probes for an optional history endpoint, so this page is
+correct whether or not that endpoint exists in a given build.
+*/}}
 {{define "app/page/benchmark"}}{{template "app/layout" .}}{{end}}
+
+{{define "app/head"}}<script defer src="/static/js/app-monitor.js"></script>{{end}}
+
+{{define "app/topbar-slot"}}
+<div class="topbar-slot">
+    <span class="badge badge-outline">Benchmark</span>
+</div>
+{{end}}
 
 {{define "app/page-actions"}}
 <div class="page-actions">
-    <a class="button" href="/app/jobs/{{.Page.JobID}}">Back to job monitor</a>
-    <a class="button" href="{{.Page.APIPath}}">Download JSON report</a>
+    <a class="button button-sm" href="/app/jobs/{{.Page.JobID}}" data-endpoint="/app/jobs/{{.Page.JobID}}">{{template "app/icon-monitor"}}Job monitor</a>
+    <a class="button button-sm" href="{{.Page.APIPath}}" data-endpoint="{{.Page.APIPath}}">{{template "app/icon-exports"}}JSON report</a>
 </div>
 {{end}}
 
 {{define "app/content"}}
-<div class="section-stack">
+<div class="bench-report stack" data-benchmark-report data-job-id="{{.Page.JobID}}" data-compare-endpoint="{{.Page.ComparePath}}">
+
+    {{/* ------------------------------------------------------- REPORT IDENTITY */}}
     <section class="card" aria-labelledby="benchmark-identity-title">
-        <div class="card-header"><div><h2 id="benchmark-identity-title">Report identity</h2><p>Stable, self-contained evidence for version-to-version comparison. The JSON report at <code>{{.Page.APIPath}}</code> carries the same numbers.</p></div></div>
-        <div class="card-body"><dl class="key-value"><dt>Job</dt><dd>{{.Page.JobName}} <code>{{.Page.JobID}}</code></dd><dt>Engine version</dt><dd>{{if .Page.EngineVersion}}{{.Page.EngineVersion}}{{else}}not recorded{{end}}</dd><dt>Database schema</dt><dd>v{{.Page.SchemaVersion}}</dd><dt>Generated</dt><dd>{{.Page.GeneratedAt}}</dd></dl></div>
+        <div class="bench-identity">
+            <div class="bench-fact">
+                <span id="benchmark-identity-title">Report identity</span>
+                <b>{{.Page.JobName}}</b>
+            </div>
+            <div class="bench-fact"><span>Job</span><b class="t-mono">{{.Page.JobID}}</b></div>
+            <div class="bench-fact"><span>Engine</span><b>{{if .Page.EngineVersion}}{{.Page.EngineVersion}}{{else}}<span class="empty-inline">Not recorded</span>{{end}}</b></div>
+            <div class="bench-fact"><span>Schema</span><b>v{{.Page.SchemaVersion}}</b></div>
+            <div class="bench-fact"><span>Generated</span><b>{{.Page.GeneratedAt}}</b></div>
+            <div class="bench-identity-actions"><p class="t-caption t-mono">{{.Page.APIPath}}</p></div>
+        </div>
     </section>
 
-    <section class="grid metrics-grid" aria-label="Headline benchmark totals">
-        {{range .Page.Metrics}}<article class="card metric"><div class="metric-label">{{.Label}}</div><p class="metric-value">{{.Value}}</p><span class="metric-detail">{{.Detail}}</span></article>{{end}}
+    {{/* ------------------------------------------------------- EVIDENCE STRIP */}}
+    <section class="stat-grid" style="--stat-min: 9.5rem" aria-label="Headline benchmark evidence">
+        {{range .Page.Metrics}}<article class="stat stat-compact"><p class="stat-label">{{.Label}}</p><p class="stat-value num"{{if .Empty}} data-empty="true"{{end}}>{{.Value}}</p><p class="stat-meta">{{.Detail}}</p></article>{{end}}
     </section>
 
-    <section class="grid grid-2">
-        <article class="card"><div class="card-header"><div><h2>Task plan outcome</h2><p>Durable task states, attempts, and retries</p></div></div>
-            <div class="card-body"><dl class="key-value">{{range .Page.TaskRows}}<dt>{{.Label}}</dt><dd>{{.Value}}</dd>{{end}}</dl></div>
+    {{/* ------------------------------------------------------- COMPARE */}}
+    {{if .Page.CompareOptions}}
+    <section class="card bench-compare" data-compare-panel aria-labelledby="benchmark-compare-title">
+        <div class="card-header">
+            <div><h2 id="benchmark-compare-title">Compare with another run</h2><p>Candidate minus this run, straight from the stored evidence of both</p></div>
+        </div>
+        <div class="card-body">
+            <div class="bench-compare-form">
+                <div class="field">
+                    <label for="benchmark-compare-candidate">Candidate run</label>
+                    <select class="select" id="benchmark-compare-candidate" data-compare-candidate>
+                        {{range .Page.CompareOptions}}<option value="{{.ID}}">{{.Name}} &middot; {{.When}}{{if .State}} &middot; {{.State}}{{end}}</option>{{end}}
+                    </select>
+                </div>
+                <button class="button button-sm button-primary" type="button" data-compare-run>Compare</button>
+                <p class="field-hint" data-compare-status role="status">Both runs are read from durable evidence; nothing is recomputed.</p>
+            </div>
+        </div>
+        <div class="bench-deltas" data-compare-deltas hidden></div>
+    </section>
+    {{end}}
+
+    {{/* ------------------------------------------------------- PLAN + RUNTIME */}}
+    <div class="grid grid-2">
+        <article class="card">
+            <div class="card-header"><div><h2>Task plan outcome</h2><p>Durable task states, attempts, and retries</p></div></div>
+            <div class="card-body"><div class="bench-kv">{{range .Page.TaskRows}}<div><span class="bench-key">{{.Label}}</span><span class="bench-value num">{{if .Value}}{{.Value}}{{else}}<span class="empty-inline">Not recorded</span>{{end}}</span></div>{{end}}</div></div>
         </article>
-        <article class="card"><div class="card-header"><div><h2>Runtime</h2><p>Wall-clock evidence from the durable job runtime</p></div></div>
-            <div class="card-body"><dl class="key-value">{{range .Page.RuntimeRows}}<dt>{{.Label}}</dt><dd>{{.Value}}</dd>{{end}}</dl></div>
+        <article class="card">
+            <div class="card-header"><div><h2>Runtime</h2><p>Wall-clock evidence from the durable job runtime</p></div></div>
+            <div class="card-body"><div class="bench-kv">{{range .Page.RuntimeRows}}<div><span class="bench-key">{{.Label}}</span><span class="bench-value num">{{if .Value}}{{.Value}}{{else}}<span class="empty-inline">Not recorded</span>{{end}}</span></div>{{end}}</div></div>
         </article>
-    </section>
+    </div>
 
+    {{/* ------------------------------------------------------- YIELD BY QUERY */}}
     <section class="card" aria-labelledby="benchmark-yield-query-title">
         <div class="card-header"><div><h2 id="benchmark-yield-query-title">Yield by query</h2><p>Rows merged per executed query, with the share that was new</p></div></div>
-        {{if .Page.YieldByQuery}}<div class="table-wrap"><table class="data-table"><thead><tr><th>Query</th><th>Tasks</th><th>Rows added</th><th>Duplicates skipped</th><th>Unique ratio</th></tr></thead><tbody>{{range .Page.YieldByQuery}}<tr><td>{{.Key}}</td><td>{{.Tasks}}</td><td>{{.RowsAdded}}</td><td>{{.DuplicatesSkipped}}</td><td>{{.UniqueRatio}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="card-body"><p class="field-hint">No task queries recorded for this job.</p></div>{{end}}
+        {{if .Page.YieldByQuery}}
+        <div class="table-wrap overflow-safe bench-table-scroll" data-density="compact">
+            <table class="data-table">
+                <thead><tr><th scope="col">Query</th><th scope="col" class="num">Tasks</th><th scope="col" class="num">Rows added</th><th scope="col" class="num">Duplicates</th><th scope="col">Unique ratio</th></tr></thead>
+                <tbody>{{range .Page.YieldByQuery}}<tr><td>{{.Key}}</td><td class="num">{{.Tasks}}</td><td class="num">{{.RowsAdded}}</td><td class="num">{{.DuplicatesSkipped}}</td><td><span class="bench-ratio"><span>{{.UniqueRatio}}</span><span class="bench-ratio-track"><span class="bench-ratio-fill" style="--meter: {{.RatioPercent}}%"></span></span></span></td></tr>{{end}}</tbody>
+            </table>
+        </div>
+        {{else}}<div class="card-body"><div class="empty-state"><p class="empty-state-title">No task queries recorded</p><p class="empty-state-body">This run predates durable task evidence, or it never reached the planning stage.</p></div></div>{{end}}
     </section>
 
-    <section class="grid grid-2">
-        <article class="card"><div class="card-header"><div><h2>Yield by ZIP</h2><p>Parsed from GBP-shaped queries ending in a ZIP5</p></div></div>
-            {{if .Page.YieldByZip}}<div class="table-wrap"><table class="data-table"><thead><tr><th>ZIP</th><th>Tasks</th><th>Rows added</th><th>Duplicates</th><th>Unique ratio</th></tr></thead><tbody>{{range .Page.YieldByZip}}<tr><td>{{.Key}}</td><td>{{.Tasks}}</td><td>{{.RowsAdded}}</td><td>{{.DuplicatesSkipped}}</td><td>{{.UniqueRatio}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="card-body"><p class="field-hint">No ZIP-shaped queries in this run.</p></div>{{end}}
+    <div class="grid grid-2">
+        <article class="card">
+            <div class="card-header"><div><h2>Yield by ZIP</h2><p>Parsed from GBP-shaped queries ending in a ZIP5</p></div></div>
+            {{if .Page.YieldByZip}}
+            <div class="table-wrap overflow-safe bench-table-scroll" data-density="compact">
+                <table class="data-table">
+                    <thead><tr><th scope="col">ZIP</th><th scope="col" class="num">Tasks</th><th scope="col" class="num">Rows added</th><th scope="col" class="num">Duplicates</th><th scope="col">Unique ratio</th></tr></thead>
+                    <tbody>{{range .Page.YieldByZip}}<tr><td class="t-mono">{{.Key}}</td><td class="num">{{.Tasks}}</td><td class="num">{{.RowsAdded}}</td><td class="num">{{.DuplicatesSkipped}}</td><td><span class="bench-ratio"><span>{{.UniqueRatio}}</span><span class="bench-ratio-track"><span class="bench-ratio-fill" style="--meter: {{.RatioPercent}}%"></span></span></span></td></tr>{{end}}</tbody>
+                </table>
+            </div>
+            {{else}}<div class="card-body"><p class="empty-inline">No ZIP-shaped queries in this run.</p></div>{{end}}
         </article>
-        <article class="card"><div class="card-header"><div><h2>Yield by synonym</h2><p>Query prefix before &ldquo;in&rdquo;</p></div></div>
-            {{if .Page.YieldBySynonym}}<div class="table-wrap"><table class="data-table"><thead><tr><th>Synonym</th><th>Tasks</th><th>Rows added</th><th>Duplicates</th><th>Unique ratio</th></tr></thead><tbody>{{range .Page.YieldBySynonym}}<tr><td>{{.Key}}</td><td>{{.Tasks}}</td><td>{{.RowsAdded}}</td><td>{{.DuplicatesSkipped}}</td><td>{{.UniqueRatio}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="card-body"><p class="field-hint">No &ldquo;synonym in place&rdquo; queries in this run.</p></div>{{end}}
+        <article class="card">
+            <div class="card-header"><div><h2>Yield by synonym</h2><p>Query prefix before &ldquo;in&rdquo;</p></div></div>
+            {{if .Page.YieldBySynonym}}
+            <div class="table-wrap overflow-safe bench-table-scroll" data-density="compact">
+                <table class="data-table">
+                    <thead><tr><th scope="col">Synonym</th><th scope="col" class="num">Tasks</th><th scope="col" class="num">Rows added</th><th scope="col" class="num">Duplicates</th><th scope="col">Unique ratio</th></tr></thead>
+                    <tbody>{{range .Page.YieldBySynonym}}<tr><td>{{.Key}}</td><td class="num">{{.Tasks}}</td><td class="num">{{.RowsAdded}}</td><td class="num">{{.DuplicatesSkipped}}</td><td><span class="bench-ratio"><span>{{.UniqueRatio}}</span><span class="bench-ratio-track"><span class="bench-ratio-fill" style="--meter: {{.RatioPercent}}%"></span></span></span></td></tr>{{end}}</tbody>
+                </table>
+            </div>
+            {{else}}<div class="card-body"><p class="empty-inline">No &ldquo;synonym in place&rdquo; queries in this run.</p></div>{{end}}
         </article>
-    </section>
+    </div>
 
+    {{/* ------------------------------------------------------- SATURATION */}}
     <section class="card" aria-labelledby="benchmark-saturation-title">
         <div class="card-header"><div><h2 id="benchmark-saturation-title">Saturation trend</h2><p>Completed tasks in finish order: a falling cumulative new ratio means the area is saturating</p></div></div>
-        {{if .Page.Saturation}}<div class="table-wrap"><table class="data-table"><thead><tr><th>#</th><th>Task</th><th>Rows added</th><th>Duplicates skipped</th><th>Cumulative new ratio</th></tr></thead><tbody>{{range .Page.Saturation}}<tr><td>{{.Seq}}</td><td><code>{{.TaskKey}}</code></td><td>{{.RowsAdded}}</td><td>{{.DuplicatesSkipped}}</td><td>{{.CumulativeNewRatio}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="card-body"><p class="field-hint">No completed tasks yet.</p></div>{{end}}
+        {{if .Page.Saturation}}
+        {{/* app-monitor.js draws the chart below from these rows' data-* values. */}}
+        <div class="bench-chart-frame" data-saturation-frame hidden>
+            <p class="t-overline">Cumulative new ratio across the run</p>
+            <div class="overflow-safe" data-saturation-chart></div>
+            <p class="ops-chart-legend">
+                <span><i class="ops-swatch" aria-hidden="true"></i>Cumulative new ratio</span>
+                <span><i class="ops-swatch" data-series="duplicates" aria-hidden="true"></i>Rows added per task</span>
+            </p>
+        </div>
+        <div class="table-wrap overflow-safe bench-table-scroll" data-density="compact">
+            <table class="data-table" data-saturation-table>
+                <thead><tr><th scope="col" class="num">#</th><th scope="col">Task</th><th scope="col" class="num">Rows added</th><th scope="col" class="num">Duplicates skipped</th><th scope="col">Cumulative new ratio</th></tr></thead>
+                <tbody>{{range .Page.Saturation}}<tr data-seq="{{.Seq}}" data-rows="{{.RowsAdded}}" data-duplicates="{{.DuplicatesSkipped}}" data-ratio="{{.CumulativeNewRatio}}"><td class="num">{{.Seq}}</td><td><code class="t-mono">{{.TaskKey}}</code></td><td class="num">{{.RowsAdded}}</td><td class="num">{{.DuplicatesSkipped}}</td><td class="num">{{.CumulativeNewRatio}}</td></tr>{{end}}</tbody>
+            </table>
+        </div>
+        {{else}}<div class="card-body"><p class="empty-inline">No completed tasks yet.</p></div>{{end}}
     </section>
 
+    {{/* ------------------------------------------------------- FAILURES + PROXIES */}}
     <section class="card" aria-labelledby="benchmark-failures-title">
         <div class="card-header"><div><h2 id="benchmark-failures-title">Failures by class</h2><p>Warning and error worker events grouped by coarse cause; retries are attempts that returned to the queue</p></div></div>
-        {{if .Page.Failures}}<div class="table-wrap"><table class="data-table"><thead><tr><th>Class</th><th>Occurrences</th><th>Retries</th><th>Sample (redacted)</th></tr></thead><tbody>{{range .Page.Failures}}<tr><td>{{.Class}}</td><td>{{.Count}}</td><td>{{.Retries}}</td><td>{{.Sample}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="card-body"><p class="field-hint">No warnings or errors recorded for this run.</p></div>{{end}}
+        {{if .Page.Failures}}
+        <div class="table-wrap overflow-safe" data-density="compact">
+            <table class="data-table">
+                <thead><tr><th scope="col">Class</th><th scope="col" class="num">Occurrences</th><th scope="col" class="num">Retries</th><th scope="col">Sample (redacted)</th></tr></thead>
+                <tbody>{{range .Page.Failures}}<tr><td><span class="badge badge-danger">{{.Class}}</span></td><td class="num">{{.Count}}</td><td class="num">{{.Retries}}</td><td><span class="bench-sample" title="{{.Sample}}">{{.Sample}}</span></td></tr>{{end}}</tbody>
+            </table>
+        </div>
+        {{else}}<div class="card-body"><p class="empty-inline">No warnings or errors recorded for this run.</p></div>{{end}}
     </section>
 
     <section class="card" aria-labelledby="benchmark-proxies-title">
         <div class="card-header"><div><h2 id="benchmark-proxies-title">Proxy performance</h2><p>Aggregate task outcomes per proxy; credentials never appear here</p></div></div>
-        {{if .Page.Proxies}}<div class="table-wrap"><table class="data-table"><thead><tr><th>Proxy</th><th>Pool</th><th>Successes</th><th>Failures</th><th>Consecutive failures</th><th>Avg task time</th><th>Last error (redacted)</th></tr></thead><tbody>{{range .Page.Proxies}}<tr><td>{{.Name}}</td><td>{{if .Pool}}<code>{{.Pool}}</code>{{else}}&mdash;{{end}}</td><td>{{.Successes}}</td><td>{{.Failures}}</td><td>{{.Consecutive}}</td><td>{{.AverageTask}}</td><td>{{.LastError}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="card-body"><p class="field-hint">No proxy data recorded.</p></div>{{end}}
+        {{if .Page.Proxies}}
+        <div class="table-wrap overflow-safe" data-density="compact">
+            <table class="data-table">
+                <thead><tr><th scope="col">Proxy</th><th scope="col">Pool</th><th scope="col" class="num">Successes</th><th scope="col" class="num">Failures</th><th scope="col" class="num">Consecutive</th><th scope="col" class="num">Avg task</th><th scope="col">Last error (redacted)</th></tr></thead>
+                <tbody>{{range .Page.Proxies}}<tr><td>{{.Name}}</td><td>{{if .Pool}}<code class="t-mono">{{.Pool}}</code>{{else}}<span class="empty-inline">&mdash;</span>{{end}}</td><td class="num">{{.Successes}}</td><td class="num">{{.Failures}}</td><td class="num">{{.Consecutive}}</td><td class="num">{{.AverageTask}}</td><td><span class="bench-sample" title="{{.LastError}}">{{if .LastError}}{{.LastError}}{{else}}&mdash;{{end}}</span></td></tr>{{end}}</tbody>
+            </table>
+        </div>
+        {{else}}<div class="card-body"><p class="empty-inline">No proxy data recorded.</p></div>{{end}}
     </section>
 
-    <section class="grid grid-2">
-        <article class="card"><div class="card-header"><div><h2>Website status</h2><p>Businesses linked to this job</p></div></div>
-            {{if .Page.WebsiteStatus}}<div class="table-wrap"><table class="data-table"><thead><tr><th>Status</th><th>Businesses</th></tr></thead><tbody>{{range .Page.WebsiteStatus}}<tr><td>{{.Label}}</td><td>{{.Count}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="card-body"><p class="field-hint">No businesses linked to this job.</p></div>{{end}}
+    {{/* ------------------------------------------------------- BUSINESS OUTCOMES */}}
+    <div class="grid grid-2">
+        <article class="card">
+            <div class="card-header"><div><h2>Website status</h2><p>Businesses linked to this job</p></div></div>
+            <div class="card-body">
+                {{if .Page.WebsiteStatus}}
+                <div class="bench-dist">{{range .Page.WebsiteStatus}}<div class="bench-dist-row"{{if .Tone}} data-tone="{{.Tone}}"{{end}}><span class="truncate">{{.Label}}</span><span class="bench-dist-track"><span class="bench-dist-fill" style="--meter: {{.Percent}}%"></span></span><span>{{.Count}}</span></div>{{end}}</div>
+                {{else}}<p class="empty-inline">No businesses linked to this job.</p>{{end}}
+            </div>
         </article>
-        <article class="card"><div class="card-header"><div><h2>Contact availability</h2><p>Coverage over the {{.Page.Email.Total}} linked businesses</p></div></div>
-            <div class="card-body"><dl class="key-value"><dt>With email</dt><dd>{{.Page.Email.WithEmail}}</dd><dt>With phone</dt><dd>{{.Page.Email.WithPhone}}</dd><dt>With both</dt><dd>{{.Page.Email.WithBoth}}</dd><dt>Total</dt><dd>{{.Page.Email.Total}}</dd></dl></div>
+        <article class="card">
+            <div class="card-header"><div><h2>Contact availability</h2><p>Coverage over the {{.Page.Email.Total}} linked businesses</p></div></div>
+            <div class="card-body"><div class="bench-kv">
+                <div><span class="bench-key">With email</span><span class="bench-value num">{{.Page.Email.WithEmail}}</span></div>
+                <div><span class="bench-key">With phone</span><span class="bench-value num">{{.Page.Email.WithPhone}}</span></div>
+                <div><span class="bench-key">With both</span><span class="bench-value num">{{.Page.Email.WithBoth}}</span></div>
+                <div><span class="bench-key">Total</span><span class="bench-value num">{{.Page.Email.Total}}</span></div>
+            </div></div>
         </article>
-    </section>
+    </div>
 
-    <section class="grid grid-2">
-        <article class="card"><div class="card-header"><div><h2>Prospect tiers</h2><p>Worth-calling classification of linked businesses</p></div></div>
-            {{if .Page.ProspectTiers}}<div class="table-wrap"><table class="data-table"><thead><tr><th>Tier</th><th>Businesses</th></tr></thead><tbody>{{range .Page.ProspectTiers}}<tr><td>{{.Label}}</td><td>{{.Count}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="card-body"><p class="field-hint">No prospect tiers recorded.</p></div>{{end}}
+    <div class="grid grid-2">
+        <article class="card">
+            <div class="card-header"><div><h2>Prospect tiers</h2><p>Worth-calling classification of linked businesses</p></div></div>
+            <div class="card-body">
+                {{if .Page.ProspectTiers}}
+                <div class="bench-dist">{{range .Page.ProspectTiers}}<div class="bench-dist-row"{{if .Tone}} data-tone="{{.Tone}}"{{end}}><span class="truncate">{{.Label}}</span><span class="bench-dist-track"><span class="bench-dist-fill" style="--meter: {{.Percent}}%"></span></span><span>{{.Count}}</span></div>{{end}}</div>
+                {{else}}<p class="empty-inline">No prospect tiers recorded.</p>{{end}}
+            </div>
         </article>
-        <article class="card"><div class="card-header"><div><h2>Prospect statuses</h2><p>Stored GBP website-status signals</p></div></div>
-            {{if .Page.ProspectStatus}}<div class="table-wrap"><table class="data-table"><thead><tr><th>Status</th><th>Businesses</th></tr></thead><tbody>{{range .Page.ProspectStatus}}<tr><td>{{.Label}}</td><td>{{.Count}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="card-body"><p class="field-hint">No prospect statuses recorded.</p></div>{{end}}
+        <article class="card">
+            <div class="card-header"><div><h2>Prospect statuses</h2><p>Stored GBP website-status signals</p></div></div>
+            <div class="card-body">
+                {{if .Page.ProspectStatus}}
+                <div class="bench-dist">{{range .Page.ProspectStatus}}<div class="bench-dist-row"{{if .Tone}} data-tone="{{.Tone}}"{{end}}><span class="truncate">{{.Label}}</span><span class="bench-dist-track"><span class="bench-dist-fill" style="--meter: {{.Percent}}%"></span></span><span>{{.Count}}</span></div>{{end}}</div>
+                {{else}}<p class="empty-inline">No prospect statuses recorded.</p>{{end}}
+            </div>
         </article>
-    </section>
+    </div>
 </div>
 {{end}}

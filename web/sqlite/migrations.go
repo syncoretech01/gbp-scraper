@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	currentSchemaVersion           = 12
+	currentSchemaVersion           = 13
 	migrationChecksumSchemaVersion = 4
 )
 
@@ -1126,6 +1126,58 @@ var schemaMigrations = []schemaMigration{
 				last_error TEXT NOT NULL DEFAULT '',
 				updated_at INTEGER NOT NULL DEFAULT 0
 			)`,
+		},
+	},
+	{
+		version: 13,
+		name:    "campaign-lineage-and-benchmark-history",
+		statements: []string{
+			// Campaign lineage: one row per job that belongs to a rescan
+			// campaign, linking it to the job it was re-run from and to the
+			// campaign root. Purely additive — a job without a row behaves
+			// exactly as it always did.
+			`CREATE TABLE IF NOT EXISTS job_campaigns (
+				job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+				campaign_id TEXT NOT NULL,
+				root_job_id TEXT NOT NULL DEFAULT '',
+				source_job_id TEXT NOT NULL DEFAULT '',
+				mode TEXT NOT NULL DEFAULT '',
+				generation INTEGER NOT NULL DEFAULT 0,
+				idempotency_key TEXT NOT NULL DEFAULT '',
+				created_at INTEGER NOT NULL DEFAULT 0
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_job_campaigns_campaign
+			ON job_campaigns(campaign_id, generation, job_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_job_campaigns_source
+			ON job_campaigns(source_job_id)`,
+			// One rescan request may be retried; a repeat carrying the same
+			// key must resolve to the job the first attempt created rather
+			// than starting a second run over the same plan.
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_job_campaigns_idempotency
+			ON job_campaigns(campaign_id, idempotency_key)
+			WHERE idempotency_key <> ''`,
+			// Lightweight benchmark snapshots so run history and run-to-run
+			// comparison survive without recomputing every report. The full
+			// report JSON is kept alongside the scalars for exact replay.
+			`CREATE TABLE IF NOT EXISTS job_benchmark_snapshots (
+				job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+				captured_at INTEGER NOT NULL,
+				engine_version TEXT NOT NULL DEFAULT '',
+				schema_version INTEGER NOT NULL DEFAULT 0,
+				unique_businesses INTEGER NOT NULL DEFAULT 0,
+				rows_added INTEGER NOT NULL DEFAULT 0,
+				duplicates_skipped INTEGER NOT NULL DEFAULT 0,
+				duplicate_rate REAL NOT NULL DEFAULT 0,
+				tasks_completed INTEGER NOT NULL DEFAULT 0,
+				tasks_failed INTEGER NOT NULL DEFAULT 0,
+				tasks_skipped INTEGER NOT NULL DEFAULT 0,
+				retries INTEGER NOT NULL DEFAULT 0,
+				wall_seconds REAL NOT NULL DEFAULT 0,
+				new_per_minute REAL NOT NULL DEFAULT 0,
+				report TEXT NOT NULL DEFAULT '{}'
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_job_benchmark_snapshots_time
+			ON job_benchmark_snapshots(captured_at DESC, job_id)`,
 		},
 	},
 }

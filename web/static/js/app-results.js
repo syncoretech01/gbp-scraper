@@ -6,12 +6,14 @@
 
     const currentLayoutKey = "gmaps-results-layout-v1";
     const namedLayoutsKey = "gmaps-results-layouts-v1";
+    const columnProfileKey = "gmaps-results-profile-v1";
     const maximumNamedLayouts = 12;
     const maximumStorageBytes = 64 * 1024;
     const maximumClipboardBytes = 1024 * 1024;
     const maximumFrozenColumns = 4;
     const table = explorer.querySelector(".results-table");
     const tableBody = table && table.tBodies[0];
+    const tableWrap = explorer.querySelector(".results-table-wrap");
     const tablePane = explorer.querySelector("[data-results-table-pane]");
     const mapPane = explorer.querySelector("[data-results-map-pane]");
     const mapFrame = explorer.querySelector("[data-results-map-frame]");
@@ -19,6 +21,7 @@
     const pagination = explorer.querySelector("[data-results-pagination]");
     const layoutDialog = document.getElementById("results-layout-dialog");
     const layoutSelect = explorer.querySelector("[data-layout-select]");
+    const profileSelect = explorer.querySelector("[data-column-profile]");
     const layoutState = explorer.querySelector("[data-layout-state]");
     const statusRegion = explorer.querySelector("[data-results-status]");
     const count = explorer.querySelector("[data-selection-count]");
@@ -35,16 +38,37 @@
         label: header.dataset.columnLabel || header.textContent.trim()
     })) : [];
     const knownColumnKeys = columnDefinitions.map((column) => column.key);
+
+    // Column profiles are named working sets over the existing column
+    // machinery. "select", "name", and "actions" are implicit in every profile
+    // because a row is unusable without them.
+    const alwaysVisibleColumns = ["select", "name", "actions"];
+    const columnProfiles = [
+        { id: "prospecting", label: "Prospecting", columns: ["location", "website", "prospect", "tier", "score", "contacts"] },
+        { id: "contact", label: "Contact", columns: ["category", "location", "contacts", "website", "workflow"] },
+        { id: "quality", label: "Quality", columns: ["category", "rating", "reviews", "quality", "workflow", "source", "updated"] },
+        { id: "geo", label: "Geography", columns: ["category", "location", "address", "source", "updated"] },
+        { id: "everything", label: "Everything", columns: knownColumnKeys.slice() }
+    ];
+    const defaultProfileID = "prospecting";
+
+    function profileColumns(id) {
+        const profile = columnProfiles.find((candidate) => candidate.id === id);
+        const requested = (profile ? profile.columns : []).concat(alwaysVisibleColumns);
+
+        return knownColumnKeys.filter((key) => requested.includes(key));
+    }
+
     const defaultLayout = {
         order: knownColumnKeys.slice(),
-        visible: knownColumnKeys.slice(),
+        visible: profileColumns(defaultProfileID),
         frozen: [],
         widths: {},
-        density: "comfortable",
+        density: "compact",
         group: "none",
         mode: "table"
     };
-    let layout = normalizeLayout(readStoredJSON(currentLayoutKey));
+    let layout = normalizeLayout(readStoredJSON(currentLayoutKey) || defaultLayout);
     let activeLayoutName = "";
 
     resultRows().forEach((row, index) => { row.dataset.originalIndex = String(index); });
@@ -111,7 +135,7 @@
                 if (knownColumnKeys.includes(key) && Number.isFinite(width)) widths[key] = Math.max(72, Math.min(640, Math.round(width)));
             });
         }
-        const density = ["compact", "comfortable", "spacious"].includes(input.density) ? input.density : "comfortable";
+        const density = ["compact", "comfortable", "spacious"].includes(input.density) ? input.density : "compact";
         const group = ["none", "category", "city", "status", "reviewed"].includes(input.group) ? input.group : "none";
         const modeAllowed = mapPane ? ["table", "map", "split"] : ["table"];
         const mode = modeAllowed.includes(input.mode) ? input.mode : "table";
@@ -235,6 +259,56 @@
 
     function updateLayoutState() {
         if (layoutState) layoutState.textContent = activeLayoutName ? "Layout: " + activeLayoutName : "Current layout";
+    }
+
+    // --- Column profiles ---------------------------------------------------
+    // A profile is only a named visible-column set; order, widths, frozen
+    // columns, density, and grouping stay under the operator's control.
+
+    function matchingProfileID() {
+        const current = layout.visible.slice().sort().join(",");
+        const match = columnProfiles.find((profile) => profileColumns(profile.id).slice().sort().join(",") === current);
+
+        return match ? match.id : "";
+    }
+
+    function populateProfileSelect() {
+        if (!profileSelect) return;
+        profileSelect.replaceChildren();
+        columnProfiles.forEach((profile) => {
+            const option = document.createElement("option");
+            option.value = profile.id;
+            option.textContent = profile.label + " columns";
+            profileSelect.appendChild(option);
+        });
+        const custom = document.createElement("option");
+        custom.value = "";
+        custom.textContent = "Custom columns";
+        profileSelect.appendChild(custom);
+        syncProfileSelect();
+    }
+
+    function syncProfileSelect() {
+        if (profileSelect) profileSelect.value = matchingProfileID();
+    }
+
+    function applyColumnProfile(id) {
+        const columns = profileColumns(id);
+        if (!columns.length) return;
+        layout.visible = columns;
+        layout.frozen = layout.frozen.filter((key) => columns.includes(key));
+        applyLayout(layout, true);
+        markLayoutChanged();
+        writeStorage(columnProfileKey, id);
+        const profile = columnProfiles.find((candidate) => candidate.id === id);
+        announce("Switched to the " + (profile ? profile.label.toLowerCase() : id) + " column profile.");
+    }
+
+    function restoreStoredProfile() {
+        if (readStoredJSON(currentLayoutKey)) return;
+        const stored = readStorage(columnProfileKey);
+        const id = columnProfiles.some((profile) => profile.id === stored) ? stored : defaultProfileID;
+        layout.visible = profileColumns(id);
     }
 
     function headerFor(key) {
@@ -408,9 +482,16 @@
         applyColumnVisibilityAndWidths();
         groupRows();
         if (table) table.dataset.density = layout.density;
-        explorer.querySelectorAll("[data-layout-density]").forEach((control) => { control.value = layout.density; });
+        if (tableWrap) tableWrap.dataset.density = layout.density;
+        // The density control is a segmented radio group, so the stored value
+        // selects an input rather than writing to a single control's value.
+        explorer.querySelectorAll("[data-layout-density]").forEach((control) => {
+            if (control.type === "radio") control.checked = control.value === layout.density;
+            else control.value = layout.density;
+        });
         explorer.querySelectorAll("[data-layout-group]").forEach((control) => { control.value = layout.group; });
         setViewMode(layout.mode);
+        syncProfileSelect();
         renderColumnControls();
         window.requestAnimationFrame(applyFrozenColumns);
         if (persist) persistCurrentLayout();
@@ -817,6 +898,10 @@
             applyLayout(layout, true);
             markLayoutChanged();
         }
+        if (event.target.matches("[data-column-profile]")) {
+            if (event.target.value) applyColumnProfile(event.target.value);
+            else syncProfileSelect();
+        }
         if (event.target.matches("[data-layout-group]")) {
             layout.group = event.target.value;
             applyLayout(layout, true);
@@ -952,10 +1037,14 @@
         });
     }
 
-    const filterForm = explorer.querySelector('form[aria-labelledby="result-filter-title"]');
+    const filterForm = explorer.querySelector("[data-results-query-form]");
+    // The filter controls live in a drawer and reach the toolbar's search form
+    // through the form attribute, so they are read from form.elements rather
+    // than by descendant lookup.
     if (filterForm) {
+        const nestedInput = () => filterForm.elements.namedItem("filter_json");
         filterForm.addEventListener("submit", (event) => {
-            const input = filterForm.querySelector('[name="filter_json"]');
+            const input = nestedInput();
             if (!input || !input.value.trim()) return;
             try {
                 const parsed = JSON.parse(input.value);
@@ -967,7 +1056,7 @@
                 input.reportValidity();
             }
         });
-        const nested = filterForm.querySelector('[name="filter_json"]');
+        const nested = nestedInput();
         if (nested) nested.addEventListener("input", () => nested.setCustomValidity(""));
     }
 
@@ -998,7 +1087,9 @@
     }
 
     explorer.querySelectorAll(".filter-row").forEach(updateFilterRow);
+    restoreStoredProfile();
     populateLayoutSelect();
+    populateProfileSelect();
     setupSortableHeaders();
     setupResizeHandles();
     applyLayout(layout, false);

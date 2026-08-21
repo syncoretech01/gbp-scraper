@@ -1,179 +1,433 @@
+{{/*
+Dashboard — the operator command centre.
+
+Answers, in reading order: what is running right now, what needs my attention,
+what did the last campaigns yield, where is the prospect pipeline, and how is
+the workspace trending. Navigation is the sidebar's job, so nothing here
+duplicates it.
+
+Every number below comes from dashboardPageData in web/app_pages.go and every
+link is a route registered in web/web.go. Page-specific layout lives in
+static/css/views/dashboard.css; components come from app.css unchanged.
+*/}}
 {{define "app/page/dashboard"}}{{template "app/layout" .}}{{end}}
 
 {{define "app/page-actions"}}
 <div class="page-actions">
     {{if .Features.System}}<a class="button" href="/app/system" data-action="navigate" data-endpoint="/app/system">System health</a>{{end}}
-    <a class="button button-primary" href="/app/scrapes/new" data-action="navigate" data-endpoint="/app/scrapes/new"><span aria-hidden="true">＋</span> New scrape</a>
+    <a class="button" href="/app/jobs" data-action="navigate" data-endpoint="/app/jobs">All jobs</a>
+    <a class="button button-primary" href="/app/scrapes/new" data-action="navigate" data-endpoint="/app/scrapes/new">{{template "app/icon-plus"}} New scrape</a>
 </div>
 {{end}}
 
 {{define "app/content"}}
-<div class="section-stack" data-dashboard data-endpoint="/api/v1/dashboard">
-    <section class="quick-actions" aria-label="Quick actions">
-        <a class="quick-action" href="/app/scrapes/new" data-action="navigate" data-endpoint="/app/scrapes/new"><strong>New scrape</strong><span>Guided wizard with presets</span></a>
-        <a class="quick-action" href="/app/jobs?state=running,queued" data-action="navigate" data-endpoint="/app/jobs?state=running,queued"><strong>Active jobs</strong><span>{{.Page.Metrics.ActiveJobs}} running &middot; {{.Page.Metrics.QueuedJobs}} queued</span></a>
-        <a class="quick-action" href="/app/results" data-action="navigate" data-endpoint="/app/results"><strong>Results</strong><span>{{.Page.Metrics.UniqueBusinesses}} unique businesses</span></a>
-        <a class="quick-action" href="/app/map" data-action="navigate" data-endpoint="/app/map"><strong>Map Explorer</strong><span>Plan areas and inspect coverage</span></a>
-        {{if .Features.Exports}}<a class="quick-action" href="/app/exports" data-action="navigate" data-endpoint="/app/exports"><strong>Exports</strong><span>CSV, JSON, Excel, and more</span></a>{{end}}
-        {{if .Features.Proxies}}<a class="quick-action" href="/app/proxies" data-action="navigate" data-endpoint="/app/proxies"><strong>Proxies</strong><span>{{.Page.Metrics.HealthyProxies}}/{{.Page.Metrics.TotalProxies}} healthy</span></a>{{end}}
-    </section>
+<div class="section-stack dashboard" data-dashboard data-endpoint="/api/v1/dashboard">
 
-    <section class="grid metrics-grid" aria-label="Workspace summary">
-        <article class="card metric">
-            <div class="metric-label"><span>Unique businesses</span><span aria-hidden="true">▦</span></div>
-            <p class="metric-value" data-number="{{.Page.Metrics.UniqueBusinesses}}">{{.Page.Metrics.UniqueBusinesses}}</p>
-            <p class="metric-detail">{{.Page.Metrics.RawRecords}} raw records · {{.Page.Metrics.Duplicates}} duplicates</p>
+    {{/* --- 1. KPI strip ------------------------------------------------ */}}
+    <section class="stat-grid dash-kpis" aria-label="Workspace summary">
+        <article class="stat stat-compact">
+            <p class="stat-label"><span>Unique businesses</span></p>
+            <p class="stat-value num" data-number="{{.Page.Metrics.UniqueBusinesses}}">{{.Page.Metrics.UniqueBusinesses}}</p>
+            <p class="stat-meta"><span class="num">{{.Page.Metrics.RawRecords}}</span> raw &middot; <span class="num">{{.Page.Metrics.Duplicates}}</span> duplicate rows</p>
         </article>
-        <article class="card metric">
-            <div class="metric-label"><span>Collected today</span><span aria-hidden="true">↗</span></div>
-            <p class="metric-value" data-number="{{.Page.Metrics.CollectedToday}}">{{.Page.Metrics.CollectedToday}}</p>
-            <p class="metric-detail">{{.Page.Metrics.CollectedWeek}} this week · {{.Page.Metrics.CollectedMonth}} this month</p>
+        <article class="stat stat-compact">
+            <p class="stat-label"><span>Collected today</span></p>
+            <p class="stat-value num" data-number="{{.Page.Metrics.CollectedToday}}">{{.Page.Metrics.CollectedToday}}</p>
+            <p class="stat-meta"><span class="num">{{.Page.Metrics.CollectedWeek}}</span> this week &middot; <span class="num">{{.Page.Metrics.CollectedMonth}}</span> this month</p>
         </article>
-        <article class="card metric">
-            <div class="metric-label"><span>Active jobs</span><span aria-hidden="true">◉</span></div>
-            <p class="metric-value" data-number="{{.Page.Metrics.ActiveJobs}}">{{.Page.Metrics.ActiveJobs}}</p>
-            <p class="metric-detail">{{.Page.Metrics.QueuedJobs}} queued · {{.Page.Metrics.PausedJobs}} paused · {{.Page.Metrics.PartialJobs}} partial</p>
+        <article class="stat stat-compact">
+            <p class="stat-label"><span>Contact coverage</span></p>
+            <p class="stat-value num">{{.Page.Metrics.EmailCoverage}}%</p>
+            <p class="stat-meta">email &middot; <span class="num">{{.Page.Metrics.PhoneCoverage}}%</span> phone &middot; <span class="num">{{.Page.Metrics.WebsiteCoverage}}%</span> web</p>
         </article>
-        <article class="card metric">
-            <div class="metric-label"><span>Contact coverage</span><span aria-hidden="true">@</span></div>
-            <p class="metric-value">{{.Page.Metrics.EmailCoverage}}%</p>
-            <p class="metric-detail">{{.Page.Metrics.Emails}} email · {{.Page.Metrics.Phones}} phone · {{.Page.Metrics.SocialProfiles}} social</p>
+        <article class="stat stat-compact">
+            <p class="stat-label"><span>Active jobs</span></p>
+            <p class="stat-value num" data-number="{{.Page.Metrics.ActiveJobs}}">{{.Page.Metrics.ActiveJobs}}</p>
+            <p class="stat-meta"><span class="num">{{.Page.Metrics.QueuedJobs}}</span> queued &middot; <span class="num">{{.Page.Metrics.PausedJobs}}</span> paused</p>
         </article>
-        <article class="card metric">
-            <div class="metric-label"><span>Collection speed</span><span aria-hidden="true">⚡</span></div>
-            <p class="metric-value">{{.Page.Metrics.PlacesPerMinute}}</p>
-            <p class="metric-detail">places/min · {{.Page.Metrics.AverageDuration}} average job</p>
+        <article class="stat stat-compact">
+            <p class="stat-label"><span>Collection speed</span></p>
+            <p class="stat-value num">{{.Page.Metrics.PlacesPerMinute}}</p>
+            <p class="stat-meta">places/min &middot; {{.Page.Metrics.AverageDuration}} average run</p>
         </article>
-        <article class="card metric">
-            <div class="metric-label"><span>Local storage</span><span aria-hidden="true">◫</span></div>
-            <p class="metric-value">{{.Page.Metrics.DatabaseSize}}</p>
-            <p class="metric-detail">{{.Page.Metrics.DiskFree}} free · {{.Page.Metrics.ExportStorage}} exports · {{.Page.Metrics.ScreenshotStorage}} screenshots · {{.Page.Metrics.LogStorage}} logs</p>
-        </article>
-        <article class="card metric">
-            <div class="metric-label"><span>Proxy pool</span><span aria-hidden="true">↔</span></div>
-            <p class="metric-value">{{.Page.Metrics.ProxySuccessRate}}</p>
-            <p class="metric-detail">success · {{.Page.Metrics.ProxyBlockRate}} blocked · {{.Page.Metrics.HealthyProxies}}/{{.Page.Metrics.TotalProxies}} healthy · {{.Page.Metrics.ProxyLatency}}</p>
+        <article class="stat stat-compact">
+            <p class="stat-label"><span>Local storage</span></p>
+            <p class="stat-value">{{.Page.Metrics.DatabaseSize}}</p>
+            <p class="stat-meta">database &middot; {{.Page.Metrics.DiskFree}} free on disk</p>
         </article>
     </section>
 
-    <section class="grid grid-2" aria-label="Throughput summary">
-        <article class="card">
-            <div class="card-header"><div><h2>Job outcomes</h2><p>Every local job by terminal state</p></div><a href="/app/jobs" data-action="navigate" data-endpoint="/app/jobs">Open jobs</a></div>
-            <div class="card-body"><div class="estimate"><div><span>Completed</span><strong>{{.Page.Metrics.CompletedJobs}}</strong></div><div><span>Partial</span><strong>{{.Page.Metrics.PartialJobs}}</strong></div><div><span>Failed</span><strong>{{.Page.Metrics.FailedJobs}}</strong></div><div><span>Cancelled</span><strong>{{.Page.Metrics.CancelledJobs}}</strong></div></div></div>
-        </article>
-        <article class="card" aria-labelledby="yield-heading">
-            <div class="card-header"><div><h2 id="yield-heading">Coverage yield</h2><p>How the last {{.Page.Yield.Jobs}} scraping jobs converted raw scraping into unique businesses</p></div></div>
-            <div class="card-body section-stack">
-                {{if .Page.Yield.Jobs}}
-                <div class="funnel-grid">
-                    <div class="funnel-step"><strong class="numeric">{{.Page.Yield.RawRecords}}</strong><span>Raw records collected</span></div>
-                    <div class="funnel-step"><strong class="numeric">{{.Page.Yield.UniqueRecords}}</strong><span>{{.Page.Yield.UniqueYield}} unique yield</span></div>
-                    <div class="funnel-step"><strong class="numeric">{{.Page.Yield.Duplicates}}</strong><span>{{.Page.Yield.DuplicateShare}} duplicate work</span></div>
-                    <div class="funnel-step"><strong class="numeric">{{.Page.Yield.Emails}}</strong><span>{{.Page.Yield.EmailShare}} of unique have email</span></div>
+    {{/* --- 2. Running now + attention ---------------------------------- */}}
+    <div class="split-pane dash-command" style="--aside-width: 26rem;">
+        <div class="dash-command-main">
+    <section class="card card-flush" aria-labelledby="running-heading">
+            <header class="card-header">
+                <div>
+                    <h2 class="card-title" id="running-heading">Running now</h2>
+                    <p class="card-subtitle">Live and queued runs you can still steer.</p>
                 </div>
-                <div class="meter-row"><div class="metric-label"><span>Unique per raw record</span><strong>{{.Page.Yield.UniqueYield}}</strong></div><div class="meter-track"><div class="meter-fill" data-tone="success" style="--meter: {{.Page.Yield.UniquePercent}}%"></div></div></div>
-                <div class="meter-row"><div class="metric-label"><span>Duplicate share</span><strong>{{.Page.Yield.DuplicateShare}}</strong></div><div class="meter-track"><div class="meter-fill" data-tone="warning" style="--meter: {{.Page.Yield.DuplicatePercent}}%"></div></div></div>
-                <div class="meter-row"><div class="metric-label"><span>Email coverage of unique</span><strong>{{.Page.Yield.EmailShare}}</strong></div><div class="meter-track"><div class="meter-fill" style="--meter: {{.Page.Yield.EmailPercent}}%"></div></div></div>
-                <p class="table-footnote">
-                    {{if .Page.Yield.BestJobName}}Best coverage: <a href="/app/jobs/{{.Page.Yield.BestJobID}}" data-action="navigate" data-endpoint="/app/jobs/{{.Page.Yield.BestJobID}}">{{.Page.Yield.BestJobName}}</a> at {{.Page.Yield.BestJobYield}}.{{end}}
-                    {{if .Page.Yield.WorstJobName}} Thinnest: <a href="/app/jobs/{{.Page.Yield.WorstJobID}}" data-action="navigate" data-endpoint="/app/jobs/{{.Page.Yield.WorstJobID}}">{{.Page.Yield.WorstJobName}}</a> at {{.Page.Yield.WorstJobYield}} — a low share usually means the grid is over-sampling the same places.{{end}}
-                </p>
-                {{else}}<div class="empty-state"><div><strong>No coverage evidence yet</strong><span>Yield is computed from jobs that have committed raw records. Run a scrape to populate it.</span></div></div>{{end}}
-            </div>
-        </article>
-    </section>
-
-    <section class="grid grid-2" aria-label="Collection analysis">
-        <article class="card">
-            <div class="card-header"><div><h2>Results collected</h2><p>Committed business records over the last 30 days</p></div><a href="/app/results" data-action="navigate" data-endpoint="/app/results">Explore</a></div>
+                <div class="card-actions">
+                    <a class="button button-sm" href="/app/jobs?state=running,starting,queued,paused" data-action="navigate" data-endpoint="/app/jobs?state=running,starting,queued,paused">Job queue</a>
+                </div>
+            </header>
             <div class="card-body">
-                {{if .Page.CollectionByDate}}
-                <div class="chart" role="img" aria-label="Results collected by date">
+                {{if .Page.RunningJobs}}
+                <div class="table-wrap overflow-safe" data-density="compact">
                     <table class="data-table">
-                        <thead><tr><th>Date</th><th>Records</th><th>Relative volume</th></tr></thead>
-                        <tbody>{{range .Page.CollectionByDate}}<tr><td>{{.Label}}</td><td>{{.Value}}</td><td><progress max="{{$.Page.CollectionMax}}" value="{{.Value}}">{{.Value}}</progress></td></tr>{{end}}</tbody>
+                        <caption class="sr-only">Jobs currently queued, running, or paused</caption>
+                        <thead>
+                            <tr>
+                                <th scope="col">Job</th>
+                                <th scope="col">State</th>
+                                <th scope="col" class="dash-progress-col">Progress</th>
+                                <th scope="col" class="num">Unique</th>
+                                <th scope="col">Controls</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        {{range .Page.RunningJobs}}
+                            <tr>
+                                <td>
+                                    <a class="dash-job-link" href="/app/jobs/{{.ID}}" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}">{{.Name}}</a>
+                                    <small class="cell-subtitle">{{.Stage}}</small>
+                                </td>
+                                <td><span class="status status-{{.State}}">{{.State}}</span></td>
+                                <td class="dash-progress-col">
+                                    <div class="dash-progress">
+                                        <div class="progress" role="progressbar" aria-label="{{.Name}} progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{.Percent}}"><span class="progress-bar" style="--progress: {{.Percent}}%"></span></div>
+                                        <small class="num">{{.Percent}}%{{if .ETA}} &middot; ETA {{.ETA}}{{end}}</small>
+                                    </div>
+                                </td>
+                                <td class="num">{{.UniqueRecords}}<small class="cell-subtitle num">{{.RawRecords}} raw</small></td>
+                                <td>
+                                    <div class="table-actions">
+                                        {{if .CanPause}}<form action="/api/v1/jobs/{{.ID}}/pause" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-ghost" type="submit" data-action="pause-job" data-endpoint="/api/v1/jobs/{{.ID}}/pause">Pause</button></form>{{end}}
+                                        {{if .CanResume}}<form action="/api/v1/jobs/{{.ID}}/resume" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-ghost" type="submit" data-action="resume-job" data-endpoint="/api/v1/jobs/{{.ID}}/resume">Resume</button></form>{{end}}
+                                        {{if .CanCancel}}<form action="/api/v1/jobs/{{.ID}}/cancel" method="post" data-confirm="Stop this job at its next safe checkpoint?"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-ghost" type="submit">Stop</button></form>{{end}}
+                                        <a class="button button-sm button-ghost" href="/app/jobs/{{.ID}}" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}">Monitor</a>
+                                    </div>
+                                </td>
+                            </tr>
+                        {{end}}
+                        </tbody>
                     </table>
                 </div>
-                {{else}}<div class="empty-state"><div><strong>No collection history yet</strong><span>Start a scrape to build your local trend chart.</span></div></div>{{end}}
-            </div>
-        </article>
-        <article class="card">
-            <div class="card-header"><div><h2>Data availability</h2><p>Share of unique businesses with each contact field</p></div><a href="/app/results?filter_field=email&amp;filter_operator=empty&amp;filter_value=" data-action="navigate" data-endpoint="/app/results?filter_field=email&amp;filter_operator=empty&amp;filter_value=">Businesses without email</a></div>
-            <div class="card-body section-stack">
-                {{range .Page.Availability}}
-                <div class="storage-meter"><div class="metric-label"><span>{{.Label}}</span><strong>{{.Percent}}%</strong></div><progress max="100" value="{{.Percent}}">{{.Percent}}%</progress></div>
-                {{else}}<div class="empty-state"><div><strong>No results to analyse</strong><span>Availability metrics appear after the first result is saved.</span></div></div>{{end}}
-                {{if gt .Page.Metrics.Websites 0}}<p class="field-hint">Website checks: {{.Page.Metrics.ActiveWebsites}} active · {{.Page.Metrics.InactiveWebsites}} inactive/error · {{.Page.Metrics.Websites}} discovered.</p>{{end}}
-            </div>
-        </article>
-    </section>
-
-    <section class="grid grid-2" aria-label="Business breakdowns">
-        <article class="card"><div class="card-header"><div><h2>Businesses by city</h2><p>Top normalized cities</p></div></div><div class="card-body">{{if .Page.Cities}}<table class="data-table"><thead><tr><th>City</th><th>Businesses</th></tr></thead><tbody>{{range .Page.Cities}}<tr><td>{{.Label}}</td><td>{{.Value}}</td></tr>{{end}}</tbody></table>{{else}}<p class="field-hint">No city data yet.</p>{{end}}</div></article>
-        <article class="card"><div class="card-header"><div><h2>Businesses by category</h2><p>Top primary categories</p></div></div><div class="card-body">{{if .Page.Categories}}<table class="data-table"><thead><tr><th>Category</th><th>Businesses</th></tr></thead><tbody>{{range .Page.Categories}}<tr><td>{{.Label}}</td><td>{{.Value}}</td></tr>{{end}}</tbody></table>{{else}}<p class="field-hint">No category data yet.</p>{{end}}</div></article>
-        <article class="card"><div class="card-header"><div><h2>Business status</h2><p>Stored Maps status signal</p></div></div><div class="card-body">{{if .Page.Statuses}}<table class="data-table"><thead><tr><th>Status</th><th>Businesses</th></tr></thead><tbody>{{range .Page.Statuses}}<tr><td>{{.Label}}</td><td>{{.Value}}</td></tr>{{end}}</tbody></table>{{else}}<p class="field-hint">No business status data yet.</p>{{end}}</div></article>
-        <article class="card"><div class="card-header"><div><h2>Rating bands</h2><p>Unique businesses by rating</p></div></div><div class="card-body">{{if .Page.RatingBands}}<table class="data-table"><thead><tr><th>Rating</th><th>Businesses</th></tr></thead><tbody>{{range .Page.RatingBands}}<tr><td>{{.Label}}</td><td>{{.Value}}</td></tr>{{end}}</tbody></table>{{else}}<p class="field-hint">No rating data yet.</p>{{end}}</div></article>
-    </section>
-
-    {{if .Page.Prospects.Supported}}
-    <section class="card" aria-labelledby="prospecting-heading">
-        <div class="card-header"><div><h2 id="prospecting-heading">Prospecting</h2><p>GBP website-signal statuses and worth-calling tiers from the local database</p></div><a href="/app/results" data-action="navigate" data-endpoint="/app/results">Explore results</a></div>
-        <div class="card-body">
-            {{if or .Page.Prospects.ByStatus .Page.Prospects.ByTier}}
-            <div class="grid grid-2">
-                <div class="section-stack">
-                    <h3>Website status</h3>
-                    {{if .Page.Prospects.ByStatus}}<table class="data-table"><thead><tr><th>Status</th><th>Businesses</th><th>Share of scored</th></tr></thead><tbody>{{range .Page.Prospects.ByStatus}}<tr><td><a href="/app/results?filter_field=prospect_status&amp;filter_operator=eq&amp;filter_value={{.Label}}" data-action="navigate" data-endpoint="/app/results?filter_field=prospect_status&amp;filter_operator=eq&amp;filter_value={{.Label}}"><span class="prospect-badge prospect-{{.State}}">{{.Label}}</span></a></td><td class="numeric">{{.Value}}</td><td><div class="meter-track"><div class="meter-fill" data-tone="warning" style="--meter: {{.Percent}}%"></div></div></td></tr>{{end}}</tbody></table>{{else}}<p class="field-hint">No website statuses recorded yet.</p>{{end}}
+                {{else}}
+                <div class="dash-idle">
+                    <span class="dash-idle-icon" aria-hidden="true">{{template "app/icon-activity"}}</span>
+                    <div>
+                        <p class="dash-idle-title">Nothing is running</p>
+                        <p class="t-caption">The worker pool is idle. Queue a scrape and this table fills with live progress, stage, and safe controls.</p>
+                    </div>
+                    <a class="button button-primary button-sm" href="/app/scrapes/new" data-action="navigate" data-endpoint="/app/scrapes/new">New scrape</a>
                 </div>
-                <div class="section-stack">
-                    <h3>Worth-calling tier</h3>
-                    {{if .Page.Prospects.ByTier}}<table class="data-table"><thead><tr><th>Tier</th><th>Businesses</th><th>Share of scored</th></tr></thead><tbody>{{range .Page.Prospects.ByTier}}<tr><td><a href="/app/results?filter_field=prospect_tier&amp;filter_operator=eq&amp;filter_value={{.Label}}" data-action="navigate" data-endpoint="/app/results?filter_field=prospect_tier&amp;filter_operator=eq&amp;filter_value={{.Label}}"><span class="prospect-badge prospect-tier-{{.State}}">Tier {{.Label}}</span></a></td><td class="numeric">{{.Value}}</td><td><div class="meter-track"><div class="meter-fill" data-tone="success" style="--meter: {{.Percent}}%"></div></div></td></tr>{{end}}</tbody></table>{{else}}<p class="field-hint">No tiers recorded yet.</p>{{end}}
-                    <p class="field-hint">{{.Page.Prospects.Scored}} businesses have a prospect score. Each badge opens Results filtered to that bucket.</p>
-                </div>
+                {{end}}
             </div>
-            {{else}}<div class="empty-state"><div><strong>No prospect signals yet</strong><span>Select businesses in Results and run &ldquo;Recompute prospect score&rdquo; to classify their websites and tiers.</span></div></div>{{end}}
+        </section>
+
+            <section class="card" aria-labelledby="availability-heading">
+                <header class="card-header">
+                    <div>
+                        <h2 class="card-title" id="availability-heading">Data availability</h2>
+                        <p class="card-subtitle">Share of unique businesses carrying each contact field.</p>
+                    </div>
+                </header>
+                <div class="card-body dash-availability">
+                    {{range .Page.Availability}}
+                    <div class="meter-row">
+                        <p class="metric-label"><span>{{.Label}}</span><strong>{{.Percent}}%</strong></p>
+                        <div class="meter-track"><span class="meter-fill" style="--meter: {{.Percent}}%"></span></div>
+                    </div>
+                    {{else}}
+                    <p class="empty-inline">Availability appears after the first result is saved.</p>
+                    {{end}}
+                </div>
+                <footer class="card-footer dash-availability-footer">
+                    {{if gt .Page.Metrics.Websites 0}}<p class="t-caption">Website checks: <span class="num">{{.Page.Metrics.ActiveWebsites}}</span> active &middot; <span class="num">{{.Page.Metrics.InactiveWebsites}}</span> inactive or error &middot; <span class="num">{{.Page.Metrics.Websites}}</span> discovered.</p>{{end}}
+                    {{if .Page.Metrics.MissingEmail}}<a class="button button-sm" href="/app/results?filter_field=email&amp;filter_operator=empty&amp;filter_value=" data-action="navigate" data-endpoint="/app/results?filter_field=email&amp;filter_operator=empty&amp;filter_value=">{{.Page.Metrics.MissingEmail}} businesses without email</a>{{end}}
+                </footer>
+            </section>
         </div>
-    </section>
-    {{end}}
 
-    <section class="grid grid-2" aria-label="Operational trends">
-        <article class="card"><div class="card-header"><div><h2>Job outcomes over time</h2><p>Terminal states by UTC day</p></div></div><div class="card-body">{{if .Page.JobTrends}}<div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Completed</th><th>Partial</th><th>Failed</th><th>Cancelled</th></tr></thead><tbody>{{range .Page.JobTrends}}<tr><td>{{.Label}}</td><td>{{.Completed}}</td><td>{{.Partial}}</td><td>{{.Failed}}</td><td>{{.Cancelled}}</td></tr>{{end}}</tbody></table></div>{{else}}<p class="field-hint">No terminal job history in the last 30 days.</p>{{end}}</div></article>
-        <article class="card"><div class="card-header"><div><h2>Speed and warnings</h2><p>Recorded throughput and worker warning/error events</p></div></div><div class="card-body">{{if .Page.SpeedTrends}}<div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Places/min</th><th>Warning events</th></tr></thead><tbody>{{range .Page.SpeedTrends}}<tr><td>{{.Label}}</td><td>{{printf "%.1f" .PlacesPerMinute}}</td><td>{{.WarningEvents}}</td></tr>{{end}}</tbody></table></div>{{else}}<p class="field-hint">Speed and warning telemetry appears as checkpoint-enabled jobs run.</p>{{end}}</div></article>
-        <article class="card"><div class="card-header"><div><h2>Proxy latency distribution</h2><p>Enabled proxies by their most recent recorded latency</p></div></div><div class="card-body">{{if .Page.ProxyLatency}}<table class="data-table"><thead><tr><th>Latency</th><th>Proxies</th></tr></thead><tbody>{{range .Page.ProxyLatency}}<tr><td>{{.Label}}</td><td>{{.Value}}</td></tr>{{end}}</tbody></table><p class="field-hint">Unknown means an enabled proxy has no recorded latency sample yet.</p>{{else}}<p class="field-hint">No enabled proxies yet. Import a proxy pool to see latency buckets here.</p>{{end}}</div></article>
-        <article class="card"><div class="card-header"><div><h2>Proxy pool reliability</h2><p>Success share per pool from stored test and use counters</p></div></div><div class="card-body section-stack">{{if .Page.ProxyReliability}}{{range .Page.ProxyReliability}}<div class="storage-meter"><div class="metric-label"><span>{{.Label}}</span><strong>{{.Value}}%</strong></div><progress max="100" value="{{.Value}}">{{.Value}}%</progress></div>{{end}}<p class="field-hint">Pools without a recorded success or failure are not shown.</p>{{else}}<p class="field-hint">No proxy reliability evidence yet. Pools appear after a proxy records its first test or use outcome.</p>{{end}}</div></article>
-    </section>
+        <section class="card card-flush" aria-labelledby="attention-heading">
+            <header class="card-header">
+                <div>
+                    <h2 class="card-title" id="attention-heading">Needs attention</h2>
+                    <p class="card-subtitle">Backlogs measured from your local database.</p>
+                </div>
+            </header>
+            <div class="card-body">
+                {{if .Page.Attention}}
+                <ul class="dash-attention">
+                    {{range .Page.Attention}}
+                    <li class="dash-attention-item" data-tone="{{.Tone}}">
+                        <a class="dash-attention-link" href="{{.URL}}" data-action="navigate" data-endpoint="{{.URL}}">
+                            <span class="dash-attention-count num">{{.Value}}</span>
+                            <span class="dash-attention-copy">
+                                <span class="dash-attention-label">{{.Label}}</span>
+                                <span class="dash-attention-detail">{{.Detail}}</span>
+                            </span>
+                            <span class="dash-attention-action">{{.Action}} <span class="dash-attention-chevron" aria-hidden="true">{{template "app/icon-chevron-down"}}</span></span>
+                        </a>
+                    </li>
+                    {{end}}
+                </ul>
+                {{else if .Page.Metrics.UniqueBusinesses}}
+                <div class="dash-idle dash-idle-clear">
+                    <span class="dash-idle-icon" aria-hidden="true">{{template "app/icon-inbox"}}</span>
+                    <div>
+                        <p class="dash-idle-title">Queue is clear</p>
+                        <p class="t-caption">No failed runs, unresolved duplicates, unchecked websites, or missing contact data.</p>
+                    </div>
+                </div>
+                {{else}}
+                <div class="dash-idle">
+                    <span class="dash-idle-icon" aria-hidden="true">{{template "app/icon-inbox"}}</span>
+                    <div>
+                        <p class="dash-idle-title">No data to review yet</p>
+                        <p class="t-caption">Once a scrape commits its first businesses, this panel lists exactly what to work on next.</p>
+                    </div>
+                    <a class="button button-sm" href="/app/onboarding" data-action="navigate" data-endpoint="/app/onboarding">Setup guide</a>
+                </div>
+                {{end}}
+            </div>
+        </section>
+    </div>
 
-    <section class="card" aria-labelledby="recent-jobs-heading">
-        <div class="card-header"><div><h2 id="recent-jobs-heading">Recent activity</h2><p>Live progress and actions for recent local jobs</p></div><a href="/app/jobs" data-action="navigate" data-endpoint="/app/jobs">View all jobs</a></div>
-        {{if .Page.RecentJobs}}
-        <div class="table-wrap">
+    {{/* --- 3. Recent campaigns ----------------------------------------- */}}
+    <section class="card card-flush" aria-labelledby="campaigns-heading">
+        <header class="card-header">
+            <div>
+                <h2 class="card-title" id="campaigns-heading">Recent campaigns</h2>
+                <p class="card-subtitle">What the last finished runs actually yielded. Duplicate share above roughly 40% usually means the grid is over-sampling.</p>
+            </div>
+            <div class="card-actions"><a class="button button-sm" href="/app/jobs" data-action="navigate" data-endpoint="/app/jobs">All jobs</a></div>
+        </header>
+        {{if .Page.Campaigns}}
+        <div class="table-wrap overflow-safe" data-density="compact">
             <table class="data-table">
-                <thead><tr><th>Job</th><th>State</th><th>Progress</th><th>Records</th><th>Runtime</th><th>Actions</th></tr></thead>
-                <tbody>
-                {{range .Page.RecentJobs}}
+                <caption class="sr-only">Finished scrape jobs and their collection yield</caption>
+                <thead>
                     <tr>
-                        <td><strong><a href="/app/jobs/{{.ID}}" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}">{{.Name}}</a></strong><br><small>{{.Stage}}</small></td>
+                        <th scope="col" class="dash-campaign-col">Campaign</th>
+                        <th scope="col">Outcome</th>
+                        <th scope="col" class="num">Unique</th>
+                        <th scope="col" class="num">Unique yield</th>
+                        <th scope="col" class="num">Duplicate share</th>
+                        <th scope="col" class="num">Email coverage</th>
+                        <th scope="col">Finished</th>
+                        <th scope="col"><span class="sr-only">Actions</span></th>
+                    </tr>
+                </thead>
+                <tbody>
+                {{range .Page.Campaigns}}
+                    <tr>
+                        <td class="dash-campaign-col">
+                            <a class="dash-job-link" href="/app/jobs/{{.ID}}" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}">{{.Name}}</a>
+                            <small class="cell-subtitle num">{{.RawRecords}} raw records &middot; {{.Runtime}}</small>
+                        </td>
                         <td><span class="status status-{{.State}}">{{.State}}</span></td>
-                        <td><div class="progress-track" role="progressbar" aria-label="{{.Name}} progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{.Percent}}"><div class="progress-bar" style="--progress: {{.Percent}}%"></div></div><small>{{.Percent}}% · ETA {{.ETA}}</small></td>
-                        <td>{{.RawRecords}} found · {{.UniqueRecords}} unique<br><small>{{.UniqueYield}} unique yield · {{.Emails}} emails</small></td>
-                        <td>{{.Runtime}}</td>
-                        <td><div class="table-actions">
-                            <a class="button button-small" href="/app/jobs/{{.ID}}" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}">Open</a>
-                            {{if .CanPause}}<form action="/api/v1/jobs/{{.ID}}/pause" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-small" type="submit" data-action="pause-job" data-endpoint="/api/v1/jobs/{{.ID}}/pause">Pause</button></form>{{end}}
-                            {{if .CanResume}}<form action="/api/v1/jobs/{{.ID}}/resume" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-small" type="submit" data-action="resume-job" data-endpoint="/api/v1/jobs/{{.ID}}/resume">Resume</button></form>{{end}}
-                            {{if .CanCancel}}<form action="/api/v1/jobs/{{.ID}}/cancel" method="post" data-confirm="Stop this job at its next safe checkpoint?"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-small" type="submit">Stop</button></form>{{end}}
-                            {{if .CanRetry}}<form action="/api/v1/jobs/{{.ID}}/retry" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-small" type="submit">Retry failures</button></form>{{end}}
-                            <a class="button button-small" href="/app/scrapes/new?duplicate_job={{.ID}}">Duplicate config</a>
-                            {{if .HasResults}}<a class="button button-small" href="/api/v1/jobs/{{.ID}}/download" download data-action="download-results" data-endpoint="/api/v1/jobs/{{.ID}}/download">CSV</a>{{end}}
-                        </div></td>
+                        <td class="num">{{.UniqueRecords}}</td>
+                        <td class="num">{{.UniqueYield}}</td>
+                        <td class="num">{{.DuplicateShare}}</td>
+                        <td class="num">{{.EmailShare}}</td>
+                        <td><small class="dash-timestamp">{{if .Finished}}{{.Finished}}{{else}}<span class="empty-inline">not recorded</span>{{end}}</small></td>
+                        <td>
+                            <div class="table-actions">
+                                <a class="button button-sm button-ghost" href="/app/jobs/{{.ID}}" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}">Monitor</a>
+                                {{if .HasBenchmark}}<a class="button button-sm button-ghost" href="/app/jobs/{{.ID}}/benchmark" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}/benchmark">Benchmark</a>{{end}}
+                                {{if .HasResults}}<a class="button button-sm button-ghost dash-results-link" href="/app/results?job_id={{.ID}}" data-action="navigate" data-endpoint="/app/results?job_id={{.ID}}">Results</a>{{end}}
+                            </div>
+                        </td>
                     </tr>
                 {{end}}
                 </tbody>
             </table>
         </div>
-        {{else}}
-        <div class="empty-state"><div><strong>Your workspace is ready</strong><span>Create a guided scrape or run the setup sample to collect your first businesses.</span><p><a class="button button-primary" href="/app/scrapes/new" data-action="navigate" data-endpoint="/app/scrapes/new">Configure a scrape</a></p></div></div>
+        {{end}}
+        {{if not .Page.Campaigns}}
+        <div class="empty-state">
+            <span class="empty-state-icon" aria-hidden="true">{{template "app/icon-jobs"}}</span>
+            <p class="empty-state-title">No coverage evidence yet</p>
+            <p class="empty-state-body">Coverage yield is computed from jobs that have committed raw records. Run a scrape and this table reports unique yield, duplicate share, and email coverage per campaign.</p>
+            <div class="empty-state-actions"><a class="button button-primary" href="/app/scrapes/new" data-action="navigate" data-endpoint="/app/scrapes/new">Configure a scrape</a></div>
+        </div>
+        {{end}}
+        {{if .Page.Yield.Jobs}}
+        <footer class="card-footer dash-yield-footer">
+            <div class="dash-yield-meters">
+                <div class="meter-row">
+                    <p class="metric-label"><span>Unique per raw record</span><strong class="num">{{.Page.Yield.UniqueYield}}</strong></p>
+                    <div class="meter-track"><span class="meter-fill" data-tone="success" style="--meter: {{.Page.Yield.UniquePercent}}%"></span></div>
+                </div>
+                <div class="meter-row">
+                    <p class="metric-label"><span>Duplicate work</span><strong class="num">{{.Page.Yield.DuplicateShare}}</strong></p>
+                    <div class="meter-track"><span class="meter-fill" data-tone="warning" style="--meter: {{.Page.Yield.DuplicatePercent}}%"></span></div>
+                </div>
+                <div class="meter-row">
+                    <p class="metric-label"><span>Email coverage of unique</span><strong class="num">{{.Page.Yield.EmailShare}}</strong></p>
+                    <div class="meter-track"><span class="meter-fill" style="--meter: {{.Page.Yield.EmailPercent}}%"></span></div>
+                </div>
+            </div>
+            <p class="dash-yield-note t-caption">
+                Coverage yield across the last {{.Page.Yield.Jobs}} productive job(s): <span class="num">{{.Page.Yield.RawRecords}}</span> raw &rarr; <span class="num">{{.Page.Yield.UniqueRecords}}</span> unique, {{.Page.Yield.UniqueYield}} unique yield, {{.Page.Yield.DuplicateShare}} duplicate work.
+                {{if .Page.Yield.BestJobName}}Best: <a href="/app/jobs/{{.Page.Yield.BestJobID}}" data-action="navigate" data-endpoint="/app/jobs/{{.Page.Yield.BestJobID}}">{{.Page.Yield.BestJobName}}</a> at {{.Page.Yield.BestJobYield}}.{{end}}
+                {{if .Page.Yield.WorstJobName}} Thinnest: <a href="/app/jobs/{{.Page.Yield.WorstJobID}}" data-action="navigate" data-endpoint="/app/jobs/{{.Page.Yield.WorstJobID}}">{{.Page.Yield.WorstJobName}}</a> at {{.Page.Yield.WorstJobYield}} — a low share usually means the grid is over-sampling the same places.{{end}}
+            </p>
+        </footer>
         {{end}}
     </section>
+
+    {{/* --- 4. Prospect pipeline ---------------------------------------- */}}
+    {{if .Page.Prospects.Supported}}
+    <section class="card card-flush" aria-labelledby="prospecting-heading">
+        <header class="card-header">
+            <div>
+                <h2 class="card-title" id="prospecting-heading">Prospect pipeline</h2>
+                <p class="card-subtitle">GBP website signals and worth-calling tiers. Every row opens Results filtered to that bucket.</p>
+            </div>
+            <div class="card-actions"><a class="button button-sm" href="/app/results" data-action="navigate" data-endpoint="/app/results">Explore results</a></div>
+        </header>
+        {{if or .Page.Prospects.ByStatus .Page.Prospects.ByTier}}
+        <div class="card-body dash-pipeline">
+            <div class="dash-pipeline-column">
+                <h3 class="t-overline">Website status</h3>
+                {{if .Page.Prospects.ByStatus}}
+                <ul class="dash-bars">
+                    {{range .Page.Prospects.ByStatus}}
+                    <li>
+                        <a class="dash-bar" href="/app/results?filter_field=prospect_status&amp;filter_operator=eq&amp;filter_value={{.Label}}" data-action="navigate" data-endpoint="/app/results?filter_field=prospect_status&amp;filter_operator=eq&amp;filter_value={{.Label}}">
+                            <span class="dash-bar-badge"><span class="prospect-badge prospect-{{.State}}">{{.Label}}</span></span>
+                            <span class="meter-track"><span class="meter-fill" data-tone="warning" style="--meter: {{.Percent}}%"></span></span>
+                            <span class="dash-bar-value num">{{.Value}}</span>
+                            <span class="dash-bar-share num">{{.Percent}}%</span>
+                        </a>
+                    </li>
+                    {{end}}
+                </ul>
+                {{else}}<p class="empty-inline">No website statuses recorded yet.</p>{{end}}
+            </div>
+            <div class="dash-pipeline-column">
+                <h3 class="t-overline">Worth-calling tier</h3>
+                {{if .Page.Prospects.ByTier}}
+                <ul class="dash-bars">
+                    {{range .Page.Prospects.ByTier}}
+                    <li>
+                        <a class="dash-bar" href="/app/results?filter_field=prospect_tier&amp;filter_operator=eq&amp;filter_value={{.Label}}" data-action="navigate" data-endpoint="/app/results?filter_field=prospect_tier&amp;filter_operator=eq&amp;filter_value={{.Label}}">
+                            <span class="dash-bar-badge"><span class="prospect-badge prospect-tier-{{.State}}">Tier {{.Label}}</span></span>
+                            <span class="meter-track"><span class="meter-fill" data-tone="success" style="--meter: {{.Percent}}%"></span></span>
+                            <span class="dash-bar-value num">{{.Value}}</span>
+                            <span class="dash-bar-share num">{{.Percent}}%</span>
+                        </a>
+                    </li>
+                    {{end}}
+                </ul>
+                {{else}}<p class="empty-inline">No tiers recorded yet.</p>{{end}}
+            </div>
+        </div>
+        <footer class="card-footer"><p class="t-caption num">{{.Page.Prospects.Scored}} businesses have a prospect score. Each row above opens Results filtered to that bucket.</p></footer>
+        {{else}}
+        <div class="empty-state">
+            <span class="empty-state-icon" aria-hidden="true">{{template "app/icon-results"}}</span>
+            <p class="empty-state-title">No prospect signals yet</p>
+            <p class="empty-state-body">Select businesses in Results and run &ldquo;Recompute prospect score&rdquo; to classify their websites and worth-calling tiers.</p>
+            <div class="empty-state-actions"><a class="button" href="/app/results" data-action="navigate" data-endpoint="/app/results">Open Results</a></div>
+        </div>
+        {{end}}
+    </section>
+    {{end}}
+
+    {{/* --- 5. Collection trend ----------------------------------------- */}}
+    <section class="card" aria-labelledby="collection-heading">
+        <header class="card-header">
+            <div>
+                <h2 class="card-title" id="collection-heading">Collection over 30 days</h2>
+                <p class="card-subtitle">Committed business records by UTC day. Each column is one day; the tallest column is the busiest.</p>
+            </div>
+            <div class="card-actions"><a class="button button-sm" href="/app/results" data-action="navigate" data-endpoint="/app/results">Explore results</a></div>
+        </header>
+        <div class="card-body">
+            {{if .Page.CollectionByDate}}
+            {{/*
+            A CSS column chart, not a library: each column carries its own
+            height as a custom property. The same numbers are repeated in a
+            screen-reader table below so the picture is never the only copy.
+            */}}
+            <div class="dash-chart overflow-safe" role="img" aria-label="Business records committed per day over the last 30 days; peak {{.Page.CollectionMax}} records">
+                {{range .Page.CollectionByDate}}
+                <span class="dash-chart-col has-tooltip" data-tooltip="{{.Label}}: {{.Value}} records">
+                    <span class="dash-chart-bar" style="--column: {{.Percent}}%"></span>
+                    <span class="dash-chart-label">{{.Label}}</span>
+                </span>
+                {{end}}
+            </div>
+            <table class="sr-only">
+                <caption>Results collected by date</caption>
+                <thead><tr><th scope="col">Date</th><th scope="col">Records</th></tr></thead>
+                <tbody>{{range .Page.CollectionByDate}}<tr><td>{{.Label}}</td><td>{{.Value}}</td></tr>{{end}}</tbody>
+            </table>
+            <p class="dash-chart-scale t-caption"><span>Peak <span class="num">{{.Page.CollectionMax}}</span> records/day</span><span><span class="num">{{.Page.Metrics.CollectedMonth}}</span> records in the last 30 days</span></p>
+            {{else}}
+            <div class="empty-state">
+                <span class="empty-state-icon" aria-hidden="true">{{template "app/icon-activity"}}</span>
+                <p class="empty-state-title">No collection history yet</p>
+                <p class="empty-state-body">Each finished scrape adds a day to this trend.</p>
+            </div>
+            {{end}}
+        </div>
+    </section>
+
+    {{/* --- 6. Breakdowns and operational trends ------------------------ */}}
+    <section class="card card-flush" aria-labelledby="breakdowns-heading">
+        <header class="card-header">
+            <div>
+                <h2 class="card-title" id="breakdowns-heading">Where the data sits</h2>
+                <p class="card-subtitle">Top normalized cities, categories, Maps status, and rating bands.</p>
+            </div>
+        </header>
+        <div class="card-body dash-breakdowns">
+            <div class="dash-breakdown">
+                <h3 class="t-overline">Top cities</h3>
+                {{if .Page.Cities}}<div class="table-wrap overflow-safe" data-density="compact"><table class="data-table"><thead><tr><th scope="col">City</th><th scope="col" class="num">Businesses</th><th scope="col" class="dash-spark-col"><span class="sr-only">Share</span></th></tr></thead><tbody>{{range .Page.Cities}}<tr><td class="truncate">{{.Label}}</td><td class="num">{{.Value}}</td><td class="dash-spark"><span class="meter-track"><span class="meter-fill" style="--meter: {{.Percent}}%"></span></span></td></tr>{{end}}</tbody></table></div>{{else}}<p class="empty-inline">No city data yet.</p>{{end}}
+            </div>
+            <div class="dash-breakdown">
+                <h3 class="t-overline">Top categories</h3>
+                {{if .Page.Categories}}<div class="table-wrap overflow-safe" data-density="compact"><table class="data-table"><thead><tr><th scope="col">Category</th><th scope="col" class="num">Businesses</th><th scope="col" class="dash-spark-col"><span class="sr-only">Share</span></th></tr></thead><tbody>{{range .Page.Categories}}<tr><td class="truncate">{{.Label}}</td><td class="num">{{.Value}}</td><td class="dash-spark"><span class="meter-track"><span class="meter-fill" style="--meter: {{.Percent}}%"></span></span></td></tr>{{end}}</tbody></table></div>{{else}}<p class="empty-inline">No category data yet.</p>{{end}}
+            </div>
+            <div class="dash-breakdown">
+                <h3 class="t-overline">Business status</h3>
+                {{if .Page.Statuses}}<div class="table-wrap overflow-safe" data-density="compact"><table class="data-table"><thead><tr><th scope="col">Status</th><th scope="col" class="num">Businesses</th><th scope="col" class="dash-spark-col"><span class="sr-only">Share</span></th></tr></thead><tbody>{{range .Page.Statuses}}<tr><td class="truncate">{{.Label}}</td><td class="num">{{.Value}}</td><td class="dash-spark"><span class="meter-track"><span class="meter-fill" style="--meter: {{.Percent}}%"></span></span></td></tr>{{end}}</tbody></table></div>{{else}}<p class="empty-inline">No business status data yet.</p>{{end}}
+            </div>
+            <div class="dash-breakdown">
+                <h3 class="t-overline">Rating bands</h3>
+                {{if .Page.RatingBands}}<div class="table-wrap overflow-safe" data-density="compact"><table class="data-table"><thead><tr><th scope="col">Rating</th><th scope="col" class="num">Businesses</th><th scope="col" class="dash-spark-col"><span class="sr-only">Share</span></th></tr></thead><tbody>{{range .Page.RatingBands}}<tr><td class="truncate">{{.Label}}</td><td class="num">{{.Value}}</td><td class="dash-spark"><span class="meter-track"><span class="meter-fill" style="--meter: {{.Percent}}%"></span></span></td></tr>{{end}}</tbody></table></div>{{else}}<p class="empty-inline">No rating data yet.</p>{{end}}
+            </div>
+        </div>
+    </section>
+
+    <details class="card dash-ops">
+        <summary class="dash-ops-summary">
+            <span class="t-section">Operational telemetry</span>
+            <span class="t-caption">Job outcomes over time, throughput and warnings, proxy latency and pool reliability</span>
+        </summary>
+        <div class="card-body dash-breakdowns">
+            <div class="dash-breakdown">
+                <h3 class="t-overline">Job outcomes by day</h3>
+                {{if .Page.JobTrends}}<div class="table-wrap overflow-safe" data-density="compact"><table class="data-table"><thead><tr><th scope="col">Date</th><th scope="col" class="num">Done</th><th scope="col" class="num">Partial</th><th scope="col" class="num">Failed</th><th scope="col" class="num">Cancelled</th></tr></thead><tbody>{{range .Page.JobTrends}}<tr><td class="dash-date">{{.Label}}</td><td class="num">{{.Completed}}</td><td class="num">{{.Partial}}</td><td class="num">{{.Failed}}</td><td class="num">{{.Cancelled}}</td></tr>{{end}}</tbody></table></div>{{else}}<p class="empty-inline">No terminal job history in the last 30 days.</p>{{end}}
+            </div>
+            <div class="dash-breakdown">
+                <h3 class="t-overline">Speed and warnings</h3>
+                {{if .Page.SpeedTrends}}<div class="table-wrap overflow-safe" data-density="compact"><table class="data-table"><thead><tr><th scope="col">Date</th><th scope="col" class="num">Places/min</th><th scope="col" class="num">Warnings</th></tr></thead><tbody>{{range .Page.SpeedTrends}}<tr><td class="dash-date">{{.Label}}</td><td class="num">{{printf "%.1f" .PlacesPerMinute}}</td><td class="num">{{.WarningEvents}}</td></tr>{{end}}</tbody></table></div>{{else}}<p class="empty-inline">Throughput telemetry appears as checkpoint-enabled jobs run.</p>{{end}}
+            </div>
+            <div class="dash-breakdown">
+                <h3 class="t-overline">Proxy latency</h3>
+                {{if .Page.ProxyLatency}}<div class="table-wrap overflow-safe" data-density="compact"><table class="data-table"><thead><tr><th scope="col">Latency</th><th scope="col" class="num">Proxies</th></tr></thead><tbody>{{range .Page.ProxyLatency}}<tr><td>{{.Label}}</td><td class="num">{{.Value}}</td></tr>{{end}}</tbody></table></div><p class="t-caption">Unknown means an enabled proxy has no latency sample yet.</p>{{else}}<p class="empty-inline">No enabled proxies yet.</p>{{end}}
+            </div>
+            <div class="dash-breakdown">
+                <h3 class="t-overline">Pool reliability</h3>
+                {{if .Page.ProxyReliability}}<div class="stack" style="--stack-space: var(--space-3);">{{range .Page.ProxyReliability}}<div class="meter-row"><p class="metric-label"><span class="truncate">{{.Label}}</span><strong class="num">{{.Value}}%</strong></p><div class="meter-track"><span class="meter-fill" data-tone="success" style="--meter: {{.Value}}%"></span></div></div>{{end}}</div>{{else}}<p class="empty-inline">Pools appear after a proxy records its first test or use outcome.</p>{{end}}
+            </div>
+        </div>
+    </details>
 </div>
 {{end}}

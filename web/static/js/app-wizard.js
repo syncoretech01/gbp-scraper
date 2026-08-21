@@ -100,6 +100,20 @@
         }
     }
 
+    // ?mode=basic|advanced|gbp and #step-N let another page deep-link straight
+    // into the level of detail it is talking about (the GBP field guide, a
+    // "resume where you were" link). Both are optional: an unknown value falls
+    // back to the stored mode and step 1.
+    function requestedMode() {
+        const requested = new URLSearchParams(window.location.search).get("mode");
+        return modeInputs.some((input) => input.value === requested) ? requested : "";
+    }
+
+    function requestedStep() {
+        const match = String(window.location.hash || "").match(/^#step-(\d+)$/);
+        return match ? Number(match[1]) : 0;
+    }
+
     function applyMode(next, remember) {
         const chosen = modeInputs.some((input) => input.value === next) ? next : "advanced";
         mode = chosen;
@@ -184,9 +198,11 @@
         if (target === visible[visible.length - 1]) updateReview();
     }
 
+    // Several estimate hooks (queries, cells, tasks) appear on both the
+    // location step and the pre-flight step, so every match is updated: with
+    // querySelector the review tiles silently kept their placeholder zeros.
     function setText(selector, text) {
-        const target = wizard.querySelector(selector);
-        if (target) target.textContent = text;
+        wizard.querySelectorAll(selector).forEach((target) => { target.textContent = text; });
     }
 
     function estimate() {
@@ -242,6 +258,49 @@
         setText("[data-estimate-runtime]", "~" + stats.minutes + " min");
     }
 
+    // A pre-flight row states a fact and its consequence, and turns amber when
+    // the operator should look before launching. Tone is carried by the text as
+    // well as the colour: the title changes, never just the swatch.
+    function setPreflight(key, tone, title, detail) {
+        const row = wizard.querySelector("[data-preflight-" + key + "]");
+        if (!row) return;
+        row.dataset.tone = tone;
+        const mark = row.querySelector(".preflight-mark");
+        if (mark) mark.textContent = tone === "ok" ? "✓" : "!";
+        setText("[data-preflight-" + key + "-title]", title);
+        setText("[data-preflight-" + key + "-detail]", detail);
+    }
+
+    function selectedText(name, fallback) {
+        const control = field(name);
+        if (!control || !control.options || control.selectedIndex < 0) return fallback;
+        return control.options[control.selectedIndex].textContent.trim() || fallback;
+    }
+
+    function updatePreflight(stats) {
+        const queries = uniqueQueries().unique.length;
+        setPreflight("queries", queries > 0 ? "ok" : "warn",
+            queries > 0 ? "Queries ready" : "No queries yet",
+            queries + (queries === 1 ? " unique query" : " unique queries"));
+
+        const fastMode = Boolean(field("fastmode") && field("fastmode").checked);
+        const savedArea = value("saved_area_id", "");
+        setPreflight("area", "ok",
+            savedArea ? "Saved area snapshot" : (fastMode ? "Strict radius" : "Grid coverage"),
+            Number(value("radius", 10000)).toLocaleString() + " m" + (fastMode ? " radius" : " extent, " + value("grid_cell_km", "2.5") + " km cells"));
+
+        const limit = durationMinutes(value("maxtime", "60m"));
+        const fits = limit >= stats.minutes;
+        setPreflight("budget", fits ? "ok" : "warn",
+            fits ? "Runtime budget fits" : "Runtime limit is tight",
+            "~" + stats.minutes + " min estimated against a " + value("maxtime", "60m") + " limit");
+
+        const enrichmentOn = Boolean(field("email") && field("email").checked);
+        setPreflight("enrichment", "ok",
+            enrichmentOn ? "Website enrichment on" : "Enrichment off",
+            enrichmentOn ? selectedText("enrichment_scope", "Homepage only") + ", up to " + value("enrichment_max_pages", "3") + " pages per site" : "Maps fields only");
+    }
+
     function updateReview() {
         updatePreview();
         const stats = estimate();
@@ -253,6 +312,10 @@
         setText("[data-review-grid]", fastMode ? "Not used in Fast Mode" : value("grid_cell_km", "2.5") + " km");
         setText("[data-review-tasks]", String(stats.tasks));
         setText("[data-review-runtime]", value("maxtime", "60m"));
+        const enrichmentOn = Boolean(field("email") && field("email").checked);
+        setText("[data-review-enrichment]", enrichmentOn ? "Website audit and contacts — " + selectedText("enrichment_scope", "homepage") : "Off");
+        setText("[data-review-proxy]", selectedText("proxy_pool_id", "Direct connection"));
+        updatePreflight(stats);
         const warning = wizard.querySelector("[data-estimate-warning]");
         if (warning) {
             const messages = [];
@@ -486,6 +549,88 @@
         }
     }
 
+    // --- Campaign templates (optional server capability) --------------------
+    // A reusable-template list endpoint may or may not exist on this build. The
+    // picker is rendered hidden and only revealed once a well-formed JSON list
+    // actually comes back, so a repository without the capability shows no dead
+    // control instead of a button that fails on click. The "Rerun as campaign"
+    // action needs a rerun URL on the template itself and stays hidden without
+    // one for the same reason.
+    let campaignTemplates = [];
+
+    function campaignRerunURL(template) {
+        if (!template) return "";
+        const candidate = template.rerun_url || template.rescan_url || template.campaign_url || "";
+        return typeof candidate === "string" && candidate.startsWith("/") ? candidate : "";
+    }
+
+    async function probeCampaignTemplates() {
+        const host = wizard.querySelector("[data-campaign-templates]");
+        const picker = wizard.querySelector("[data-campaign-template-picker]");
+        if (!host || !picker) return;
+        try {
+            const response = await fetch("/api/v1/templates", {
+                credentials: "same-origin",
+                headers: { "Accept": "application/json" }
+            });
+            if (!response.ok) return;
+            const payload = await response.json();
+            const items = payload && Array.isArray(payload.data) ? payload.data : [];
+            campaignTemplates = items.filter((item) => item && item.id && item.name);
+            if (!campaignTemplates.length) return;
+            campaignTemplates.forEach((template) => {
+                const option = document.createElement("option");
+                option.value = template.id;
+                option.textContent = template.name;
+                picker.appendChild(option);
+            });
+            host.hidden = false;
+        } catch (_) {
+            // No template list on this build: the control simply stays hidden.
+        }
+    }
+
+    function selectedCampaignTemplate() {
+        const picker = wizard.querySelector("[data-campaign-template-picker]");
+        if (!picker || !picker.value) return null;
+        return campaignTemplates.find((template) => template.id === picker.value) || null;
+    }
+
+    function syncCampaignRerun() {
+        const rerun = wizard.querySelector("[data-campaign-rerun]");
+        if (!rerun) return;
+        rerun.hidden = !campaignRerunURL(selectedCampaignTemplate());
+    }
+
+    function applyCampaignTemplate() {
+        const template = selectedCampaignTemplate();
+        if (!template) { notify("Choose a template first.", "error"); return; }
+        window.location.assign("/app/scrapes/new?template=" + encodeURIComponent(template.id));
+    }
+
+    async function rerunCampaign(trigger) {
+        const template = selectedCampaignTemplate();
+        const url = campaignRerunURL(template);
+        if (!url) return;
+        trigger.disabled = true;
+        try {
+            const response = await fetch(url, {
+                method: "POST",
+                credentials: "same-origin",
+                headers: { "Accept": "application/json", "X-CSRF-Token": value("csrf_token", "") }
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error((payload.error && payload.error.message) || "Could not rerun the campaign");
+            notify("Campaign rerun queued.", "success");
+            const target = payload.data && payload.data.url;
+            if (typeof target === "string" && target.startsWith("/")) window.location.assign(target);
+        } catch (error) {
+            notify(error.message || "Could not rerun the campaign.", "error");
+        } finally {
+            trigger.disabled = false;
+        }
+    }
+
     async function generateLocalAIKeywords(trigger) {
         const input = wizard.querySelector("[data-local-ai-input]");
         const status = wizard.querySelector("[data-local-ai-status]");
@@ -534,11 +679,17 @@
         else if (trigger.dataset.action === "apply-keyword-filters") { event.preventDefault(); applyKeywordFilters(); }
         else if (trigger.dataset.action === "generate-combinations") { event.preventDefault(); generateCombinations(); }
         else if (trigger.dataset.action === "generate-gbp-queries") { event.preventDefault(); generateGBPQueries(trigger); }
+        else if (trigger.dataset.action === "apply-campaign-template") { event.preventDefault(); applyCampaignTemplate(); }
+        else if (trigger.dataset.action === "rerun-campaign") { event.preventDefault(); rerunCampaign(trigger); }
     });
 
     wizard.addEventListener("change", (event) => {
         if (event.target.matches("[data-wizard-mode-input]")) {
             applyMode(event.target.value, true);
+            return;
+        }
+        if (event.target.matches("[data-campaign-template-picker]")) {
+            syncCampaignRerun();
             return;
         }
         if (event.target.matches("[data-saved-area-picker]")) {
@@ -570,7 +721,8 @@
     }
 
     panels.forEach((panel, index) => { panel.hidden = index !== 0; });
-    applyMode(readStoredMode() || "advanced", false);
-    setStep(1, false);
+    applyMode(requestedMode() || readStoredMode() || "advanced", false);
+    setStep(requestedStep() || 1, false);
     updatePreview();
+    probeCampaignTemplates();
 })();

@@ -144,8 +144,10 @@ func TestNewScrapeWizardExposesProgressiveDisclosureModes(t *testing.T) {
 	}
 }
 
-// The page-heading eyebrow names the sidebar group of the current page so an
-// operator always sees where they are, not a constant "Local workspace".
+// The top-bar breadcrumb eyebrow names the sidebar group of the current page
+// so an operator always sees where they are, not a constant "Local workspace".
+// It moved out of the page heading when the shell gained a breadcrumb, which
+// is why the page header now leads with the title alone.
 func TestPageHeadingEyebrowNamesTheNavigationGroup(t *testing.T) {
 	t.Parallel()
 

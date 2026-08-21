@@ -24,16 +24,24 @@ const (
 )
 
 type jobsPageData struct {
-	Query           string
-	ActiveState     string
-	Sort            string
-	Folders         []appSelectOption
-	Counts          jobsPageCounts
-	Jobs            []jobsPageJob
-	RangeLabel      string
-	Total           int
-	PreviousURL     string
-	NextURL         string
+	Query       string
+	ActiveState string
+	Sort        string
+	Folders     []appSelectOption
+	Counts      jobsPageCounts
+	Jobs        []jobsPageJob
+	RangeLabel  string
+	Total       int
+	PreviousURL string
+	NextURL     string
+	// Filtered reports whether any search, state, or folder filter is
+	// narrowing the list. An empty table means something different with a
+	// filter applied ("nothing matches") than without one ("no jobs yet").
+	Filtered bool
+	// Sparse marks an unfiltered workspace with only a handful of jobs, where
+	// a bare table reads as a broken page. The template pairs the table with
+	// a short "what to do next" panel instead of leaving the space blank.
+	Sparse          bool
 	CanViewArchived bool
 	ShowArchived    bool
 }
@@ -52,17 +60,22 @@ type jobsPageCounts struct {
 }
 
 type jobsPageJob struct {
-	ID              string
-	Name            string
-	State           string
-	Stage           string
-	Percent         int
-	ETA             string
-	UniqueRecords   int
-	RawRecords      int
-	Emails          int
-	UpdatedAt       string
-	Runtime         string
+	ID            string
+	Name          string
+	State         string
+	Stage         string
+	Percent       int
+	ETA           string
+	UniqueRecords int
+	RawRecords    int
+	Emails        int
+	UpdatedAt     string
+	Runtime       string
+	// Finished is the formatted completion timestamp, empty while the job has
+	// not stopped. The timing cell leads with it for terminal jobs so an
+	// operator reads "finished" rather than "last touched".
+	Finished        string
+	Terminal        bool
 	QuerySummary    string
 	LocationSummary string
 	Tags            []string
@@ -280,6 +293,17 @@ type mapMarkerView struct {
 	Phone    string
 }
 
+// compactTimestamp is the queue-table date format: short, tabular, and
+// unambiguous. formatDate spells the time down to the second, which is
+// precision a list view cannot use and which costs a column of width.
+func compactTimestamp(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+
+	return value.Format("2006-01-02 15:04")
+}
+
 func (s *Server) jobsPage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -394,12 +418,13 @@ func (s *Server) buildJobsPage(r *http.Request) (jobsPageData, appActivity, erro
 			State:           state,
 			Stage:           humanStage(runtime.Stage),
 			Percent:         roundedPercent(runtime.Progress, runtime.State),
-			ETA:             runtimeETA(runtime),
+			ETA:             jobsRowETA(runtime),
 			UniqueRecords:   stats.UniqueBusinesses,
 			RawRecords:      stats.Rows,
 			Emails:          stats.WithEmail,
-			UpdatedAt:       formatDate(updatedAt),
+			UpdatedAt:       compactTimestamp(updatedAt),
 			Runtime:         runtimeLabel(runtime),
+			Terminal:        runtime.State.Terminal(),
 			QuerySummary:    querySummary(job.Data.Keywords),
 			LocationSummary: locationSummary(job.Data),
 			HasResults:      stats.Rows > 0,
@@ -418,6 +443,9 @@ func (s *Server) buildJobsPage(r *http.Request) (jobsPageData, appActivity, erro
 			updatedAt:  updatedAt,
 			createdAt:  job.Date,
 		}
+		if runtime.FinishedAt != nil {
+			row.Finished = compactTimestamp(*runtime.FinishedAt)
+		}
 		if _, isArchived := archived[job.ID]; isArchived {
 			row.Archived = true
 			if !page.ShowArchived {
@@ -431,6 +459,11 @@ func (s *Server) buildJobsPage(r *http.Request) (jobsPageData, appActivity, erro
 
 	sortJobRows(rows, page.Sort)
 	start, end, previousURL, nextURL := paginationWindow(r, len(rows))
+	page.Filtered = page.Query != "" || page.ActiveState != "" ||
+		strings.TrimSpace(r.URL.Query().Get("folder")) != ""
+	// Three or fewer jobs is a workspace that is still being set up, not a
+	// queue an operator is managing.
+	page.Sparse = !page.Filtered && len(rows) > 0 && len(rows) <= 3
 	page.Total = len(rows)
 	page.RangeLabel = rangeLabel(start, end, len(rows))
 	page.PreviousURL = previousURL
@@ -1036,6 +1069,18 @@ func roundedPercent(value float64, state jobruntime.State) int {
 	}
 
 	return int(math.Round(max(0, min(100, value))))
+}
+
+// jobsRowETA is the queue-table variant of runtimeETA. The table already
+// prints a status badge in the neighbouring cell, so "stopped" beside a
+// finished job is noise and a paused or queued job has no arrival time at
+// all; both cases return an empty string and the cell says nothing.
+func jobsRowETA(runtime JobRuntime) string {
+	if !runtime.State.Active() {
+		return ""
+	}
+
+	return runtimeETA(runtime)
 }
 
 func runtimeETA(runtime JobRuntime) string {

@@ -2610,6 +2610,12 @@ func resultFilterSQL(filter web.ResultFilter) (string, []any, error) {
 	if field == "polygon" && operator == "within" {
 		return polygonFilterSQL(value)
 	}
+	// Discovery-history filters ("what did this run or campaign first see or
+	// change") are additive members of the same language; see
+	// results_lineage_filters.go.
+	if clause, args, handled, err := lineageResultFilterSQL(field, operator, value); handled {
+		return clause, args, err
+	}
 
 	return "", nil, fmt.Errorf("unsupported result filter %q/%q", field, operator)
 }
