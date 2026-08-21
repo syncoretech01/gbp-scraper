@@ -1,6 +1,12 @@
 {{/*
 The application loader should parse this file, every file in app/partials, and
 exactly one app/pages file. Page files define app/content and app/page/<name>.
+
+Stylesheets load in one fixed order: app.css carries the tokens, shell, and the
+whole component library, and each view stylesheet under /static/css/views/
+carries page-specific rules only. Every view file loads on every page (they are
+tiny and stay cached), so a view stylesheet must scope its rules to its own page
+and must never redefine a component class from app.css.
 */}}
 {{define "app/layout"}}
 <!doctype html>
@@ -12,26 +18,31 @@ exactly one app/pages file. Page files define app/content and app/page/<name>.
     <meta name="description" content="Local-first Google Maps research workspace">
     <title>{{if .Title}}{{.Title}} · {{end}}Google Maps Scraper</title>
     <link rel="stylesheet" href="/static/css/app.css">
+    <link rel="stylesheet" href="/static/css/views/dashboard.css">
+    <link rel="stylesheet" href="/static/css/views/results.css">
+    <link rel="stylesheet" href="/static/css/views/monitor.css">
+    <link rel="stylesheet" href="/static/css/views/discovery.css">
     <script defer src="/static/js/app.js"></script>
     {{template "app/head" .}}
 </head>
 <body data-active-nav="{{.ActiveNav}}">
     <a class="skip-link" href="#main-content">Skip to main content</a>
-    <div class="app-shell" data-app-shell>
+    <div class="app-shell" data-app-shell data-sidebar="{{if eq .Preferences.SidebarDefault "collapsed"}}collapsed{{else}}expanded{{end}}">
         {{template "app/sidebar" .}}
         <div class="app-frame">
             {{template "app/topbar" .}}
             <main class="app-main" id="main-content" tabindex="-1">
-                {{template "app/flash" .}}
-                <header class="page-heading">
-                    <div>
-                        <p class="eyebrow">{{template "app/nav-group" .ActiveNav}}</p>
-                        <h1>{{.Title}}</h1>
-                        {{if .Subtitle}}<p class="page-subtitle">{{.Subtitle}}</p>{{end}}
-                    </div>
-                    {{template "app/page-actions" .}}
-                </header>
-                {{template "app/content" .}}
+                <div class="app-canvas">
+                    {{template "app/flash" .}}
+                    <header class="page-header">
+                        <div class="page-header-copy">
+                            <h1 class="page-title">{{.Title}}</h1>
+                            {{if .Subtitle}}<p class="page-description">{{.Subtitle}}</p>{{end}}
+                        </div>
+                        {{template "app/page-actions" .}}
+                    </header>
+                    {{template "app/content" .}}
+                </div>
             </main>
         </div>
     </div>
@@ -46,10 +57,16 @@ exactly one app/pages file. Page files define app/content and app/page/<name>.
 {{define "app/head"}}{{end}}
 {{define "app/page-actions"}}{{end}}
 {{define "app/scripts"}}{{end}}
+{{/*
+app/topbar-slot is the page-level context slot in the top bar. Pages redefine
+it to surface state that must stay visible while the main region scrolls (a job
+status pill, a live counter). It is empty by default.
+*/}}
+{{define "app/topbar-slot"}}{{end}}
 
 {{/*
 app/nav-group maps the active navigation key onto the sidebar group it sits
-in, so the page-heading eyebrow tells the operator where they are instead of
+in, so the top-bar eyebrow tells the operator where they are instead of
 repeating "Local workspace" on every screen. The argument is .ActiveNav.
 */}}
 {{define "app/nav-group"}}
