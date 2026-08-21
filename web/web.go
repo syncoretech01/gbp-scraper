@@ -209,6 +209,7 @@ func New(svc *Service, addr string) (*Server, error) {
 	ans.registerCampaignTemplateRoutes(mux)
 	ans.registerExportProfileRoutes(mux)
 	ans.registerResultRoutes(mux)
+	ans.registerResultListRoutes(mux)
 	ans.registerDuplicateRoutes(mux)
 	ans.registerEnrichmentRoutes(mux)
 	ans.registerMapRoutes(mux)

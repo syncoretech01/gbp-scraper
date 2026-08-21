@@ -63,7 +63,23 @@ func newResultsExplorerServer(t *testing.T, editable bool) *Server {
 		page:     ResultPage{Total: 1, Limit: 25, Results: []BusinessResult{row}},
 		overview: ResultOverview{UniqueBusinesses: 1, RawRecords: 1},
 	}
-	base.detail = BusinessDetail{Business: row, RawJSON: `{"title":"Bay Smile Dental"}`}
+	base.detail = BusinessDetail{
+		Business: row, RawJSON: `{"title":"Bay Smile Dental"}`,
+		Sources: []BusinessSourceView{{
+			ID: 1, SourceType: "google_maps_csv", ExtractionMethod: "legacy_csv_import",
+			SourceQuery: "dentists in San Francisco", SourceCell: "3,4", InputID: "seed-42",
+			Confidence: 1, ExtractedAt: row.UpdatedAt,
+		}},
+		Provenance: []FieldProvenanceView{{
+			ID: 1, FieldName: "phone", NormalizedValue: "+14155550199", Preferred: true,
+			SourceType: "website_contact", ExtractionMethod: "telephone_link",
+			SourceQuery: "dentists in San Francisco", SourceCell: "3,4",
+			Confidence: .8, ExtractedAt: row.UpdatedAt,
+		}},
+		Websites: []WebsiteView{{ID: 1, URL: "https://example.test", Domain: "example.test", Status: "active"}},
+		Emails:   []EmailView{{ID: 1, Value: "info@example.test", NormalizedValue: "info@example.test", Kind: "role"}},
+		Changes:  []BusinessChangeView{{ID: 1, FieldName: "phone", ChangeKind: "manual_edit", DetectedAt: row.UpdatedAt}},
+	}
 
 	var repository JobRepository = base
 	if editable {
@@ -268,5 +284,57 @@ func TestInlineEditRouteRecordsTheCorrectionAndItsUndo(t *testing.T) {
 
 	if repository.edits != 2 {
 		t.Fatalf("recorded edits = %d, want the reasonless edit refused", repository.edits)
+	}
+}
+
+func TestBusinessDrawerCarriesTheCompleteRecord(t *testing.T) {
+	t.Parallel()
+
+	server := newResultsExplorerServer(t, false)
+	recorder := httptest.NewRecorder()
+	server.srv.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/app/results/biz_abcde/drawer", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("drawer status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	body := recorder.Body.String()
+	for _, expected := range []string{
+		// The specification's drawer contents, section by section.
+		"Location", "detail-map", "/app/map?filter_field=id", "849VQH48&#43;92",
+		"Field provenance", "Query and cell", "Sources", "Raw source JSON",
+		"Change history", "Duplicates", "Contacts", "Website audit",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("business drawer is missing %q", expected)
+		}
+	}
+}
+
+func TestBusinessDrawerWithoutCoordinatesSaysSoInsteadOfFramingAMap(t *testing.T) {
+	t.Parallel()
+
+	row := coreColumnResultRow()
+	row.Latitude = nil
+	row.Longitude = nil
+
+	base := &fixedResultRepository{fixedJobRepository: &fixedJobRepository{}}
+	base.detail = BusinessDetail{Business: row}
+
+	server, err := New(NewService(base, t.TempDir()), "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	server.srv.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/app/results/biz_abcde/drawer", nil))
+
+	body := recorder.Body.String()
+	if strings.Contains(body, "detail-map") {
+		t.Fatal("drawer framed a map for a record with no coordinates")
+	}
+
+	if !strings.Contains(body, "cannot be placed on the map") {
+		t.Fatal("drawer did not explain why there is no map")
 	}
 }

@@ -105,6 +105,7 @@ type appResultCapabilities struct {
 	CanDelete        bool
 	CanProspect      bool
 	CanEditFields    bool
+	CanAddToList     bool
 }
 
 type resultJobOption struct {
@@ -162,11 +163,15 @@ type appSocialLink struct {
 }
 
 type appBusinessDetail struct {
-	CSRFToken        string
-	CanMutate        bool
-	CanEnrich        bool
-	Business         appResultRow
-	MapURL           string
+	CSRFToken string
+	CanMutate bool
+	CanEnrich bool
+	Business  appResultRow
+	MapURL    string
+	// MapEmbedURL frames Map Explorer narrowed to this one business, so
+	// the drawer shows the record's location instead of only naming its
+	// coordinates. It is empty when the record has no coordinates.
+	MapEmbedURL      string
 	RawJSON          string
 	Sources          []appBusinessSource
 	Provenance       []appFieldProvenance
@@ -416,6 +421,7 @@ func (s *Server) buildResultsPage(r *http.Request, search ResultSearch) (results
 			CanDelete:        s.resultMutationAvailable(),
 			CanProspect:      s.svc.SupportsProspects(),
 			CanEditFields:    s.manualEditAvailable(),
+			CanAddToList:     s.resultListAvailable(),
 		},
 	}
 	page.LayoutColumns, page.LayoutGroup = NormalizeSavedViewLayoutQuery(r.URL.Query())
@@ -754,6 +760,23 @@ func resultExportURL(source *url.URL) string {
 	return "/app/exports?" + values.Encode()
 }
 
+// businessMapEmbedURL narrows Map Explorer to one business using the same
+// bounded filter language the Results table uses, so the drawer can frame the
+// existing map page instead of shipping a second map implementation.
+func businessMapEmbedURL(businessID string) string {
+	if !validBusinessID(businessID) {
+		return ""
+	}
+
+	values := url.Values{}
+	values.Set("source", "results")
+	values.Add("filter_field", "id")
+	values.Add("filter_operator", "eq")
+	values.Add("filter_value", businessID)
+
+	return "/app/map?" + values.Encode()
+}
+
 func resultMapURL(source *url.URL) string {
 	values := source.Query()
 	values.Del("page")
@@ -860,6 +883,7 @@ func (s *Server) loadAppBusinessDetail(r *http.Request) (appBusinessDetail, int,
 	if detail.Business.Latitude != nil && detail.Business.Longitude != nil {
 		page.MapURL = fmt.Sprintf("https://www.openstreetmap.org/?mlat=%0.6f&mlon=%0.6f#map=17/%0.6f/%0.6f",
 			*detail.Business.Latitude, *detail.Business.Longitude, *detail.Business.Latitude, *detail.Business.Longitude)
+		page.MapEmbedURL = businessMapEmbedURL(detail.Business.ID)
 	}
 	for _, source := range detail.Sources {
 		page.Sources = append(page.Sources, appBusinessSource{

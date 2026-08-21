@@ -293,6 +293,24 @@
 .cell-chips a.badge:hover { text-decoration: underline; }
 
 /* ---------------------------------------------------------------------------
+   Detail drawer location card — the drawer frames Map Explorer rather than
+   shipping a second map, so it only needs a bounded, rounded viewport.
+   --------------------------------------------------------------------------- */
+.detail-map {
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-muted);
+}
+
+.detail-map iframe {
+    display: block;
+    width: 100%;
+    min-height: min(38vh, 22rem);
+    border: 0;
+}
+
+/* ---------------------------------------------------------------------------
    Inline cell editing — an editable cell swaps its rendered value for a small
    value + reason pair. The editor is deliberately the same width as the cell
    so the table never reflows while a correction is being typed.
