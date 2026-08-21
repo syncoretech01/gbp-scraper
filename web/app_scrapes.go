@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/csv"
 	"fmt"
 	"io"
@@ -89,6 +90,19 @@ func (s *Server) createScrapeFromWizard(w http.ResponseWriter, r *http.Request) 
 
 	if templateID := strings.TrimSpace(r.FormValue("template_id")); templateID != "" {
 		_ = s.svc.RecordScrapeTemplateUse(r.Context(), templateID, time.Now().UTC())
+	}
+
+	// The data-field selection and the post-collection filters are only real
+	// if something uses them. Both are materialised here: the filters as a
+	// saved result view and the field selection as a repeatable export
+	// profile. Neither is required for the job to run, so a repository that
+	// cannot store them is not an error.
+	if _, _, viewErr := s.svc.SaveJobCollectionView(r.Context(), job); viewErr != nil {
+		s.recordJobPlanWarning(r.Context(), job.ID, "saved view", viewErr)
+	}
+
+	if _, _, presetErr := s.svc.SaveJobFieldExportPreset(r.Context(), job); presetErr != nil {
+		s.recordJobPlanWarning(r.Context(), job.ID, "export profile", presetErr)
 	}
 
 	http.Redirect(w, r, "/app/jobs/"+job.ID, http.StatusSeeOther)
@@ -187,6 +201,13 @@ func parseWizardJob(r *http.Request) (Job, jobruntime.State, error) {
 	if err != nil {
 		return Job{}, "", err
 	}
+	enrichmentStaleHours, err := optionalFormInt(r, "enrichment_stale_hours")
+	if err != nil {
+		return Job{}, "", err
+	}
+	if enrichmentStaleHours < 0 || enrichmentStaleHours > MaximumEnrichmentStaleHours {
+		return Job{}, "", fmt.Errorf("re-audit window must be between 0 and %d hours", MaximumEnrichmentStaleHours)
+	}
 
 	maxTime, err := time.ParseDuration(strings.TrimSpace(r.FormValue("maxtime")))
 	if err != nil || maxTime < 3*time.Minute {
@@ -231,6 +252,20 @@ func parseWizardJob(r *http.Request) (Job, jobruntime.State, error) {
 		SavedAreaID:     strings.TrimSpace(r.FormValue("saved_area_id")),
 		IncrementalMode: strings.TrimSpace(r.FormValue("incremental_mode")),
 	}
+
+	fields, err := wizardFieldSelection(r)
+	if err != nil {
+		return Job{}, "", err
+	}
+
+	data.Fields = fields
+
+	filters, err := wizardResultFilters(r)
+	if err != nil {
+		return Job{}, "", err
+	}
+
+	data.ResultFilters = filters
 	if websiteEnrichment {
 		if enrichmentMaxPages == 0 {
 			enrichmentMaxPages = 3
@@ -251,6 +286,17 @@ func parseWizardJob(r *http.Request) (Job, jobruntime.State, error) {
 			MaxInternalLinkChecks: enrichmentInternalLinks,
 			DisableInternalChecks: enrichmentInternalLinks == 0,
 			CheckMX:               r.FormValue("enrichment_check_mx") == "on",
+			StaleAfterHours:       enrichmentStaleHours,
+			ForceReaudit:          r.FormValue("enrichment_force_reaudit") == "on",
+		}
+		// The stale-contacts rescan mode is the one incremental mode that
+		// changes work actually done, because the website audit is local. It
+		// never forces a re-audit: that would be the opposite of the mode.
+		if data.IncrementalMode == IncrementalModeStaleContacts {
+			data.Enrichment.ForceReaudit = false
+			if data.Enrichment.StaleAfterHours <= 0 {
+				data.Enrichment.StaleAfterHours = DefaultEnrichmentStaleHours
+			}
 		}
 	}
 	if data.Lang == "" {
@@ -492,6 +538,126 @@ func wizardCoverageOptions(r *http.Request) (*CoverageOptions, error) {
 	}
 
 	return options, nil
+}
+
+// recordJobPlanWarning records that a plan artifact could not be materialised.
+// The job itself is already saved and runnable, so this is evidence in the job
+// monitor rather than a failed request. A repository without job events simply
+// drops it.
+func (s *Server) recordJobPlanWarning(ctx context.Context, jobID, artifact string, cause error) {
+	_ = s.svc.RecordJobWorkerEvent(
+		ctx, jobID, "collection-plan", "warning",
+		fmt.Sprintf("Could not save the job's %s; the collection plan stays available through the API", artifact),
+		map[string]any{"artifact": artifact, "error": cause.Error()},
+	)
+}
+
+// wizardFieldSelection reads the step-3 data-field checkboxes. A complete
+// selection, or none at all, stores nothing so the saved job definition stays
+// byte-identical to one created before the step existed.
+func wizardFieldSelection(r *http.Request) ([]string, error) {
+	if r.Form == nil {
+		return nil, nil
+	}
+	if strings.TrimSpace(r.FormValue("fields_selected")) != "on" {
+		return nil, nil
+	}
+
+	fields, err := NormalizeJobFieldKeys(r.Form["fields"])
+	if err != nil {
+		return nil, err
+	}
+
+	return fields, nil
+}
+
+// wizardResultFilters reads the step-5 post-collection filters. Every value
+// is optional; an empty step stores nothing.
+func wizardResultFilters(r *http.Request) (*JobResultFilters, error) {
+	ratingMin, err := optionalFormFloat(r, "filter_rating_min")
+	if err != nil {
+		return nil, err
+	}
+	ratingMax, err := optionalFormFloat(r, "filter_rating_max")
+	if err != nil {
+		return nil, err
+	}
+	reviewsMin, err := optionalFormInt64(r, "filter_reviews_min")
+	if err != nil {
+		return nil, err
+	}
+	reviewsMax, err := optionalFormInt64(r, "filter_reviews_max")
+	if err != nil {
+		return nil, err
+	}
+
+	filters := JobResultFilters{
+		RatingMin: ratingMin, RatingMax: ratingMax,
+		ReviewsMin: reviewsMin, ReviewsMax: reviewsMax,
+		IncludeCategories: splitFilterList(r.FormValue("filter_include_categories")),
+		ExcludeCategories: splitFilterList(r.FormValue("filter_exclude_categories")),
+		NameContains:      strings.TrimSpace(r.FormValue("filter_name_contains")),
+		NameExcludes:      strings.TrimSpace(r.FormValue("filter_name_excludes")),
+	}
+	if r.Form != nil {
+		filters.Statuses = normalizeJobFilterList(r.Form["filter_status"])
+	}
+	switch strings.TrimSpace(r.FormValue("filter_claimed")) {
+	case "claimed":
+		claimed := true
+		filters.Claimed = &claimed
+	case "unclaimed":
+		unclaimed := false
+		filters.Claimed = &unclaimed
+	case "", "any":
+	default:
+		return nil, fmt.Errorf("claim filter must be any, claimed, or unclaimed")
+	}
+
+	normalized := filters.Normalized()
+	if normalized == nil {
+		return nil, nil
+	}
+	if err := normalized.Validate(); err != nil {
+		return nil, err
+	}
+
+	return normalized, nil
+}
+
+// splitFilterList accepts comma-separated or line-separated category lists.
+func splitFilterList(raw string) []string {
+	replaced := strings.ReplaceAll(raw, "\r\n", "\n")
+	replaced = strings.ReplaceAll(replaced, "\r", "\n")
+	replaced = strings.ReplaceAll(replaced, ",", "\n")
+
+	return splitNonEmptyLines(replaced)
+}
+
+func optionalFormFloat(r *http.Request, name string) (*float64, error) {
+	value := strings.TrimSpace(r.FormValue(name))
+	if value == "" {
+		return nil, nil
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return nil, fmt.Errorf("%s must be a number", strings.ReplaceAll(name, "_", " "))
+	}
+
+	return &parsed, nil
+}
+
+func optionalFormInt64(r *http.Request, name string) (*int64, error) {
+	value := strings.TrimSpace(r.FormValue(name))
+	if value == "" {
+		return nil, nil
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("%s must be a whole number", strings.ReplaceAll(name, "_", " "))
+	}
+
+	return &parsed, nil
 }
 
 func requiredFormInt(r *http.Request, name string) (int, error) {

@@ -98,6 +98,28 @@ in Basic is identical to the same job created in Advanced.
                     <div class="field"><label for="combo-locations">Locations (one per line)</label><textarea class="textarea" id="combo-locations" rows="4" placeholder="San Francisco&#10;Oakland" data-combo-locations></textarea></div>
                 </div>
                 <div class="field"><label for="combo-locations-file">Add locations from a TXT or CSV file</label><input class="input file-input" id="combo-locations-file" type="file" accept=".txt,.csv,text/plain,text/csv" data-combo-locations-file><p class="field-hint">The first CSV column is used; maximum file size is 2 MB.</p></div>
+                {{/*
+                The category picker and the reusable groups hydrate from
+                /api/v1/business-categories and /api/v1/category-groups.
+                app-wizard.js reveals this block only after both answer, so a
+                repository that cannot store groups shows no dead controls.
+                */}}
+                <div class="category-picker" data-category-picker hidden>
+                    <h4 class="t-overline">Business category picker</h4>
+                    <p class="field-hint">A bundled local vocabulary of Maps listing categories. Picking here fills the categories box above; free text still works.</p>
+                    <div class="form-grid form-grid-4">
+                        <div class="field"><label for="category-sector">Sector</label><select class="select" id="category-sector" data-category-sector><option value="">All sectors</option></select></div>
+                        <div class="field"><label for="category-search">Search categories</label><input class="input" id="category-search" type="search" autocomplete="off" placeholder="dent" data-category-search></div>
+                    </div>
+                    <div class="chip-group category-options" role="group" aria-label="Business categories" data-category-options></div>
+                    <div class="rail-actions"><button class="button button-sm" type="button" data-action="insert-categories">Add selected to categories</button><button class="button button-sm" type="button" data-action="clear-categories">Clear selection</button></div>
+                    <div class="category-groups" data-category-groups hidden>
+                        <h4 class="t-overline">Reusable category groups</h4>
+                        <div class="field"><label for="category-group-picker">Insert saved group</label><div class="input-group"><select class="select" id="category-group-picker" data-category-group-picker><option value="">Choose a saved group&hellip;</option></select><button class="button button-sm" type="button" data-action="insert-category-group">Insert</button><button class="button button-sm button-danger" type="button" data-action="delete-category-group">Delete</button></div></div>
+                        <div class="field"><label for="category-group-name">Save the selection as a group</label><div class="input-group"><input class="input" id="category-group-name" maxlength="64" autocomplete="off" placeholder="Dental practices" data-category-group-name><button class="button button-sm" type="button" data-action="save-category-group">Save group</button></div></div>
+                    </div>
+                    <p class="field-hint" data-category-status aria-live="polite"></p>
+                </div>
                 <div class="form-actions"><span class="field-hint" data-combo-status aria-live="polite"></span><button class="button" type="button" data-action="generate-combinations">Generate combinations</button></div>
             </div></details>
             {{if .Page.ProspectQueriesSupported}}<details class="card disclosure" data-gbp-coverage data-wizard-gbp><summary>GBP prospecting coverage (ZIP &times; synonym queries)<span class="disclosure-tag">GBP</span></summary><div class="card-body">
@@ -162,13 +184,61 @@ in Basic is identical to the same job created in Advanced.
         </section>
 
         <section class="card-body wizard-panel" id="wizard-step-3" data-wizard-panel="3" data-wizard-advanced aria-labelledby="wizard-step-3-title">
-            <div class="wizard-panel-head"><div class="wizard-panel-head-copy"><h2 id="wizard-step-3-title">Data fields retained</h2><p>The scraper stores every field returned by its selected mode so the original CSV stays compatible and future filters do not discard source data.</p></div></div>
-            <div class="grid grid-3">
-                <article class="card card-quiet"><div class="card-body"><h3>Business</h3><p class="t-caption">Name, categories, status, description, rating, reviews, hours, price and identifiers when Maps exposes them.</p></div></article>
-                <article class="card card-quiet"><div class="card-body"><h3>Location and contacts</h3><p class="t-caption">Address components, coordinates, phone, website, domain and emails when website crawling is enabled.</p></div></article>
-                <article class="card card-quiet"><div class="card-body"><h3>Audit trail</h3><p class="t-caption">Source query, source URL, input identifier, extraction time, raw record, normalized value and field provenance.</p></div></article>
+            <div class="wizard-panel-head"><div class="wizard-panel-head-copy"><h2 id="wizard-step-3-title">Data fields</h2><p>Every field below is one the engine genuinely captures today. Collection is never narrowed: the scraper always writes its full row and the per-job CSV keeps its complete schema. What you choose here is what this workspace displays and exports.</p></div></div>
+            {{/*
+            The checkbox keys are the stable JobField keys from web/job_fields.go.
+            TestWizardFieldStepMatchesFieldCatalogue keeps this markup and that
+            catalogue in lockstep, so a field can never appear here without a
+            backend that understands it.
+            */}}
+            <div class="notice notice-info"><div><strong>Selection controls display and export, not collection.</strong><p>Google Maps has no field mask. Deselecting a field keeps it out of the workspace's result columns and the export profile this job saves; the value is still collected and still present in the job CSV. Fast Mode returns fewer fields regardless of what is selected here.</p></div></div>
+            <label class="check-row"><input id="fields-selected" name="fields_selected" type="checkbox" value="on" data-fields-toggle><span>Narrow the retained field set<small>Leave this off to keep every field, which is what every job did before this step existed.</small></span></label>
+            <div class="field-selection" data-field-selection hidden>
+                <fieldset class="fieldset field-group">
+                    <legend>Core details</legend>
+                    <div class="check-grid">
+                        <label class="check-row"><input name="fields" type="checkbox" value="name" checked disabled data-field-required><span>Name<small>Required: every stored record needs a name.</small></span></label>
+                        <label class="check-row"><input name="fields" type="checkbox" value="category" checked><span>Category<small>Export column <code>category</code>.</small></span></label>
+                        <label class="check-row"><input name="fields" type="checkbox" value="additional_categories" checked><span>Additional categories<small>Export column <code>additional_categories</code>.</small></span></label>
+                        <label class="check-row"><input name="fields" type="checkbox" value="address" checked><span>Address<small>Brings city, state, postal code and country with it.</small></span></label>
+                        <label class="check-row"><input name="fields" type="checkbox" value="phone" checked><span>Phone<small>Export column <code>phone</code>.</small></span></label>
+                        <label class="check-row"><input name="fields" type="checkbox" value="website" checked><span>Website<small>Export column <code>website</code>.</small></span></label>
+                        <label class="check-row"><input name="fields" type="checkbox" value="domain" checked><span>Domain<small>Derived locally from the website URL.</small></span></label>
+                        <label class="check-row"><input name="fields" type="checkbox" value="coordinates" checked><span>Coordinates<small>Latitude and longitude; the Map Explorer needs both.</small></span></label>
+                        <label class="check-row"><input name="fields" type="checkbox" value="rating" checked><span>Rating<small>Export column <code>rating</code>.</small></span></label>
+                        <label class="check-row"><input name="fields" type="checkbox" value="reviews" checked><span>Review count<small>Export column <code>review_count</code>.</small></span></label>
+                        <label class="check-row"><input name="fields" type="checkbox" value="business_status" checked><span>Business status<small>Export column <code>business_status</code>.</small></span></label>
+                    </div>
+                </fieldset>
+                <fieldset class="fieldset field-group">
+                    <legend>Identifiers</legend>
+                    <div class="check-grid">
+                        <label class="check-row"><input name="fields" type="checkbox" value="place_id" checked><span>Place ID<small>Export column <code>place_id</code>.</small></span></label>
+                        <label class="check-row"><input name="fields" type="checkbox" value="cid" checked><span>CID<small>Export column <code>cid</code>.</small></span></label>
+                        <label class="check-row"><input name="fields" type="checkbox" value="data_id" checked><span>Data ID<small>Export column <code>data_id</code>.</small></span></label>
+                        <label class="check-row"><input name="fields" type="checkbox" value="input_id" checked><span>Input ID<small>Stored on the record; reachable through <code>raw_json</code>, not a column of its own.</small></span></label>
+                        <label class="check-row"><input name="fields" type="checkbox" value="source_query" checked><span>Source query<small>Export column <code>source_query</code>.</small></span></label>
+                        <label class="check-row"><input name="fields" type="checkbox" value="source_cell" checked><span>Source grid cell<small>Export column <code>source_cell</code>.</small></span></label>
+                    </div>
+                </fieldset>
+                <fieldset class="fieldset field-group">
+                    <legend>Extended details</legend>
+                    <p class="field-hint">These are captured and stored, but the export builder has no dedicated column for them: selecting any of them adds the <code>raw_json</code> column to the export profile this job saves.</p>
+                    <div class="check-grid">
+                        <label class="check-row"><input name="fields" type="checkbox" value="opening_hours" checked><span>Opening hours<small>Normalized into <code>businesses.open_hours</code>.</small></span></label>
+                        <label class="check-row"><input name="fields" type="checkbox" value="popular_times" checked><span>Popular times<small>Normalized into <code>businesses.popular_times</code>.</small></span></label>
+                        <label class="check-row"><input name="fields" type="checkbox" value="descriptions" checked><span>Descriptions<small>Listing description and the About panel.</small></span></label>
+                        <label class="check-row"><input name="fields" type="checkbox" value="price_range" checked><span>Price range<small>Normalized into <code>businesses.price_range</code>.</small></span></label>
+                        <label class="check-row"><input name="fields" type="checkbox" value="images" checked><span>Images<small>Image URLs only; no image file is downloaded.</small></span></label>
+                        <label class="check-row"><input name="fields" type="checkbox" value="reservations" checked><span>Reservations<small>Reservation provider links.</small></span></label>
+                        <label class="check-row"><input name="fields" type="checkbox" value="ordering_links" checked><span>Ordering links<small>Order-online provider links.</small></span></label>
+                        <label class="check-row"><input name="fields" type="checkbox" value="menus" checked><span>Menus<small>Menu links where Maps exposes them.</small></span></label>
+                        <label class="check-row"><input name="fields" type="checkbox" value="owner" checked><span>Owner information<small>The owner panel Maps shows on some listings.</small></span></label>
+                        <label class="check-row"><input name="fields" type="checkbox" value="reviews_text" checked><span>Reviews<small>Individual review text; extra pages need the enrichment step's switch.</small></span></label>
+                    </div>
+                </fieldset>
+                <div class="form-actions"><span class="field-hint" data-field-summary aria-live="polite"></span><button class="button button-sm" type="button" data-action="select-all-fields">Select all</button><button class="button button-sm" type="button" data-action="select-core-fields">Core and identifiers only</button></div>
             </div>
-            <div class="notice notice-info"><div><strong>Fast Mode returns fewer fields.</strong><p>Use the normal browser/grid mode when complete listing details matter more than speed.</p></div></div>
             <div class="form-actions"><button class="button" type="button" data-action="wizard-back">Back</button><button class="button button-primary" type="button" data-action="wizard-next">Choose enrichment &rarr;</button></div>
         </section>
 
@@ -184,14 +254,45 @@ in Basic is identical to the same job created in Advanced.
                 <div class="field"><label for="enrichment-timeout">Page timeout (seconds)</label><input class="input num" id="enrichment-timeout" name="enrichment_timeout_seconds" type="number" min="1" max="60" value="10"></div>
                 <div class="field"><label for="enrichment-links">Internal links to check</label><input class="input num" id="enrichment-links" name="enrichment_internal_links" type="number" min="0" max="100" value="10"></div>
             </div>
-            <label class="check-row"><input id="enrichment-mx" name="enrichment_check_mx" type="checkbox" value="on"><span>Check email domains for MX records<small>Uses local DNS only; this does not claim mailbox-level verification.</small></span></label>
+            <div class="form-grid form-grid-4">
+                <div class="field"><label for="enrichment-stale-hours">Re-audit after (hours)</label><input class="input num" id="enrichment-stale-hours" name="enrichment_stale_hours" type="number" min="0" max="8760" placeholder="24"><p class="field-hint">A business whose last local audit is newer than this is skipped. Empty keeps the 24-hour default every job has always used.</p></div>
+            </div>
+            <div class="check-grid">
+                <label class="check-row"><input id="enrichment-mx" name="enrichment_check_mx" type="checkbox" value="on"><span>Check email domains for MX records<small>Uses local DNS only; this does not claim mailbox-level verification.</small></span></label>
+                <label class="check-row"><input id="enrichment-force" name="enrichment_force_reaudit" type="checkbox" value="on"><span>Re-audit every business<small>Ignores the window above and visits every site again. The "re-enrich stale contacts" rescan mode turns this off.</small></span></label>
+            </div>
             <div class="form-actions"><button class="button" type="button" data-action="wizard-back">Back</button><button class="button button-primary" type="button" data-action="wizard-next">Plan filtering &rarr;</button></div>
         </section>
 
         <section class="card-body wizard-panel" id="wizard-step-5" data-wizard-panel="5" data-wizard-advanced aria-labelledby="wizard-step-5-title">
-            <div class="wizard-panel-head"><div class="wizard-panel-head-copy"><h2 id="wizard-step-5-title">Keep source data, filter safely</h2><p>All collected rows are preserved. After records commit, use Results to search and filter by rating, review count, category, city, status, website, email, phone, job and quality fields. This avoids losing data because of an overly strict scrape-time filter.</p></div></div>
-            <div class="notice notice-info"><div><strong>Why there is no destructive pre-filter here</strong><p>Google can omit or change fields between list and detail views. Applying filters to the normalized local database is repeatable and auditable.</p></div></div>
-            <div class="field"><label for="incremental-mode">Rescan mode</label><select class="select" id="incremental-mode" name="incremental_mode"><option value="">Full collection</option><option value="new_only">Only new listings</option><option value="new_changed">New and changed listings</option></select><p class="field-hint">New, changed, and disappeared listings are detected when results are imported, so the scraper still visits listings to know they changed.</p></div>
+            <div class="wizard-panel-head"><div class="wizard-panel-head-copy"><h2 id="wizard-step-5-title">Filters and rescan mode</h2><p>Every collected row is preserved. These rules narrow the set this job hands you, and they are saved with the job as a result view you can reopen, adjust, or throw away without ever re-running the scrape.</p></div></div>
+            <div class="notice notice-warning" data-filter-notice><div><strong>Applied after collection, not by Google.</strong><p>Google Maps accepts no rating, category, status, claim, or name filter in a search. The plan is executed in full, the per-job CSV keeps every row, and these rules are then applied to the workspace's stored results. Nothing here makes a run faster or cheaper — it makes the result set sharper.</p></div></div>
+            <div class="form-grid form-grid-4">
+                <div class="field"><label for="filter-rating-min">Minimum rating</label><input class="input num" id="filter-rating-min" name="filter_rating_min" type="number" min="0" max="5" step="0.1" placeholder="any"><p class="field-hint">Listings with no rating are excluded once a bound is set.</p></div>
+                <div class="field"><label for="filter-rating-max">Maximum rating</label><input class="input num" id="filter-rating-max" name="filter_rating_max" type="number" min="0" max="5" step="0.1" placeholder="any"></div>
+                <div class="field"><label for="filter-reviews-min">Minimum reviews</label><input class="input num" id="filter-reviews-min" name="filter_reviews_min" type="number" min="0" max="10000000" placeholder="any"></div>
+                <div class="field"><label for="filter-reviews-max">Maximum reviews</label><input class="input num" id="filter-reviews-max" name="filter_reviews_max" type="number" min="0" max="10000000" placeholder="any"></div>
+            </div>
+            <div class="grid grid-2">
+                <div class="field"><label for="filter-include-categories">Included categories</label><textarea class="textarea" id="filter-include-categories" name="filter_include_categories" rows="3" placeholder="Dentist&#10;Dental clinic" data-filter-include-categories></textarea><p class="field-hint">One per line or comma separated. A business matching any of them is kept; leave empty to keep every category.</p></div>
+                <div class="field"><label for="filter-exclude-categories">Excluded categories</label><textarea class="textarea" id="filter-exclude-categories" name="filter_exclude_categories" rows="3" placeholder="Orthodontist&#10;Dental laboratory" data-filter-exclude-categories></textarea><p class="field-hint">A business carrying any of them is dropped.</p></div>
+            </div>
+            <fieldset class="fieldset">
+                <legend>Business status</legend>
+                <div class="check-grid">
+                    <label class="check-row"><input name="filter_status" type="checkbox" value="operational"><span>Open<small>Normalized status <code>operational</code>.</small></span></label>
+                    <label class="check-row"><input name="filter_status" type="checkbox" value="temporarily_closed"><span>Temporarily closed<small>Normalized status <code>temporarily_closed</code>.</small></span></label>
+                    <label class="check-row"><input name="filter_status" type="checkbox" value="permanently_closed"><span>Permanently closed<small>Normalized status <code>permanently_closed</code>.</small></span></label>
+                </div>
+                <p class="field-hint">Leave all three unticked to keep every status, including listings Maps gives no status for.</p>
+            </fieldset>
+            <div class="form-grid form-grid-4">
+                <div class="field"><label for="filter-claimed">Listing ownership</label><select class="select" id="filter-claimed" name="filter_claimed"><option value="any" selected>Any</option><option value="claimed">Claimed only</option><option value="unclaimed">Unclaimed only</option></select><p class="field-hint">Maps does not publish ownership for every listing; unknown ones are excluded once you narrow this.</p></div>
+                <div class="field"><label for="filter-name-contains">Name contains</label><input class="input" id="filter-name-contains" name="filter_name_contains" maxlength="200" placeholder="dental" autocomplete="off"></div>
+                <div class="field"><label for="filter-name-excludes">Name does not contain</label><input class="input" id="filter-name-excludes" name="filter_name_excludes" maxlength="200" placeholder="clinic group" autocomplete="off"></div>
+                <div class="field"><label for="incremental-mode">Rescan mode</label><select class="select" id="incremental-mode" name="incremental_mode"><option value="">Full collection</option><option value="new_only">Only new listings</option><option value="new_changed">New and changed listings</option><option value="volatile_fields">Recheck volatile fields only</option><option value="stale_contacts">Re-enrich missing or stale contact data</option></select></div>
+            </div>
+            <p class="field-hint" data-incremental-note aria-live="polite">Full collection keeps every business this run observes.</p>
             <div class="form-actions"><button class="button" type="button" data-action="wizard-back">Back</button><button class="button button-primary" type="button" data-action="wizard-next">Tune performance &rarr;</button></div>
         </section>
 
@@ -242,6 +343,13 @@ in Basic is identical to the same job created in Advanced.
                 <article class="card card-quiet"><div class="card-header"><h3>Search and geography</h3></div><div class="card-body"><dl class="key-value"><dt>Job</dt><dd data-review-name>San Francisco dentists</dd><dt>Location</dt><dd data-review-location>San Francisco, California</dd><dt>Centre</dt><dd class="num" data-review-coordinates>37.7749, -122.4194</dd><dt>Coverage</dt><dd data-review-radius>10,000 m grid extent</dd><dt>Grid</dt><dd data-review-grid>2.5 km</dd></dl></div></article>
                 <article class="card card-quiet"><div class="card-header"><h3>Execution</h3></div><div class="card-body"><dl class="key-value"><dt>Tasks</dt><dd class="num" data-review-tasks>0</dd><dt>Runtime limit</dt><dd data-review-runtime>60m</dd><dt>Enrichment</dt><dd data-review-enrichment>Off</dd><dt>Proxy</dt><dd data-review-proxy>Direct connection</dd><dt>Output</dt><dd>Normalized local SQLite plus compatible CSV</dd><dt>Recovery</dt><dd>Committed rows are retained; retries merge without replacing earlier results.</dd></dl></div></article>
             </div>
+            {{/* The retained-set card mirrors the collection plan the server
+                 resolves from the saved job (GET /api/v1/jobs/{id}/collection-plan),
+                 so the wizard promises exactly what the job will deliver. */}}
+            <article class="card card-quiet"><div class="card-header"><h3>Retained set</h3></div><div class="card-body">
+                <dl class="key-value"><dt>Data fields</dt><dd data-review-fields>All captured fields</dd><dt>Filters</dt><dd data-review-filters>None</dd><dt>Rescan mode</dt><dd data-review-incremental>Full collection</dd></dl>
+                <p class="field-hint" data-review-collection-note>Filters and rescan modes are applied to stored results after collection. Google Maps returns every listing the plan reaches and the per-job CSV keeps them all.</p>
+            </div></article>
             {{if .Features.SavedSearches}}<div class="grid grid-2"><label class="check-row"><input id="save-template" name="save_template" type="checkbox" value="on"><span>Save as reusable template</span></label><div class="field"><label for="template-name">Template name</label><input class="input" id="template-name" name="template_name" placeholder="San Francisco dental coverage"></div></div>{{end}}
             <label class="check-row"><input id="responsible-use" name="responsible_use" type="checkbox" value="accepted" required><span>I will use this scraper responsibly and comply with applicable terms, laws, privacy obligations, and outreach rules.</span></label>
             <div class="form-actions"><button class="button" type="button" data-action="wizard-back">Back</button><button class="button" type="submit" name="_action" value="draft">Save draft</button><button class="button button-primary" type="submit" name="_action" value="start">Start scraping</button></div>

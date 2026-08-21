@@ -105,6 +105,16 @@ type JobData struct {
 	GridBBox        string                `json:"grid_bbox,omitempty"`
 	GridCellKM      float64               `json:"grid_cell_km,omitempty"`
 	IncrementalMode string                `json:"incremental_mode,omitempty"`
+	// Fields is the wizard's data-field selection. An empty slice means
+	// "retain, display and export everything", which is exactly the
+	// behaviour every job had before the step existed. The engine always
+	// collects the complete Maps record regardless; this narrows what the
+	// workspace displays and exports. See web/job_fields.go.
+	Fields []string `json:"fields,omitempty"`
+	// ResultFilters are the wizard's step-5 filters. Google applies none of
+	// them: they are applied to stored results after collection, which is
+	// what every surface built from them says. See web/job_filters.go.
+	ResultFilters *JobResultFilters `json:"result_filters,omitempty"`
 	// Coverage enables the adaptive discovery engine for this job. A nil
 	// value keeps exactly the historical behaviour: no saturation stop and
 	// no mid-run expansion.
@@ -114,10 +124,34 @@ type JobData struct {
 // Incremental rescan modes. An empty mode is a full collection; the other
 // modes narrow what a rescan keeps, while new/changed/disappeared detection
 // always happens when results are imported.
+//
+// None of them narrows what the engine collects: Google Maps offers no "only
+// new listings" query and no partial-record fetch, so the plan is always
+// executed in full and the per-job CSV always keeps every collected row.
+// IncrementalModeStaleContacts is the one exception that does change work
+// done: it narrows the LOCAL website audit, which this product controls.
 const (
 	IncrementalModeNewOnly    = "new_only"
 	IncrementalModeNewChanged = "new_changed"
+	// IncrementalModeVolatile keeps the rescan's view to businesses whose
+	// stored record moved on a field a listing realistically changes.
+	IncrementalModeVolatile = "volatile_fields"
+	// IncrementalModeStaleContacts re-audits only businesses whose website
+	// or contact data is missing or older than the staleness window.
+	IncrementalModeStaleContacts = "stale_contacts"
 )
+
+// ValidIncrementalMode reports whether a stored rescan mode is one this
+// product implements.
+func ValidIncrementalMode(mode string) bool {
+	switch mode {
+	case "", IncrementalModeNewOnly, IncrementalModeNewChanged,
+		IncrementalModeVolatile, IncrementalModeStaleContacts:
+		return true
+	default:
+		return false
+	}
+}
 
 func (d *JobData) Validate() error {
 	if len(d.Keywords) == 0 {
@@ -187,13 +221,18 @@ func (d *JobData) Validate() error {
 			return err
 		}
 	}
-	switch d.IncrementalMode {
-	case "", IncrementalModeNewOnly, IncrementalModeNewChanged:
-	default:
+	if !ValidIncrementalMode(d.IncrementalMode) {
 		return fmt.Errorf(
-			"rescan mode must be empty for a full collection, %q, or %q; got %q",
-			IncrementalModeNewOnly, IncrementalModeNewChanged, d.IncrementalMode,
+			"rescan mode must be empty for a full collection, %q, %q, %q, or %q; got %q",
+			IncrementalModeNewOnly, IncrementalModeNewChanged,
+			IncrementalModeVolatile, IncrementalModeStaleContacts, d.IncrementalMode,
 		)
+	}
+	if _, err := NormalizeJobFieldKeys(d.Fields); err != nil {
+		return err
+	}
+	if err := d.ResultFilters.Validate(); err != nil {
+		return err
 	}
 	if d.SavedAreaID != "" && !validMapEntityID(d.SavedAreaID) {
 		return errors.New("saved area ID is invalid")
