@@ -77,3 +77,14 @@ existing change history.
   union member, one ~40-line adapter — exactly the footprint the spec names).
   Verify the two Step-4 contract questions in the spec against the live CRM
   before writing that adapter; nothing here blocks on them.
+
+## Status as of 2026-08-22
+
+The GBP layer is complete and standalone. Website-status classification,
+scoring, openers, ZIP coverage and the prospect surfaces all run locally with
+no external service. The DiscoveredCompany endpoint and the
+`discovered_companies` export remain dormant behind the off-by-default
+`prospect.future_integrations` setting, and the stored boundary URLs for a
+future audit service and email verifier are configuration only - nothing is
+ever called. See `docs/technical-limitations.md` for the external-only
+boundary.
