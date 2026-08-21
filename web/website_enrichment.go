@@ -302,8 +302,11 @@ type WebsiteAuditView struct {
 	Pages                   []enrichment.PageResult    `json:"pages,omitempty"`
 	Emails                  []enrichment.Email         `json:"emails,omitempty"`
 	Phones                  []enrichment.Phone         `json:"phones,omitempty"`
+	Addresses               []enrichment.PostalAddress `json:"addresses,omitempty"`
 	SocialProfiles          []enrichment.SocialProfile `json:"social_profiles,omitempty"`
+	ContentAudit            enrichment.ContentAudit    `json:"content_audit"`
 	ScreenshotPath          string                     `json:"screenshot_path,omitempty"`
+	ErrorScreenshotPath     string                     `json:"error_screenshot_path,omitempty"`
 	Error                   string                     `json:"error,omitempty"`
 	StartedAt               time.Time                  `json:"started_at"`
 	CompletedAt             time.Time                  `json:"completed_at"`
@@ -659,7 +662,7 @@ func (s *Service) processEnrichmentQueue(
 		// The homepage screenshot is best-effort extra evidence captured only
 		// for genuinely reachable audits. It runs after the task is durably
 		// completed so a slow browser can never hold an audit hostage.
-		if task.Options.CaptureScreenshot && analyzeErr == nil {
+		if task.Options.CaptureScreenshot {
 			if !screenshotDriverAvailable() {
 				if !missingDriverLogged {
 					missingDriverLogged = true
@@ -674,7 +677,15 @@ func (s *Service) processEnrichmentQueue(
 				if capturer == nil {
 					capturer = newScreenshotCapturer()
 				}
-				s.captureAuditScreenshot(ctx, repository, capturer, task, auditID, result.FinalURL)
+				if analyzeErr == nil {
+					s.captureAuditScreenshot(ctx, repository, capturer, task, auditID, result.FinalURL)
+				}
+				// The optional error capture records what a failing site
+				// actually shows: an HTTP error page, a parked or placeholder
+				// page, a certificate warning, or a transport failure.
+				if shouldCaptureErrorScreenshot(result) {
+					s.captureAuditErrorScreenshot(ctx, repository, capturer, task, auditID, result.FinalURL)
+				}
 			}
 		}
 		if _, qualityErr := s.RecalculateQuality(context.WithoutCancel(ctx), []string{task.BusinessID}); qualityErr != nil &&

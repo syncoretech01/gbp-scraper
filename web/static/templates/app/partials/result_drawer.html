@@ -160,11 +160,15 @@ unique.
                     <div><dt>Crawl</dt><dd>{{.PagesChecked}} pages &middot; {{.InternalLinksChecked}} internal links &middot; {{.BrokenInternalLinks}} broken</dd></div>
                     <div><dt>Flags</dt><dd>mixed content {{if .MixedContent}}detected{{else}}none{{end}} &middot; parked {{if .Parked}}yes{{else}}no{{end}} &middot; coming soon {{if .ComingSoon}}yes{{else}}no{{end}} &middot; placeholder {{if .Placeholder}}yes{{else}}no{{end}}</dd></div>
                 </dl>
+                {{if .ContentAudit.Checked}}<div class="stack"><h5 class="detail-subhead">Basic quality audit <span class="badge">{{.ContentAudit.Present}}/{{.ContentAudit.Checked}} found</span></h5><div class="chip-group" data-website-content-audit>{{range .ContentAuditRows}}<span class="chip chip-static" data-selected="{{if .Present}}true{{else}}false{{end}}">{{.Label}}: {{if .Present}}found{{else}}not found{{end}}</span>{{end}}</div></div>{{end}}
+                {{if .Addresses}}<dl class="detail-list" data-website-addresses>{{range .Addresses}}<div><dt>Address on site</dt><dd>{{.Value}}</dd></div>{{end}}</dl>{{end}}
+                {{if .DetectionRows}}<div class="stack"><h5 class="detail-subhead">Signature detections</h5><div class="table-wrap"><table class="data-table" data-website-detections><thead><tr><th>Signal</th><th>Kind</th><th>Confidence</th><th>Matched signature</th></tr></thead><tbody>{{range .DetectionRows}}<tr><td>{{.Name}}</td><td>{{.Kind}}</td><td>{{.ConfidenceLabel}}</td><td><code>{{.Evidence}}</code></td></tr>{{end}}</tbody></table></div><p class="field-hint">Detection is signature-based: each row reports how strongly the matched patterns indicate the technology, never that it is certainly present.</p></div>{{end}}
                 <details><summary>Redirects, technologies, trackers, and social evidence</summary><pre class="code-block">Redirect chain: {{.RedirectChain}}
 Technologies: {{.Technologies}}
 Trackers: {{.Trackers}}
 Social links: {{.SocialLinks}}</pre></details>
                 {{if .ScreenshotPath}}<figure class="screenshot-figure"><img class="screenshot-preview" src="/app/{{.ScreenshotPath}}" alt="Homepage screenshot" loading="lazy"><figcaption class="field-hint">Homepage screenshot from the latest audit</figcaption></figure>{{end}}
+                {{if .ErrorScreenshotPath}}<figure class="screenshot-figure"><img class="screenshot-preview" src="/app/{{.ErrorScreenshotPath}}" alt="Error page screenshot" loading="lazy"><figcaption class="field-hint">Error-state screenshot from the latest audit</figcaption></figure>{{end}}
             </div>
         </section>
         {{end}}

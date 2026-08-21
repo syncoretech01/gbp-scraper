@@ -24,6 +24,11 @@ type rawPhone struct {
 	source Source
 }
 
+type rawAddress struct {
+	address PostalAddress
+	source  Source
+}
+
 type rawSocial struct {
 	platform string
 	url      string
@@ -41,6 +46,7 @@ type extractedPage struct {
 	emails          []rawEmail
 	phones          []rawPhone
 	socials         []rawSocial
+	addresses       []rawAddress
 	internalLinks   []string
 	discovered      []discoveredPage
 	technologies    []Detection
@@ -91,6 +97,7 @@ func extractPage(body []byte, pageURL string, kind PageKind) (extractedPage, err
 		emails:        extractEmails(document, visibleText, source),
 		phones:        extractPhones(document, visibleText, source),
 		socials:       extractSocialProfiles(document, parsedURL, source),
+		addresses:     extractAddresses(document, source),
 		internalLinks: extractInternalLinks(document, parsedURL),
 		discovered:    discoverSupportingPages(document, parsedURL),
 	}

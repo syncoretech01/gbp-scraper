@@ -118,6 +118,7 @@ func (c *Crawler) Analyze(ctx context.Context, rawURL string) (Result, error) {
 	allEmails := make([]rawEmail, 0)
 	allPhones := make([]rawPhone, 0)
 	allSocials := make([]rawSocial, 0)
+	allAddresses := make([]rawAddress, 0)
 	internalLinks := make(map[string]struct{})
 	fetchedURLs := make(map[string]struct{})
 	technologies := make(map[string]Detection)
@@ -148,6 +149,7 @@ func (c *Crawler) Analyze(ctx context.Context, rawURL string) (Result, error) {
 		&allEmails,
 		&allPhones,
 		&allSocials,
+		&allAddresses,
 		internalLinks,
 		fetchedURLs,
 		technologies,
@@ -190,6 +192,7 @@ func (c *Crawler) Analyze(ctx context.Context, rawURL string) (Result, error) {
 			&allEmails,
 			&allPhones,
 			&allSocials,
+			&allAddresses,
 			internalLinks,
 			fetchedURLs,
 			technologies,
@@ -212,6 +215,7 @@ func (c *Crawler) Analyze(ctx context.Context, rawURL string) (Result, error) {
 
 	result.Phones = mergePhones(allPhones)
 	result.SocialProfiles = mergeSocialProfiles(allSocials)
+	result.Addresses = mergeAddresses(allAddresses)
 	result.Technologies = sortedDetections(technologies)
 	result.Trackers = sortedDetections(trackers)
 	result.TemplateIndicators = sortedKeys(indicators)
@@ -232,7 +236,81 @@ func (c *Crawler) Analyze(ctx context.Context, rawURL string) (Result, error) {
 		}
 	}
 
+	result.ContentAudit = auditContent(&result)
+
 	return result, nil
+}
+
+// visibleContactMethods are the extraction methods that mean a human reading
+// the page can see the value, as opposed to it only existing in markup a
+// crawler parsed.
+var visibleContactMethods = map[ExtractionMethod]struct{}{
+	MethodMailto:        {},
+	MethodVisibleText:   {},
+	MethodDeobfuscated:  {},
+	MethodTelephoneLink: {},
+}
+
+// auditContent records which basic quality elements the crawl actually found.
+// It looks only at evidence already gathered, so it costs no extra request.
+func auditContent(result *Result) ContentAudit {
+	audit := ContentAudit{}
+
+	for _, page := range result.Pages {
+		switch page.Kind {
+		case PageContact:
+			audit.ContactPage = audit.ContactPage || page.StatusCode > 0 && page.StatusCode < 400
+		case PageAbout:
+			audit.AboutPage = audit.AboutPage || page.StatusCode > 0 && page.StatusCode < 400
+		case PageHomepage:
+			audit.PageTitle = audit.PageTitle || strings.TrimSpace(page.Title) != ""
+			audit.MetaDescription = audit.MetaDescription || strings.TrimSpace(page.MetaDescription) != ""
+			audit.MobileViewport = audit.MobileViewport || page.MobileViewport
+		}
+	}
+
+	for _, phone := range result.Phones {
+		if hasVisibleSource(phone.Sources) {
+			audit.VisiblePhone = true
+
+			break
+		}
+	}
+
+	for _, email := range result.Emails {
+		if hasVisibleSource(email.Sources) {
+			audit.VisibleEmail = true
+
+			break
+		}
+	}
+
+	audit.PostalAddress = len(result.Addresses) > 0
+	audit.SocialLinks = len(result.SocialProfiles) > 0
+
+	for _, present := range []bool{
+		audit.ContactPage, audit.AboutPage, audit.VisiblePhone, audit.VisibleEmail,
+		audit.PostalAddress, audit.SocialLinks, audit.PageTitle, audit.MetaDescription,
+		audit.MobileViewport,
+	} {
+		audit.Checked++
+
+		if present {
+			audit.Present++
+		}
+	}
+
+	return audit
+}
+
+func hasVisibleSource(sources []Source) bool {
+	for _, source := range sources {
+		if _, visible := visibleContactMethods[source.Method]; visible {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (c *Crawler) fetchPage(ctx context.Context, rawURL string, kind PageKind) (extractedPage, error) {
@@ -406,6 +484,7 @@ func mergeExtractedPage(
 	emails *[]rawEmail,
 	phones *[]rawPhone,
 	socials *[]rawSocial,
+	addresses *[]rawAddress,
 	internalLinks map[string]struct{},
 	fetchedURLs map[string]struct{},
 	technologies map[string]Detection,
@@ -415,6 +494,7 @@ func mergeExtractedPage(
 	*emails = append(*emails, page.emails...)
 	*phones = append(*phones, page.phones...)
 	*socials = append(*socials, page.socials...)
+	*addresses = append(*addresses, page.addresses...)
 
 	if page.page.FinalURL != "" {
 		fetchedURLs[page.page.FinalURL] = struct{}{}

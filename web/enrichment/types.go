@@ -39,6 +39,7 @@ const (
 	MethodStructuredData ExtractionMethod = "structured_data"
 	MethodTelephoneLink  ExtractionMethod = "telephone_link"
 	MethodSocialLink     ExtractionMethod = "social_link"
+	MethodMicrodata      ExtractionMethod = "microdata"
 )
 
 // Resolver is the DNS dependency used by URL safety and email analysis.
@@ -139,6 +140,38 @@ type Phone struct {
 	Sources []Source `json:"sources"`
 }
 
+// PostalAddress is a postal address found on a crawled page, with whichever
+// structured parts the source declared.
+type PostalAddress struct {
+	Value      string   `json:"value"`
+	Street     string   `json:"street,omitempty"`
+	Locality   string   `json:"locality,omitempty"`
+	Region     string   `json:"region,omitempty"`
+	PostalCode string   `json:"postal_code,omitempty"`
+	Country    string   `json:"country,omitempty"`
+	Sources    []Source `json:"sources"`
+}
+
+// ContentAudit records which basic quality elements the audited site actually
+// shows. It is presence evidence, not a judgement: every field says only that
+// the crawl did or did not find the element within its bounded page budget.
+type ContentAudit struct {
+	ContactPage     bool `json:"contact_page"`
+	AboutPage       bool `json:"about_page"`
+	VisiblePhone    bool `json:"visible_phone"`
+	VisibleEmail    bool `json:"visible_email"`
+	PostalAddress   bool `json:"postal_address"`
+	SocialLinks     bool `json:"social_links"`
+	PageTitle       bool `json:"page_title"`
+	MetaDescription bool `json:"meta_description"`
+	MobileViewport  bool `json:"mobile_viewport"`
+	// Present and Checked report how many of the audited elements were found
+	// out of how many were looked for, so a caller can show the ratio without
+	// re-deriving it.
+	Present int `json:"present"`
+	Checked int `json:"checked"`
+}
+
 // SocialProfile is a recognized social link and its extraction sources.
 type SocialProfile struct {
 	Platform string   `json:"platform"`
@@ -203,7 +236,9 @@ type Result struct {
 	Pages                   []PageResult    `json:"pages"`
 	Emails                  []Email         `json:"emails"`
 	Phones                  []Phone         `json:"phones"`
+	Addresses               []PostalAddress `json:"addresses"`
 	SocialProfiles          []SocialProfile `json:"social_profiles"`
+	ContentAudit            ContentAudit    `json:"content_audit"`
 	Technologies            []Detection     `json:"technologies"`
 	Trackers                []Detection     `json:"trackers"`
 	InternalLinksChecked    int             `json:"internal_links_checked"`

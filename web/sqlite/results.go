@@ -2093,7 +2093,10 @@ func (repo *repo) loadBusinessWebsites(ctx context.Context, id string, detail *w
 		return fmt.Errorf("close business websites: %w", err)
 	}
 
-	return nil
+	// The newest immutable audit carries the basic content audit, the
+	// postal addresses, the signature confidences, and the optional error
+	// capture. It is additive: a website without one keeps its zero values.
+	return attachLatestWebsiteAudits(ctx, repo, id, detail)
 }
 
 func (repo *repo) loadBusinessContacts(ctx context.Context, id string, detail *web.BusinessDetail) error {

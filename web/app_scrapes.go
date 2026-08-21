@@ -251,6 +251,8 @@ func parseWizardJob(r *http.Request) (Job, jobruntime.State, error) {
 			MaxInternalLinkChecks: enrichmentInternalLinks,
 			DisableInternalChecks: enrichmentInternalLinks == 0,
 			CheckMX:               r.FormValue("enrichment_check_mx") == "on",
+			CaptureScreenshot:     r.FormValue("enrichment_capture_screenshot") == "on",
+			AdaptiveTimeout:       r.FormValue("enrichment_adaptive_timeout") == "on",
 		}
 	}
 	if data.Lang == "" {

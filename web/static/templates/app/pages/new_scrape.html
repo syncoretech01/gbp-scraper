@@ -185,6 +185,8 @@ in Basic is identical to the same job created in Advanced.
                 <div class="field"><label for="enrichment-links">Internal links to check</label><input class="input num" id="enrichment-links" name="enrichment_internal_links" type="number" min="0" max="100" value="10"></div>
             </div>
             <label class="check-row"><input id="enrichment-mx" name="enrichment_check_mx" type="checkbox" value="on"><span>Check email domains for MX records<small>Uses local DNS only; this does not claim mailbox-level verification.</small></span></label>
+            <label class="check-row"><input id="enrichment-screenshot" name="enrichment_capture_screenshot" type="checkbox" value="on"><span>Capture homepage and error screenshots<small>Uses the local headless browser after each audit is stored. Skipped when the browser driver is not installed.</small></span></label>
+            <label class="check-row"><input id="enrichment-adaptive-timeout" name="enrichment_adaptive_timeout" type="checkbox" value="on"><span>Adapt the website timeout to recent response history<small>Only ever shortens the per-request budget for hosts already observed as fast or failing; it never lengthens it.</small></span></label>
             <div class="form-actions"><button class="button" type="button" data-action="wizard-back">Back</button><button class="button button-primary" type="button" data-action="wizard-next">Plan filtering &rarr;</button></div>
         </section>
 

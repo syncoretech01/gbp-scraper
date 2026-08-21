@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gosom/google-maps-scraper/web/enrichment"
 	"github.com/mxschmitt/playwright-go"
 )
 
@@ -192,6 +193,35 @@ func screenshotFileName(auditID int64) string {
 	return strconv.FormatInt(auditID, 10) + ".png"
 }
 
+// errorScreenshotFileName is the companion name for the optional capture of a
+// failing site. It stays inside the character set the screenshot route serves.
+func errorScreenshotFileName(auditID int64) string {
+	return strconv.FormatInt(auditID, 10) + "-error.png"
+}
+
+// errorScreenshotRepository is the optional attachment point for the error
+// capture. A repository that cannot store it simply never gets one, and the
+// audit itself is untouched.
+type errorScreenshotRepository interface {
+	AttachAuditErrorScreenshot(ctx context.Context, auditID int64, relativePath string) error
+}
+
+// shouldCaptureErrorScreenshot reports whether an audit is worth a second,
+// error-state capture. It is deliberately broad: an HTTP error page, a parked
+// or placeholder page, a certificate problem, and an outright transport
+// failure are all states an operator wants to see rather than read about.
+func shouldCaptureErrorScreenshot(result enrichment.Result) bool {
+	if result.StatusCode >= http.StatusBadRequest {
+		return true
+	}
+
+	if result.CertificateError != "" || strings.TrimSpace(result.Error) != "" {
+		return true
+	}
+
+	return result.Parked || result.ComingSoon || result.Placeholder
+}
+
 // captureAuditScreenshot renders the audited site's final homepage into
 // <dataFolder>/screenshots/<auditID>.png and records the relative path on the
 // audit and its website row. Failures never propagate: they are appended to
@@ -205,11 +235,58 @@ func (s *Service) captureAuditScreenshot(
 	auditID int64,
 	finalURL string,
 ) {
+	s.captureAuditImage(
+		ctx, repository, capturer, task, auditID, finalURL,
+		screenshotFileName(auditID), "screenshot_failed",
+		func(attachCtx context.Context, relativePath string) error {
+			return repository.AttachAuditScreenshot(attachCtx, auditID, relativePath)
+		},
+	)
+}
+
+// captureAuditErrorScreenshot stores the optional capture of a site that
+// failed its audit. It reuses the homepage capture path, so it inherits the
+// same URL validation, timeout, and never-fail-the-audit guarantee.
+func (s *Service) captureAuditErrorScreenshot(
+	ctx context.Context,
+	repository enrichmentRepository,
+	capturer screenshotCapturer,
+	task EnrichmentTask,
+	auditID int64,
+	finalURL string,
+) {
+	attachment, supported := repository.(errorScreenshotRepository)
+	if !supported {
+		return
+	}
+
+	s.captureAuditImage(
+		ctx, repository, capturer, task, auditID, finalURL,
+		errorScreenshotFileName(auditID), "error_screenshot_failed",
+		func(attachCtx context.Context, relativePath string) error {
+			return attachment.AttachAuditErrorScreenshot(attachCtx, auditID, relativePath)
+		},
+	)
+}
+
+// captureAuditImage renders one page into the screenshots folder and attaches
+// it to the audit. Failures never propagate: they are appended to audit_logs
+// and the completed audit stays untouched.
+func (s *Service) captureAuditImage(
+	ctx context.Context,
+	repository enrichmentRepository,
+	capturer screenshotCapturer,
+	task EnrichmentTask,
+	auditID int64,
+	finalURL string,
+	name string,
+	failureAction string,
+	attach func(context.Context, string) error,
+) {
 	targetURL := strings.TrimSpace(finalURL)
 	if targetURL == "" {
 		targetURL = strings.TrimSpace(task.WebsiteURL)
 	}
-	name := screenshotFileName(auditID)
 	relativePath := path.Join(screenshotsDirectoryName, name)
 	directory := filepath.Join(s.dataFolder, screenshotsDirectoryName)
 
@@ -224,12 +301,12 @@ func (s *Service) captureAuditScreenshot(
 			return err
 		}
 
-		return repository.AttachAuditScreenshot(context.WithoutCancel(ctx), auditID, relativePath)
+		return attach(context.WithoutCancel(ctx), relativePath)
 	}()
 	if err != nil {
 		_ = repository.RecordScreenshotEvent(
 			context.WithoutCancel(ctx),
-			"screenshot_failed",
+			failureAction,
 			strconv.FormatInt(auditID, 10),
 			screenshotEventDetails(map[string]string{
 				"business_id": task.BusinessID,
