@@ -1,0 +1,19 @@
+/* ===========================================================================
+   views/discovery.css — Discovery surfaces: new-scrape wizard and Map Explorer.
+   ---------------------------------------------------------------------------
+   Owner: the discovery page agent.
+
+   Rules here must be scoped to the discovery views (prefix with a page-scoped
+   hook such as [data-active-nav="new-scrape"] / [data-active-nav="map"] or a
+   page-local class) so this file can never affect another view.
+
+   Do NOT redefine any component class from app.css (.card, .stat, .button,
+   .data-table, .chip, .toolbar, .badge, …). Compose those components in the
+   template and add only layout or page-specific styling here. Every colour,
+   space, radius, and duration must come from the tokens in app.css so the file
+   stays correct in both themes.
+
+   Leaflet is vendored under /static/vendor; never add a CDN or font import.
+
+   Loaded after app.css by templates/app/layout.html.
+   =========================================================================== */

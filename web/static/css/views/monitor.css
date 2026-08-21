@@ -1,0 +1,17 @@
+/* ===========================================================================
+   views/monitor.css — Job monitor and jobs list only.
+   ---------------------------------------------------------------------------
+   Owner: the job monitor page agent.
+
+   Rules here must be scoped to the monitor views (prefix with a page-scoped
+   hook such as [data-active-nav="jobs"] or a page-local class) so this file can
+   never affect another view.
+
+   Do NOT redefine any component class from app.css (.card, .stat, .button,
+   .data-table, .chip, .toolbar, .badge, …). Compose those components in the
+   template and add only layout or page-specific styling here. Every colour,
+   space, radius, and duration must come from the tokens in app.css so the file
+   stays correct in both themes.
+
+   Loaded after app.css by templates/app/layout.html.
+   =========================================================================== */

@@ -18,13 +18,19 @@
         try { window.localStorage.setItem(key, value); } catch (_) { /* local storage may be disabled */ }
     }
 
+    // Which of the three inline theme icons is visible is decided in CSS from
+    // html[data-theme]; the script only records the choice and keeps the
+    // control's accessible name describing the mode that is actually active.
+    const themeLabels = { system: "Appearance: match system", light: "Appearance: light", dark: "Appearance: dark" };
+
     function applyTheme(theme) {
         const allowed = ["light", "dark", "system"];
         const value = allowed.includes(theme) ? theme : "system";
         root.dataset.theme = value;
         safeStorageSet("gmaps-theme", value);
-        document.querySelectorAll("[data-theme-icon]").forEach((icon) => {
-            icon.textContent = value === "light" ? "☀" : value === "dark" ? "☾" : "◐";
+        document.querySelectorAll('[data-action="cycle-theme"]').forEach((button) => {
+            button.setAttribute("aria-label", themeLabels[value]);
+            button.setAttribute("title", themeLabels[value]);
         });
     }
 
@@ -35,18 +41,37 @@
         toast("Appearance set to " + root.dataset.theme + ".");
     }
 
+    function syncSidebarControls(expanded) {
+        document.querySelectorAll('[data-action="toggle-sidebar"]').forEach((button) => {
+            button.setAttribute("aria-expanded", String(expanded));
+        });
+    }
+
+    // The server stamps the operator's saved default onto .app-shell so the
+    // first paint is already correct; a per-browser choice in local storage
+    // wins over it, in both directions.
+    function restoreSidebar() {
+        if (!shell) return;
+        const stored = safeStorageGet("gmaps-sidebar");
+        const preferred = stored === "collapsed" || stored === "expanded" ? stored : shell.dataset.sidebar;
+        const mobile = window.matchMedia("(max-width: 56rem)").matches;
+        shell.dataset.sidebar = !mobile && preferred === "collapsed" ? "collapsed" : "expanded";
+        shell.dataset.mobileNav = "closed";
+        syncSidebarControls(mobile ? false : shell.dataset.sidebar !== "collapsed");
+    }
+
     function toggleSidebar() {
         if (!shell) return;
         if (window.matchMedia("(max-width: 56rem)").matches) {
             const open = shell.dataset.mobileNav !== "open";
             shell.dataset.mobileNav = open ? "open" : "closed";
-            document.querySelectorAll('[data-action="toggle-sidebar"]').forEach((button) => button.setAttribute("aria-expanded", String(open)));
+            syncSidebarControls(open);
             return;
         }
         const collapsed = shell.dataset.sidebar !== "collapsed";
         shell.dataset.sidebar = collapsed ? "collapsed" : "expanded";
         safeStorageSet("gmaps-sidebar", shell.dataset.sidebar);
-        document.querySelectorAll('[data-action="toggle-sidebar"]').forEach((button) => button.setAttribute("aria-expanded", String(!collapsed)));
+        syncSidebarControls(!collapsed);
     }
 
     function toast(message, level) {
@@ -267,6 +292,25 @@
         }
     }
 
+    // Metric tiles whose backing value has never been recorded still carry a
+    // placeholder sentence from the server ("not recorded", "unknown", ...).
+    // Rendered at headline weight those read as a broken number, so they are
+    // marked data-empty="true" and the design system drops them to a muted,
+    // body-sized empty state. A tile that already declares data-empty is left
+    // exactly as the page rendered it.
+    const emptyMetricValues = new Set([
+        "not recorded", "not measured", "not available", "not embedded",
+        "no data", "none", "unknown", "n/a", "na", "-", "–", "—",
+    ]);
+
+    function normalizeEmptyMetrics(scope) {
+        const container = scope || document;
+        container.querySelectorAll(".stat-value, .metric-value, [data-metric-value]").forEach((element) => {
+            if (element.dataset.empty) return;
+            if (emptyMetricValues.has(element.textContent.trim().toLowerCase())) element.dataset.empty = "true";
+        });
+    }
+
     document.addEventListener("click", (event) => {
         const trigger = event.target.closest("[data-action]");
         if (!trigger) return;
@@ -332,12 +376,11 @@
     });
 
     applyTheme(safeStorageGet("gmaps-theme") || root.dataset.theme || "system");
-    const savedSidebar = safeStorageGet("gmaps-sidebar");
-    const defaultSidebar = root.dataset.sidebarDefault === "collapsed" ? "collapsed" : "expanded";
-    if (shell && (savedSidebar || defaultSidebar) === "collapsed" && !window.matchMedia("(max-width: 56rem)").matches) shell.dataset.sidebar = "collapsed";
+    restoreSidebar();
     setupGlobalSearch();
     setupCommandFilter();
     applyDisplayFormatting();
+    normalizeEmptyMetrics();
     document.querySelectorAll("[data-flash]").forEach((item) => toast(item.dataset.flash, item.classList.contains("notice-error") ? "error" : "success"));
 
     // Restoring from the back/forward cache replays the DOM as it was left,
@@ -346,5 +389,7 @@
         document.querySelectorAll('form[aria-busy="true"]').forEach((form) => form.removeAttribute("aria-busy"));
     });
 
-    window.GMapsApp = { toast, openDialog, closeDialog };
+    // Page scripts that replace a region re-run the shell's DOM normalisers on
+    // the fragment they just inserted.
+    window.GMapsApp = { toast, openDialog, closeDialog, normalizeEmptyMetrics };
 })();

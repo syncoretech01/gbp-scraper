@@ -1,26 +1,57 @@
+{{/*
+Application top bar.
+
+Left to right: the mobile navigation trigger, the page-context breadcrumb
+(navigation group plus page title), a page-level slot pages may fill, the
+global search field, and the action cluster (command palette, active-job
+indicator, appearance toggle, sign out).
+
+The eyebrow here is the single place the navigation group is named, so the page
+header below can lead with the page title instead of repeating the group.
+
+Pages add their own context by redefining app/topbar-slot; layout.html supplies
+an empty default.
+*/}}
 {{define "app/topbar"}}
 <header class="app-topbar">
     <button class="icon-button mobile-menu" type="button" data-action="toggle-sidebar" aria-controls="app-sidebar" aria-expanded="false">
-        <span aria-hidden="true">☰</span><span class="sr-only">Open navigation</span>
+        {{template "app/icon-menu"}}<span class="sr-only">Open navigation</span>
     </button>
+
+    <nav class="topbar-context" aria-label="Breadcrumb">
+        <p class="eyebrow">{{template "app/nav-group" .ActiveNav}}</p>
+        <span class="topbar-context-sep" aria-hidden="true">/</span>
+        <span class="topbar-context-title" aria-current="page">{{.Title}}</span>
+    </nav>
+
+    {{template "app/topbar-slot" .}}
 
     <form class="global-search" action="/app/results" method="get" role="search" data-action="global-search" data-endpoint="/api/v1/search">
         <label class="sr-only" for="global-search">Search normalized businesses</label>
-        <span aria-hidden="true">⌕</span>
+        {{template "app/icon-search"}}
         <input id="global-search" name="q" type="search" autocomplete="off" placeholder="Search businesses" aria-controls="global-search-results" aria-expanded="false">
         <kbd>/</kbd>
         <div class="search-popover" id="global-search-results" data-search-results hidden></div>
     </form>
 
     <div class="topbar-actions">
-        {{if .AuthEnabled}}<form method="post" action="/logout" class="inline-form"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button button-small" type="submit">Sign out</button></form>{{end}}
-        <a class="activity-pill" href="/app/jobs?state=running,queued" data-action="navigate" data-endpoint="/app/jobs?state=running,queued" aria-label="Open active jobs">
+        <button class="command-affordance" type="button" data-action="open-command-palette" aria-haspopup="dialog" aria-controls="command-palette" aria-keyshortcuts="Control+K">
+            {{template "app/icon-command"}}<span>Commands</span><span class="command-keys" aria-hidden="true"><kbd>Ctrl</kbd><kbd>K</kbd></span>
+        </button>
+
+        <a class="activity-pill" href="/app/jobs?state=running,queued" data-action="navigate" data-endpoint="/app/jobs?state=running,queued" data-active="{{if .Activity.Running}}true{{else}}false{{end}}" aria-label="Open active jobs">
             <span class="activity-dot" aria-hidden="true"></span>
             <span data-activity-label>{{if .Activity.Running}}{{.Activity.Running}} running{{else}}No active jobs{{end}}</span>
             {{if .Activity.Queued}}<span class="badge">{{.Activity.Queued}} queued</span>{{end}}
         </a>
-        <button class="icon-button" type="button" data-action="open-command-palette" aria-haspopup="dialog" aria-controls="command-palette" aria-keyshortcuts="Control+K" title="Command palette (Ctrl+K)"><span aria-hidden="true">⌘</span><span class="sr-only">Open command palette</span></button>
-        <button class="icon-button" type="button" data-action="cycle-theme" aria-label="Change appearance"><span data-theme-icon aria-hidden="true">◐</span></button>
+
+        <button class="icon-button" type="button" data-action="cycle-theme" aria-label="Change appearance">
+            <span class="theme-icon" data-theme-icon="system">{{template "app/icon-monitor"}}</span>
+            <span class="theme-icon" data-theme-icon="light">{{template "app/icon-sun"}}</span>
+            <span class="theme-icon" data-theme-icon="dark">{{template "app/icon-moon"}}</span>
+        </button>
+
+        {{if .AuthEnabled}}<form method="post" action="/logout" class="topbar-signout"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button button-sm button-ghost" type="submit">Sign out</button></form>{{end}}
     </div>
 </header>
 {{end}}
