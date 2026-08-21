@@ -62,9 +62,14 @@ func (s *Server) createScrapeFromWizard(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		now := time.Now().UTC()
+		// The stored configuration must not carry the link to whichever
+		// template this job was started from, or the new template would
+		// report another template's run history.
+		configuration := job.Data
+		configuration.TemplateID = ""
 		template := ScrapeTemplate{
 			ID: uuid.NewString(), Name: name, Description: "Saved from the New Scrape wizard",
-			Configuration: job.Data, CreatedAt: now, UpdatedAt: now,
+			Configuration: configuration, CreatedAt: now, UpdatedAt: now,
 		}
 		if err := s.svc.SaveScrapeTemplate(r.Context(), template); err != nil {
 			http.Error(w, "could not save scrape template", http.StatusInternalServerError)
@@ -307,6 +312,7 @@ func parseWizardJob(r *http.Request) (Job, jobruntime.State, error) {
 			MaxInternalLinkChecks: enrichmentInternalLinks,
 			DisableInternalChecks: enrichmentInternalLinks == 0,
 			CheckMX:               r.FormValue("enrichment_check_mx") == "on",
+			CaptureScreenshot:     r.FormValue("enrichment_capture_screenshot") == "on",
 			StaleAfterHours:       enrichmentStaleHours,
 			ForceReaudit:          r.FormValue("enrichment_force_reaudit") == "on",
 		}
