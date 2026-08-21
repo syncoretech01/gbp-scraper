@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/parquet-go/parquet-go"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -34,7 +36,7 @@ func TestConfiguredExportWritersProduceVerifiedFiles(t *testing.T) {
 		{Key: "rating", Label: "Rating"},
 	}
 
-	for _, format := range []string{"csv", "json", "geojson", "xlsx", "sqlite"} {
+	for _, format := range []string{"csv", "json", "geojson", "xlsx", "sqlite", "parquet"} {
 		format := format
 		t.Run(format, func(t *testing.T) {
 			t.Parallel()
@@ -86,6 +88,30 @@ func TestConfiguredExportWritersProduceVerifiedFiles(t *testing.T) {
 				}
 				if name != "Harbor Dental" || city != "San Francisco" {
 					t.Fatalf("portable SQLite row = %q, %q", name, city)
+				}
+			case "parquet":
+				// Parquet must round-trip through an independent reader with
+				// its column types intact, otherwise the file is only nominally
+				// columnar.
+				rows, readErr := parquet.ReadFile[any](path)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if len(rows) != 1 {
+					t.Fatalf("Parquet rows = %d, want 1", len(rows))
+				}
+				record, ok := rows[0].(map[string]any)
+				if !ok {
+					t.Fatalf("Parquet row = %#v", rows[0])
+				}
+				if record["Business Name"] != "Harbor Dental" || record["Market"] != "San Francisco" {
+					t.Fatalf("Parquet row = %#v", record)
+				}
+				if latitudeValue, valid := record["Latitude"].(float64); !valid || latitudeValue != latitude {
+					t.Fatalf("Parquet latitude = %#v, want the typed double %v", record["Latitude"], latitude)
+				}
+				if ratingValue, valid := record["Rating"].(float64); !valid || ratingValue != rating {
+					t.Fatalf("Parquet rating = %#v, want the typed double %v", record["Rating"], rating)
 				}
 			}
 		})
