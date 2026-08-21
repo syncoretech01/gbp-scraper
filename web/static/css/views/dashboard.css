@@ -150,6 +150,12 @@
 /* ---------------------------------------------------------------------------
    3. Recent campaigns — the yield table and its summary footer.
    --------------------------------------------------------------------------- */
+/* The campaign name is bounded so a long name cannot wrap to three lines and
+   triple the row height; the full name is one click away on the monitor. */
+.dashboard .dash-campaign-col { min-width: 13rem; max-width: 18rem; }
+.dashboard .dash-campaign-col .dash-job-link,
+.dashboard .dash-campaign-col .cell-subtitle { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .dashboard .dash-yield-footer { display: grid; gap: var(--space-3); align-items: start; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); }
 .dashboard .dash-yield-meters { display: grid; gap: var(--space-2); min-width: 0; }
 .dashboard .dash-yield-meters .metric-label { margin: 0 0 var(--space-1); font-size: var(--text-2xs); }
@@ -310,7 +316,11 @@
 }
 
 /* The command row stops being two columns before its table starts wrapping
-   job names onto three lines. */
+   job names onto three lines. At the same width the campaign table drops its
+   third action: Results is reachable from the job's own monitor page, while
+   the yield numbers beside it have no second home. */
 @media (max-width: 88rem) {
     .dashboard .dash-command { grid-template-columns: minmax(0, 1fr); }
+    .dashboard .dash-results-link { display: none; }
+    .dashboard .dash-campaign-col { max-width: 14rem; }
 }

@@ -116,7 +116,7 @@ Page data is jobsPageData in web/app_read_pages.go.
                         <td>
                             <div class="table-actions">
                                 <a class="button button-sm" href="/app/jobs/{{.ID}}" data-endpoint="/app/jobs/{{.ID}}">Monitor</a>
-                                {{if .CanStart}}<form action="/api/v1/jobs/{{.ID}}/start" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-ghost" type="submit" data-endpoint="/api/v1/jobs/{{.ID}}/start">Start</button></form>{{end}}
+                                {{if and .CanStart (not .CanResume)}}<form action="/api/v1/jobs/{{.ID}}/start" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-ghost" type="submit" data-endpoint="/api/v1/jobs/{{.ID}}/start">Start</button></form>{{end}}
                                 {{if .CanPause}}<form action="/api/v1/jobs/{{.ID}}/pause" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-ghost" type="submit" data-endpoint="/api/v1/jobs/{{.ID}}/pause">Pause</button></form>{{end}}
                                 {{if .CanResume}}<form action="/api/v1/jobs/{{.ID}}/resume" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-ghost" type="submit" data-endpoint="/api/v1/jobs/{{.ID}}/resume">Resume</button></form>{{end}}
                                 {{if .HasResults}}<a class="button button-sm button-ghost" href="/api/v1/jobs/{{.ID}}/download" download data-endpoint="/api/v1/jobs/{{.ID}}/download">CSV</a>{{end}}
