@@ -54,7 +54,16 @@ type appNotice struct {
 }
 
 type dashboardPageData struct {
-	Metrics          dashboardMetrics
+	Metrics dashboardMetrics
+	// Attention is the ordered next-best-action list. Every entry is derived
+	// from a number this handler actually loaded and links to a route the
+	// server already serves, so the region can never dead-end.
+	Attention []dashboardAttentionItem
+	// RunningJobs holds only the jobs an operator can still act on right now
+	// (queued, starting, running, cancelling, paused). Campaigns holds the
+	// terminal runs, summarised by what they yielded rather than by progress.
+	RunningJobs      []dashboardJob
+	Campaigns        []dashboardJob
 	CollectionByDate []dashboardChartPoint
 	CollectionMax    int
 	Availability     []dashboardAvailability
@@ -66,9 +75,21 @@ type dashboardPageData struct {
 	SpeedTrends      []DashboardSpeedTrend
 	ProxyLatency     []dashboardChartPoint
 	ProxyReliability []dashboardChartPoint
-	RecentJobs       []dashboardJob
 	Yield            dashboardYield
 	Prospects        dashboardProspectSummary
+}
+
+// dashboardAttentionItem is one queued piece of operator work. Tone selects a
+// semantic state token in the stylesheet; Value is the count that justifies
+// the row, and an item with a zero Value is never rendered because an empty
+// backlog is not an action.
+type dashboardAttentionItem struct {
+	Tone   string
+	Label  string
+	Value  int
+	Detail string
+	Action string
+	URL    string
 }
 
 // dashboardYield summarises collection efficiency across the same recent jobs
@@ -156,11 +177,23 @@ type dashboardMetrics struct {
 	ExportStorage     string
 	ScreenshotStorage string
 	LogStorage        string
+
+	// Backlog counters. Each one is the size of a queue of operator work and
+	// feeds exactly one row of the attention region.
+	NeedsReview         int
+	DuplicateCandidates int
+	UncheckedWebsites   int
+	MissingEmail        int
+	UnscoredProspects   int
 }
 
+// dashboardChartPoint is one labelled aggregate. Percent is the value's share
+// of the largest point in the same series, so a template can draw an inline
+// bar without a chart library; it stays zero until the series is scaled.
 type dashboardChartPoint struct {
-	Label string
-	Value int
+	Label   string
+	Value   int
+	Percent int
 }
 
 type dashboardAvailability struct {
@@ -177,16 +210,26 @@ type dashboardJob struct {
 	ETA           string
 	RawRecords    int64
 	UniqueRecords int
+	Duplicates    int
 	Emails        int
 	// UniqueYield is the unique-per-raw share for this job ("62.0%"), or
-	// "not recorded" before any raw record exists.
-	UniqueYield string
-	Runtime     string
-	CanPause    bool
-	CanResume   bool
-	CanCancel   bool
-	CanRetry    bool
-	HasResults  bool
+	// "not recorded" before any raw record exists. DuplicateShare and
+	// EmailShare use the same convention so the campaign table never prints a
+	// percentage it cannot substantiate.
+	UniqueYield    string
+	DuplicateShare string
+	EmailShare     string
+	Runtime        string
+	// Finished is the formatted completion time, empty while the job is still
+	// live. Active marks the rows that belong in the "running now" region.
+	Finished     string
+	Active       bool
+	HasBenchmark bool
+	CanPause     bool
+	CanResume    bool
+	CanCancel    bool
+	CanRetry     bool
+	HasResults   bool
 }
 
 type newScrapePageData struct {
@@ -455,6 +498,29 @@ func scrapeDefaultsFromJobData(defaults scrapeDefaults, data JobData) scrapeDefa
 	return defaults
 }
 
+// Dashboard row budgets. The command centre answers "what is happening now"
+// and "what did the last runs yield"; the Jobs page owns the full history, so
+// these caps keep the page dense instead of growing with the workspace.
+const (
+	dashboardRunningJobLimit = 5
+	dashboardCampaignLimit   = 6
+	dashboardYieldWindow     = 10
+	dashboardAttentionLimit  = 6
+)
+
+// dashboardJobIsLive reports whether a job still has work an operator can act
+// on. Drafts are excluded deliberately: they have never been queued, so they
+// belong to the Jobs page rather than to the "running now" region.
+func dashboardJobIsLive(state jobruntime.State) bool {
+	switch state {
+	case jobruntime.StateQueued, jobruntime.StateStarting, jobruntime.StateRunning,
+		jobruntime.StateCancelling, jobruntime.StatePaused:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Server) buildDashboard(r *http.Request) (dashboardPageData, appActivity, error) {
 	if s.svc == nil || s.svc.repo == nil {
 		return dashboardPageData{}, appActivity{}, nil
@@ -473,6 +539,7 @@ func (s *Server) buildDashboard(r *http.Request) (dashboardPageData, appActivity
 	page := dashboardPageData{}
 	activity := appActivity{}
 	byDate := make(map[string]int)
+	benchmarks := s.svc.SupportsJobBenchmarks()
 	var totalRuntime time.Duration
 	var runtimeJobs int
 	var rateRecords int64
@@ -537,52 +604,22 @@ func (s *Server) buildDashboard(r *http.Request) (dashboardPageData, appActivity
 			page.Metrics.CollectedToday += stats.UniqueBusinesses
 		}
 
-		if index < 10 {
-			percent := int(runtime.Progress + 0.5)
-			stage := humanStage(runtime.Stage)
-			eta := "unknown"
-			if state == "completed" {
-				percent = 100
+		// Live runs always surface, however far down the list they sit: an
+		// operator who cannot see the job that is running right now has no
+		// command centre. Terminal runs are capped because their value is
+		// recency, not completeness — the Jobs page holds the full history.
+		switch {
+		case dashboardJobIsLive(runtime.State):
+			if len(page.RunningJobs) < dashboardRunningJobLimit {
+				page.RunningJobs = append(page.RunningJobs, s.dashboardJobRow(r, job, runtime, stats, now, benchmarks))
 			}
-			if execution, executionErr := s.svc.GetJobExecution(r.Context(), job.ID); executionErr == nil {
-				if execution.Progress.Stage != jobruntime.StageNone {
-					stage = humanStage(execution.Progress.Stage)
-				}
-				if execution.Progress.ETASeconds != nil {
-					eta = humanDuration(time.Duration(*execution.Progress.ETASeconds) * time.Second)
-				}
+		case runtime.State.Terminal():
+			if len(page.Campaigns) < dashboardCampaignLimit {
+				page.Campaigns = append(page.Campaigns, s.dashboardJobRow(r, job, runtime, stats, now, benchmarks))
 			}
-			if eta == "unknown" && runtime.StartedAt != nil && percent > 0 && percent < 100 {
-				elapsed := now.Sub(*runtime.StartedAt)
-				if elapsed > 0 {
-					eta = humanDuration(time.Duration(float64(elapsed) * float64(100-percent) / float64(percent)))
-				}
-			}
+		}
 
-			canPause := state == "queued" || state == "starting" || state == "running"
-			canResume := state == "paused"
-			canCancel := lifecycleControlAllowed(runtime, jobruntime.ControlCancel)
-			canRetry := lifecycleControlAllowed(runtime, jobruntime.ControlRestart) &&
-				(state == "partial" || state == "failed" || state == "cancelled")
-
-			page.RecentJobs = append(page.RecentJobs, dashboardJob{
-				ID:            job.ID,
-				Name:          job.Name,
-				State:         state,
-				Stage:         stage,
-				Percent:       percent,
-				ETA:           eta,
-				RawRecords:    runtime.RawRecords,
-				UniqueRecords: stats.UniqueBusinesses,
-				Emails:        stats.WithEmail,
-				UniqueYield:   ratioLabel(int64(stats.UniqueBusinesses), runtime.RawRecords),
-				Runtime:       runtimeLabel(runtime),
-				CanPause:      canPause,
-				CanResume:     canResume,
-				CanCancel:     canCancel,
-				CanRetry:      canRetry,
-				HasResults:    stats.Rows > 0,
-			})
+		if index < dashboardYieldWindow {
 			accumulateDashboardYield(&page.Yield, job, runtime.RawRecords, stats)
 		}
 	}
@@ -606,6 +643,8 @@ func (s *Server) buildDashboard(r *http.Request) (dashboardPageData, appActivity
 		page.Metrics.Emails = int(overview.Emails)
 		page.Metrics.Phones = int(overview.Phones)
 		page.Metrics.Websites = int(overview.Websites)
+		page.Metrics.NeedsReview = int(overview.NeedsReview)
+		page.Metrics.DuplicateCandidates = int(overview.DuplicateGroups)
 	}
 	if analytics, analyticsErr := s.svc.DashboardAnalytics(r.Context(), startMonth); analyticsErr == nil {
 		page.Metrics.CollectedToday = int(analytics.CollectedToday)
@@ -617,6 +656,11 @@ func (s *Server) buildDashboard(r *http.Request) (dashboardPageData, appActivity
 		page.Metrics.SocialProfiles = int(analytics.Availability.SocialProfiles)
 		page.Metrics.ActiveWebsites = int(analytics.Availability.WebsiteActive)
 		page.Metrics.InactiveWebsites = int(analytics.Availability.WebsiteInactive)
+		// A business with a website URL that has neither an active nor an
+		// inactive verdict has never been fetched, so its status is genuinely
+		// unknown rather than "no website".
+		page.Metrics.UncheckedWebsites = max(0, int(analytics.Availability.Websites-
+			analytics.Availability.WebsiteActive-analytics.Availability.WebsiteInactive))
 		page.CollectionByDate = dashboardPoints(analytics.CollectionByDate)
 		page.Cities = dashboardPoints(analytics.Cities)
 		page.Categories = dashboardPoints(analytics.Categories)
@@ -680,6 +724,11 @@ func (s *Server) buildDashboard(r *http.Request) (dashboardPageData, appActivity
 			page.CollectionMax = value
 		}
 	}
+	// The legacy CSV fallback above builds its points by hand, so the relative
+	// bar share is applied here for whichever source produced the series.
+	for index := range page.CollectionByDate {
+		page.CollectionByDate[index].Percent = percentage(page.CollectionByDate[index].Value, page.CollectionMax)
+	}
 
 	if snapshot, snapshotErr := s.svc.SystemDatabaseSnapshot(r.Context()); snapshotErr == nil {
 		page.Metrics.DatabaseSize = humanBytes(snapshot.DatabaseBytes)
@@ -698,7 +747,186 @@ func (s *Server) buildDashboard(r *http.Request) (dashboardPageData, appActivity
 		page.Metrics.DiskFree = humanBytes(int64(resources.DiskFreeBytes))
 	}
 
+	page.Metrics.MissingEmail = max(0, page.Metrics.UniqueBusinesses-page.Metrics.Emails)
+	if page.Prospects.Supported {
+		page.Metrics.UnscoredProspects = max(0, page.Metrics.UniqueBusinesses-page.Prospects.Scored)
+	}
+	page.Attention = dashboardAttention(page)
+
 	return page, activity, nil
+}
+
+// dashboardJobRow renders one job for the command centre. Both the live and
+// the finished tables use it so a job reads the same either side of the
+// terminal boundary, and every ratio comes from counters this row already has.
+func (s *Server) dashboardJobRow(
+	r *http.Request,
+	job Job,
+	runtime JobRuntime,
+	stats ResultStats,
+	now time.Time,
+	benchmarks bool,
+) dashboardJob {
+	state := string(runtime.State)
+	percent := roundedPercent(runtime.Progress, runtime.State)
+	stage := humanStage(runtime.Stage)
+	eta := ""
+	live := dashboardJobIsLive(runtime.State)
+
+	// The execution snapshot carries the stage and ETA a running worker has
+	// published. It costs one extra read, so it is only fetched for the live
+	// rows that can still change, and an ETA is only shown while a worker is
+	// actually advancing: a paused or queued job has no arrival time, and
+	// printing the last one recorded would be a guess presented as fact.
+	if live {
+		advancing := runtime.State.Active()
+		if execution, executionErr := s.svc.GetJobExecution(r.Context(), job.ID); executionErr == nil {
+			if execution.Progress.Stage != jobruntime.StageNone {
+				stage = humanStage(execution.Progress.Stage)
+			}
+			if advancing && execution.Progress.ETASeconds != nil {
+				eta = humanDuration(time.Duration(*execution.Progress.ETASeconds) * time.Second)
+			}
+		}
+		if advancing && eta == "" && runtime.StartedAt != nil && percent > 0 && percent < 100 {
+			if elapsed := now.Sub(*runtime.StartedAt); elapsed > 0 {
+				eta = humanDuration(time.Duration(float64(elapsed) * float64(100-percent) / float64(percent)))
+			}
+		}
+	}
+
+	raw := runtime.RawRecords
+	if raw <= 0 {
+		raw = int64(stats.Rows)
+	}
+
+	finished := ""
+	if runtime.FinishedAt != nil {
+		finished = compactTimestamp(*runtime.FinishedAt)
+	}
+
+	return dashboardJob{
+		ID:             job.ID,
+		Name:           job.Name,
+		State:          state,
+		Stage:          stage,
+		Percent:        percent,
+		ETA:            eta,
+		RawRecords:     raw,
+		UniqueRecords:  stats.UniqueBusinesses,
+		Duplicates:     stats.Duplicates,
+		Emails:         stats.WithEmail,
+		UniqueYield:    ratioLabel(int64(stats.UniqueBusinesses), raw),
+		DuplicateShare: ratioLabel(int64(stats.Duplicates), raw),
+		EmailShare:     ratioLabel(int64(stats.WithEmail), int64(stats.UniqueBusinesses)),
+		Runtime:        runtimeLabel(runtime),
+		Finished:       finished,
+		Active:         live,
+		HasBenchmark:   benchmarks && runtime.State.Terminal(),
+		CanPause:       lifecycleControlAllowed(runtime, jobruntime.ControlPause),
+		CanResume:      lifecycleControlAllowed(runtime, jobruntime.ControlResume),
+		CanCancel:      lifecycleControlAllowed(runtime, jobruntime.ControlCancel),
+		CanRetry: lifecycleControlAllowed(runtime, jobruntime.ControlRestart) &&
+			(state == "partial" || state == "failed" || state == "cancelled"),
+		HasResults: stats.Rows > 0,
+	}
+}
+
+// dashboardAttention turns the counters the dashboard already loaded into an
+// ordered backlog. Rows with a zero count are dropped rather than rendered as
+// a reassuring "0", and every destination is a route registered in web.go, so
+// an operator can always act on what they are shown.
+func dashboardAttention(page dashboardPageData) []dashboardAttentionItem {
+	// A filter row is three parallel query parameters; parseResultSearch
+	// zips them back together, so two rows means two of each.
+	const uncheckedWebsitesURL = "/app/results" +
+		"?filter_field=website&filter_operator=not_empty&filter_value=" +
+		"&filter_field=last_checked_at&filter_operator=empty&filter_value="
+
+	candidates := []dashboardAttentionItem{{
+		Tone:   "danger",
+		Label:  "Jobs need attention",
+		Value:  page.Metrics.FailedJobs + page.Metrics.PartialJobs,
+		Detail: "Partial or failed runs. Retrying resumes from the last checkpoint and keeps committed rows.",
+		Action: "Review runs",
+		URL:    "/app/jobs?state=partial,failed",
+	}, {
+		Tone:   "warning",
+		Label:  "Jobs paused",
+		Value:  page.Metrics.PausedJobs,
+		Detail: "A paused run holds its checkpoint until you resume or cancel it.",
+		Action: "Open paused",
+		URL:    "/app/jobs?state=paused",
+	}, {
+		Tone:   "warning",
+		Label:  "Duplicate pairs unresolved",
+		Value:  page.Metrics.DuplicateCandidates,
+		Detail: "Candidate pairs still waiting for a merge or keep-both decision.",
+		Action: "Resolve duplicates",
+		URL:    "/app/results?include_duplicates=true",
+	}, {
+		Tone:   "info",
+		Label:  "Websites never checked",
+		Value:  page.Metrics.UncheckedWebsites,
+		Detail: "Businesses whose website URL has never been fetched, so the GBP signal is unknown.",
+		Action: "Open backlog",
+		URL:    uncheckedWebsitesURL,
+	}, {
+		Tone:   "info",
+		Label:  "No email address yet",
+		Value:  page.Metrics.MissingEmail,
+		Detail: "Unique businesses with no stored address. Website enrichment is the usual next step.",
+		Action: "Open gap list",
+		URL:    "/app/results?filter_field=email&filter_operator=empty&filter_value=",
+	}, {
+		Tone:   "neutral",
+		Label:  "Low-confidence records",
+		Value:  page.Metrics.NeedsReview,
+		Detail: "Unreviewed businesses, or records the quality rules scored below 60% confidence.",
+		Action: "Review quality",
+		URL:    "/app/results?filter_field=reviewed&filter_operator=eq&filter_value=false",
+	}}
+
+	if page.Prospects.Supported {
+		candidates = append(candidates, dashboardAttentionItem{
+			Tone:   "special",
+			Label:  "Prospects not scored",
+			Value:  page.Metrics.UnscoredProspects,
+			Detail: "Businesses with no worth-calling tier. Select them in Results and recompute the score.",
+			Action: "Score prospects",
+			URL:    "/app/results?filter_field=prospect_tier&filter_operator=empty&filter_value=",
+		})
+	}
+
+	items := make([]dashboardAttentionItem, 0, len(candidates))
+	for _, item := range candidates {
+		if item.Value > 0 {
+			items = append(items, item)
+		}
+	}
+
+	sort.SliceStable(items, func(first, second int) bool {
+		return dashboardToneRank(items[first].Tone) < dashboardToneRank(items[second].Tone)
+	})
+
+	return items[:min(len(items), dashboardAttentionLimit)]
+}
+
+// dashboardToneRank orders the backlog by urgency rather than by count: a
+// single failed job outranks ten thousand unscored prospects.
+func dashboardToneRank(tone string) int {
+	switch tone {
+	case "danger":
+		return 0
+	case "warning":
+		return 1
+	case "info":
+		return 2
+	case "special":
+		return 3
+	default:
+		return 4
+	}
 }
 
 // accumulateDashboardYield folds one recent job into the workspace yield
@@ -782,10 +1010,24 @@ func dashboardProspectPoints(points []DashboardCountPoint, scored int) []dashboa
 	return converted
 }
 
+// dashboardPoints converts a repository series and scales every point against
+// the largest value in that series so the template can draw a proportional bar
+// beside the printed number.
 func dashboardPoints(points []DashboardCountPoint) []dashboardChartPoint {
 	converted := make([]dashboardChartPoint, 0, len(points))
+	largest := 0
 	for _, point := range points {
-		converted = append(converted, dashboardChartPoint{Label: point.Label, Value: int(point.Value)})
+		if int(point.Value) > largest {
+			largest = int(point.Value)
+		}
+	}
+
+	for _, point := range points {
+		converted = append(converted, dashboardChartPoint{
+			Label:   point.Label,
+			Value:   int(point.Value),
+			Percent: percentage(int(point.Value), largest),
+		})
 	}
 
 	return converted
@@ -833,21 +1075,47 @@ func (s *Server) appActivity(r *http.Request) (appActivity, error) {
 	return activity, nil
 }
 
+// stageLabels names every pipeline stage in the words an operator would use.
+// Title-casing the identifier produced run-ons such as "Saving Exporting", so
+// the wording is stated explicitly instead of derived.
+var stageLabels = map[jobruntime.Stage]string{
+	jobruntime.StageNone:               "Waiting to start",
+	jobruntime.StagePreparingQueries:   "Preparing queries",
+	jobruntime.StageGeneratingGrid:     "Generating grid",
+	jobruntime.StageSearchingMaps:      "Searching Maps",
+	jobruntime.StageExtractingDetails:  "Extracting details",
+	jobruntime.StageCrawlingWebsites:   "Crawling websites",
+	jobruntime.StageExtractingContacts: "Extracting contacts",
+	jobruntime.StageDeduplicating:      "Deduplicating",
+	jobruntime.StageSavingExporting:    "Saving and exporting",
+}
+
 func humanStage(stage jobruntime.Stage) string {
-	if stage == jobruntime.StageNone {
-		return "Waiting to start"
+	if label, known := stageLabels[stage]; known {
+		return label
 	}
 
+	// An unrecognised stage still has to read as a sentence rather than as a
+	// database value, so the identifier is only the fallback.
 	words := strings.Fields(strings.ReplaceAll(string(stage), "_", " "))
-	for index := range words {
-		words[index] = strings.ToUpper(words[index][:1]) + words[index][1:]
+	if len(words) == 0 {
+		return "Waiting to start"
 	}
+	words[0] = strings.ToUpper(words[0][:1]) + words[0][1:]
 
 	return strings.Join(words, " ")
 }
 
+// runtimeLabel states elapsed run time. A job that reached a terminal state
+// without a recorded start says so plainly: "not started" next to COMPLETED
+// reads as a contradiction, when the truth is only that the timestamp was
+// never written.
 func runtimeLabel(runtime JobRuntime) string {
 	if runtime.StartedAt == nil {
+		if runtime.State.Terminal() {
+			return "not recorded"
+		}
+
 		return "not started"
 	}
 

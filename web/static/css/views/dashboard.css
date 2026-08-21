@@ -14,4 +14,303 @@
    stays correct in both themes.
 
    Loaded after app.css by templates/app/layout.html.
+
+   Scope
+   -----
+   This file carries the two pages this agent owns, each behind its own
+   page-local wrapper class so neither can reach the other or any other view:
+
+     .dashboard   pages/dashboard.html   (part 1 below)
+     .jobs-view   pages/jobs.html        (part 2 below)
+
+   The Jobs rules live here rather than in a views/jobs.css because the shell's
+   stylesheet manifest in templates/app/layout.html belongs to the foundation,
+   not to a page agent; adding a file would mean editing the shell.
    =========================================================================== */
+
+/* ---------------------------------------------------------------------------
+   Page rhythm. The command centre is deliberately tighter than the default
+   stack: an operator should be able to read the whole state of the workspace
+   without scrolling past empty gutters.
+   --------------------------------------------------------------------------- */
+.dashboard { gap: var(--space-5); }
+
+/* ---------------------------------------------------------------------------
+   1. KPI strip
+   Six .stat tiles across on a wide desktop, then 3 and 2. Explicit column
+   counts rather than auto-fit so the strip never leaves a single orphan tile
+   on its own row.
+   --------------------------------------------------------------------------- */
+.dashboard .dash-kpis { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: var(--space-3); }
+.dashboard .dash-kpis .stat { gap: 0; }
+.dashboard .dash-kpis .stat-label { margin-bottom: var(--space-1); text-transform: uppercase; font-size: var(--text-2xs); font-weight: var(--weight-bold); letter-spacing: var(--tracking-caps); color: var(--text-faint); }
+.dashboard .dash-kpis .stat-meta { margin-top: var(--space-1); font-size: var(--text-2xs); line-height: var(--leading-snug); }
+
+@media (max-width: 82rem) {
+    .dashboard .dash-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 44rem) {
+    .dashboard .dash-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* ---------------------------------------------------------------------------
+   2. Command row — "Running now" beside "Needs attention".
+   The two cards must end level; a card that stops short of its neighbour is
+   the dead space this page was rebuilt to remove.
+   --------------------------------------------------------------------------- */
+.dashboard .dash-command { align-items: stretch; }
+.dashboard .dash-command-main { display: grid; align-content: start; gap: var(--space-4); min-width: 0; }
+.dashboard .dash-command > .card,
+.dashboard .dash-command-main > .card { display: flex; flex-direction: column; }
+.dashboard .dash-command > .card > .card-body { flex: 1 1 auto; display: flex; flex-direction: column; padding: 0; }
+.dashboard .dash-command-main > .card > .card-body { padding: 0; }
+.dashboard .dash-command .table-wrap { border: 0; border-radius: 0; }
+
+/* Contact-field meters sit two-up so a wide column does not stretch four
+   bars across the full width of the card. */
+.dashboard .dash-availability { display: grid; gap: var(--space-4) var(--space-6); grid-template-columns: repeat(2, minmax(0, 1fr)); padding: var(--space-4) var(--space-5) !important; }
+.dashboard .dash-availability .metric-label { margin: 0 0 var(--space-1); }
+.dashboard .dash-availability-footer { justify-content: space-between; }
+.dashboard .dash-availability-footer p { margin: 0; }
+
+/* Live progress cell: bar over its printed value, never the bar alone. */
+.dashboard .dash-progress-col { width: 12rem; }
+.dashboard .dash-progress { display: grid; gap: var(--space-1); min-width: 0; }
+.dashboard .dash-progress small { color: var(--text-muted); font-size: var(--text-2xs); }
+
+.dashboard .dash-job-link { color: var(--text); font-weight: var(--weight-semibold); text-decoration: none; }
+.dashboard .dash-job-link:hover { color: var(--primary); text-decoration: underline; }
+.dashboard .cell-subtitle { display: block; color: var(--text-muted); font-size: var(--text-2xs); line-height: var(--leading-snug); }
+.dashboard .dash-timestamp { color: var(--text-muted); font-size: var(--text-2xs); white-space: nowrap; }
+
+/* Compact idle panel. Deliberately quieter than the full .empty-state: this
+   is a normal operating condition, not a missing feature. */
+.dashboard .dash-idle { display: flex; flex: 1 1 auto; align-items: center; gap: var(--space-4); padding: var(--space-5); }
+.dashboard .dash-idle > div { min-width: 0; flex: 1 1 auto; }
+.dashboard .dash-idle-icon { display: grid; width: 2.25rem; height: 2.25rem; flex: 0 0 auto; place-items: center; border-radius: 50%; background: var(--surface-muted); color: var(--text-faint); }
+.dashboard .dash-idle-title { margin: 0 0 var(--space-1); color: var(--text); font-size: var(--text-sm); font-weight: var(--weight-semibold); }
+.dashboard .dash-idle p { margin: 0; }
+.dashboard .dash-idle-clear .dash-idle-icon { background: var(--state-success-bg); color: var(--state-success-fg); }
+
+/* ---------------------------------------------------------------------------
+   Attention list — the next-best-action queue.
+   One row per backlog: the count leads, the label says what it is, the detail
+   says why it matters, and the whole row is the link to the filtered view.
+   data-tone selects a semantic state pair from app.css; colour is only ever
+   reinforcement, because every row also prints its number and its name.
+   --------------------------------------------------------------------------- */
+.dashboard .dash-attention { display: grid; margin: 0; padding: 0; list-style: none; }
+.dashboard .dash-attention-item { --tone-fg: var(--state-neutral-fg); --tone-bg: var(--state-neutral-bg); border-bottom: 1px solid var(--border-subtle); }
+.dashboard .dash-attention-item:last-child { border-bottom: 0; }
+.dashboard .dash-attention-item[data-tone="danger"] { --tone-fg: var(--state-danger-fg); --tone-bg: var(--state-danger-bg); }
+.dashboard .dash-attention-item[data-tone="warning"] { --tone-fg: var(--state-warning-fg); --tone-bg: var(--state-warning-bg); }
+.dashboard .dash-attention-item[data-tone="info"] { --tone-fg: var(--state-info-fg); --tone-bg: var(--state-info-bg); }
+.dashboard .dash-attention-item[data-tone="special"] { --tone-fg: var(--state-special-fg); --tone-bg: var(--state-special-bg); }
+
+.dashboard .dash-attention-link {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    min-width: 0;
+    padding: var(--space-3) var(--space-4);
+    border-left: 3px solid var(--tone-fg);
+    color: inherit;
+    text-decoration: none;
+    transition: background-color var(--transition-fast);
+}
+.dashboard .dash-attention-link:hover { background: var(--surface-hover); }
+.dashboard .dash-attention-count {
+    display: grid;
+    min-width: 2.75rem;
+    height: 2.25rem;
+    flex: 0 0 auto;
+    place-items: center;
+    padding-inline: var(--space-2);
+    border-radius: var(--radius-sm);
+    background: var(--tone-bg);
+    color: var(--tone-fg);
+    font-size: var(--text-md);
+    font-weight: var(--weight-bold);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: var(--tracking-tight);
+}
+.dashboard .dash-attention-copy { display: grid; min-width: 0; flex: 1 1 auto; gap: .1rem; }
+.dashboard .dash-attention-label { color: var(--text); font-size: var(--text-sm); font-weight: var(--weight-semibold); }
+.dashboard .dash-attention-detail { color: var(--text-muted); font-size: var(--text-2xs); line-height: var(--leading-snug); }
+.dashboard .dash-attention-action { display: inline-flex; flex: 0 0 auto; align-items: center; gap: var(--space-1); color: var(--primary); font-size: var(--text-2xs); font-weight: var(--weight-semibold); white-space: nowrap; }
+/* The icon set ships a down chevron; a "go" affordance points right. */
+.dashboard .dash-attention-chevron { display: inline-flex; transform: rotate(-90deg); }
+.dashboard .dash-attention-chevron .icon { width: .85rem; height: .85rem; }
+
+@media (max-width: 68rem) {
+    .dashboard .dash-attention-action span:not(.dash-attention-chevron) { display: none; }
+}
+
+/* ---------------------------------------------------------------------------
+   3. Recent campaigns — the yield table and its summary footer.
+   --------------------------------------------------------------------------- */
+.dashboard .dash-yield-footer { display: grid; gap: var(--space-3); align-items: start; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); }
+.dashboard .dash-yield-meters { display: grid; gap: var(--space-2); min-width: 0; }
+.dashboard .dash-yield-meters .metric-label { margin: 0 0 var(--space-1); font-size: var(--text-2xs); }
+.dashboard .dash-yield-note { margin: 0; min-width: 0; }
+.dashboard .dash-yield-note a { font-weight: var(--weight-semibold); }
+
+@media (max-width: 68rem) {
+    .dashboard .dash-yield-footer { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---------------------------------------------------------------------------
+   4. Prospect pipeline — two stacks of clickable distribution bars.
+   --------------------------------------------------------------------------- */
+.dashboard .dash-pipeline { display: grid; gap: var(--space-6); grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.dashboard .dash-pipeline-column { display: grid; align-content: start; gap: var(--space-3); min-width: 0; }
+.dashboard .dash-pipeline-column h3 { margin: 0; }
+.dashboard .dash-bars { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+/* One row per bucket: badge, proportional bar, count, share. Keeping them on
+   a single line is what makes the distribution readable at a glance instead
+   of a column of full-width tracks. */
+.dashboard .dash-bar { display: grid; align-items: center; gap: var(--space-3); grid-template-columns: minmax(6.5rem, 9rem) minmax(0, 1fr) auto auto; padding: var(--space-2) var(--space-3); border: 1px solid transparent; border-radius: var(--radius-sm); color: inherit; text-decoration: none; transition: background-color var(--transition-fast), border-color var(--transition-fast); }
+.dashboard .dash-bar:hover { border-color: var(--border); background: var(--surface-hover); }
+.dashboard .dash-bar-badge { min-width: 0; overflow: hidden; }
+.dashboard .dash-bar-badge .prospect-badge { max-width: 100%; overflow: hidden; text-overflow: ellipsis; display: inline-block; }
+.dashboard .dash-bar .meter-track { height: .5rem; }
+.dashboard .dash-bar-value { min-width: 3rem; color: var(--text); font-size: var(--text-sm); font-weight: var(--weight-semibold); text-align: right; }
+.dashboard .dash-bar-share { min-width: 2.75rem; color: var(--text-muted); font-size: var(--text-2xs); text-align: right; }
+
+@media (max-width: 60rem) {
+    .dashboard .dash-pipeline { grid-template-columns: minmax(0, 1fr); gap: var(--space-5); }
+}
+
+/* ---------------------------------------------------------------------------
+   5. Activity row and 6. breakdown grid.
+   The 30-day table is capped in height and scrolls inside its own box so a
+   long history cannot push the rest of the page below the fold.
+   --------------------------------------------------------------------------- */
+.dashboard .dash-date { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.dashboard .dash-spark-col { width: 6rem; }
+.dashboard .dash-spark { width: 6rem; }
+.dashboard .dash-spark .meter-track { display: block; }
+
+/* 30-day column chart. Heights arrive as a per-column custom property, so the
+   picture needs no script and no chart library. The accessible copy of the
+   same numbers is the .sr-only table beside it in the markup. */
+/* The plot area is framed by four gridlines and a baseline so a workspace with
+   only a day or two of history reads as "one column so far" rather than as a
+   chart that failed to draw. */
+.dashboard .dash-chart {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--space-1);
+    height: 9rem;
+    padding: var(--space-2) 0 0;
+    border-bottom: 1px solid var(--border-strong);
+    background-image: repeating-linear-gradient(to top, transparent 0, transparent calc(25% - 1px), var(--border-subtle) calc(25% - 1px), var(--border-subtle) 25%);
+}
+.dashboard .dash-chart-col { position: relative; display: flex; flex: 1 1 0; min-width: .5rem; max-width: 2.25rem; height: 100%; flex-direction: column; justify-content: flex-end; align-items: stretch; }
+.dashboard .dash-chart-bar { display: block; width: 100%; min-height: 2px; height: max(2px, var(--column, 0%)); border-radius: var(--radius-xs) var(--radius-xs) 0 0; background: linear-gradient(180deg, var(--primary), color-mix(in srgb, var(--primary) 45%, transparent)); transition: filter var(--transition-fast); }
+.dashboard .dash-chart-col:hover .dash-chart-bar { filter: brightness(1.15); }
+/* Only the first and last day print a date; thirty labels would collide. */
+.dashboard .dash-chart-label { position: absolute; top: calc(100% + var(--space-1)); left: 0; color: var(--text-faint); font-size: var(--text-2xs); font-variant-numeric: tabular-nums; white-space: nowrap; opacity: 0; }
+.dashboard .dash-chart-col:first-child .dash-chart-label { opacity: 1; }
+.dashboard .dash-chart-col:last-child .dash-chart-label { opacity: 1; left: auto; right: 0; }
+.dashboard .dash-chart-col:first-child:last-child .dash-chart-label { left: 0; right: auto; }
+.dashboard .dash-chart-scale { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-3); margin: var(--space-7) 0 0; }
+
+.dashboard .dash-breakdowns { display: grid; gap: var(--space-5); grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.dashboard .dash-breakdown { display: grid; align-content: start; gap: var(--space-2); min-width: 0; }
+.dashboard .dash-breakdown h3 { margin: 0; }
+.dashboard .dash-breakdown .table-wrap { max-height: 16rem; }
+.dashboard .dash-breakdown .empty-inline { margin: 0; font-size: var(--text-xs); }
+
+@media (max-width: 82rem) {
+    .dashboard .dash-breakdowns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 48rem) {
+    .dashboard .dash-breakdowns { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---------------------------------------------------------------------------
+   Operational telemetry — collapsed by default. It is diagnostic detail, not
+   a daily answer, so it must not compete with the command centre above it.
+   --------------------------------------------------------------------------- */
+.dashboard .dash-ops { display: block; }
+.dashboard .dash-ops-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-3); padding: var(--space-4) var(--space-5); cursor: pointer; list-style: none; }
+.dashboard .dash-ops-summary::-webkit-details-marker { display: none; }
+.dashboard .dash-ops-summary::after { content: "\25BE"; margin-left: auto; color: var(--text-faint); font-size: var(--text-xs); transition: transform var(--transition-fast); }
+.dashboard .dash-ops[open] > .dash-ops-summary { border-bottom: 1px solid var(--border); }
+.dashboard .dash-ops[open] > .dash-ops-summary::after { transform: rotate(180deg); }
+.dashboard .dash-ops-summary:hover { background: var(--surface-muted); }
+.dashboard .dash-ops-summary:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+
+
+/* ===========================================================================
+   PART 2 — views/jobs.css equivalent. Everything below is scoped to
+   .jobs-view, the wrapper class pages/jobs.html puts around its content.
+   =========================================================================== */
+
+.jobs-view { gap: var(--space-4); }
+
+/* The tab strip is the primary state filter, so it sits directly under the
+   page title with no card around it. */
+.jobs-view .jobs-tabs { gap: var(--space-2); }
+.jobs-view .jobs-tabs .badge { margin-left: var(--space-1); }
+
+/* One card holds the filter bar, the table, and the pager, so the three read
+   as a single control surface instead of three floating blocks. */
+.jobs-view .jobs-panel { overflow: hidden; }
+.jobs-view .jobs-toolbar { row-gap: var(--space-2); }
+.jobs-view .jobs-search { flex: 1 1 20rem; min-width: min(16rem, 100%); }
+/* .select is width:100% by default, which would push each toolbar select onto
+   its own line under its label; inside the strip they size to their content. */
+.jobs-view .jobs-toolbar .select { width: auto; max-width: 11rem; }
+.jobs-view .jobs-table { border: 0; border-radius: 0; max-height: calc(100dvh - 22rem); }
+
+.jobs-view .jobs-name { color: var(--text); font-weight: var(--weight-semibold); text-decoration: none; }
+.jobs-view .jobs-name:hover { color: var(--primary); text-decoration: underline; }
+.jobs-view .cell-subtitle { display: block; color: var(--text-muted); font-size: var(--text-2xs); line-height: var(--leading-snug); }
+.jobs-view .jobs-name + .cell-subtitle { max-width: 16rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Wide enough for the longest stage label ("Saving and exporting") so the
+   state cell stays one line and every row keeps the same height. */
+.jobs-view .jobs-state-col { width: 9.5rem; }
+.jobs-view .jobs-state-col .cell-subtitle { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.jobs-view .jobs-progress-col { width: 10rem; }
+/* Fixed so "420 raw · 140 emails" stays on one line and rows keep one height. */
+.jobs-view .jobs-results-col { width: 9rem; white-space: nowrap; }
+.jobs-view .jobs-progress { display: grid; gap: var(--space-1); min-width: 0; }
+.jobs-view .jobs-progress small { color: var(--text-muted); font-size: var(--text-2xs); }
+
+.jobs-view .jobs-timing { white-space: nowrap; font-size: var(--text-xs); }
+.jobs-view .jobs-config { max-width: 18rem; }
+.jobs-view .jobs-config > .truncate { display: block; }
+
+.jobs-view .jobs-pagination { align-items: center; }
+.jobs-view .jobs-pagination span:first-child { margin: 0; }
+
+/* Sparse-workspace panel: three real destinations, not placeholder copy. */
+.jobs-view .jobs-next-grid { display: grid; gap: var(--space-4); grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.jobs-view .jobs-next-card { display: grid; align-content: start; gap: var(--space-2); min-width: 0; padding: var(--space-4); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: inherit; text-decoration: none; transition: border-color var(--transition-fast), background-color var(--transition-fast); }
+.jobs-view .jobs-next-card:hover { border-color: var(--primary-border); background: var(--surface-hover); }
+.jobs-view .jobs-next-icon { display: grid; width: 2rem; height: 2rem; place-items: center; border-radius: var(--radius-sm); background: var(--primary-soft); color: var(--primary); }
+.jobs-view .jobs-next-card strong { color: var(--text); font-size: var(--text-sm); font-weight: var(--weight-semibold); }
+.jobs-view .jobs-next-card span:not(.jobs-next-icon) { color: var(--text-muted); font-size: var(--text-xs); line-height: var(--leading-snug); }
+
+/* Below a wide desktop the row cannot hold every column at a readable size.
+   Configuration is the one that yields: the same queries and location are
+   spelled out in full on each job's monitor page, while the lifecycle
+   controls on the right have no second home. */
+@media (max-width: 90rem) {
+    .jobs-view .jobs-config { display: none; }
+}
+
+@media (max-width: 68rem) {
+    .jobs-view .jobs-next-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* The command row stops being two columns before its table starts wrapping
+   job names onto three lines. */
+@media (max-width: 88rem) {
+    .dashboard .dash-command { grid-template-columns: minmax(0, 1fr); }
+}
