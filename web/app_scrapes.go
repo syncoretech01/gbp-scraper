@@ -201,6 +201,11 @@ func parseWizardJob(r *http.Request) (Job, jobruntime.State, error) {
 	if err != nil {
 		return Job{}, "", err
 	}
+	checkpointSeconds, err := optionalFormInt(r, "checkpoint_seconds")
+	if err != nil {
+		return Job{}, "", err
+	}
+
 	lowDiskMB, err := optionalFormInt(r, "low_disk_mb")
 	if err != nil {
 		return Job{}, "", err
@@ -258,16 +263,17 @@ func parseWizardJob(r *http.Request) (Job, jobruntime.State, error) {
 		RetryDelay:    retryDelay,
 		RetryConfigured: strings.TrimSpace(r.FormValue("retry_count")) != "" ||
 			strings.TrimSpace(r.FormValue("retry_delay")) != "",
-		PageTimeout:     pageTimeout,
-		RandomDelayMin:  randomDelayMin,
-		RandomDelayMax:  randomDelayMax,
-		Headfull:        r.FormValue("headfull") == "on",
-		LoadImages:      r.FormValue("load_images") == "on",
-		Adaptive:        r.FormValue("adaptive_performance") == "on",
-		LowDiskBytes:    uint64(max(0, lowDiskMB)) * 1024 * 1024,
-		ProxyPoolID:     strings.TrimSpace(r.FormValue("proxy_pool_id")),
-		SavedAreaID:     strings.TrimSpace(r.FormValue("saved_area_id")),
-		IncrementalMode: strings.TrimSpace(r.FormValue("incremental_mode")),
+		PageTimeout:       pageTimeout,
+		RandomDelayMin:    randomDelayMin,
+		RandomDelayMax:    randomDelayMax,
+		Headfull:          r.FormValue("headfull") == "on",
+		LoadImages:        r.FormValue("load_images") == "on",
+		Adaptive:          r.FormValue("adaptive_performance") == "on",
+		CheckpointSeconds: max(0, checkpointSeconds),
+		LowDiskBytes:      uint64(max(0, lowDiskMB)) * 1024 * 1024,
+		ProxyPoolID:       strings.TrimSpace(r.FormValue("proxy_pool_id")),
+		SavedAreaID:       strings.TrimSpace(r.FormValue("saved_area_id")),
+		IncrementalMode:   strings.TrimSpace(r.FormValue("incremental_mode")),
 	}
 
 	fields, err := wizardFieldSelection(r)
@@ -315,6 +321,7 @@ func parseWizardJob(r *http.Request) (Job, jobruntime.State, error) {
 			CaptureScreenshot:     r.FormValue("enrichment_capture_screenshot") == "on",
 			StaleAfterHours:       enrichmentStaleHours,
 			ForceReaudit:          r.FormValue("enrichment_force_reaudit") == "on",
+			AdaptiveTimeout:       r.FormValue("enrichment_adaptive_timeout") == "on",
 		}
 		// The stale-contacts rescan mode is the one incremental mode that
 		// changes work actually done, because the website audit is local. It

@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
+
+	"github.com/gosom/google-maps-scraper/web/enrichment"
 )
 
 var (
@@ -223,6 +226,83 @@ type WebsiteView struct {
 	ComingSoon           bool       `json:"coming_soon"`
 	Placeholder          bool       `json:"placeholder"`
 	Trackers             string     `json:"trackers"`
+	// The fields below come from the newest immutable audit of this website.
+	// They are additive evidence: an older stored audit simply leaves them at
+	// their zero values.
+	ContentAudit        enrichment.ContentAudit    `json:"content_audit"`
+	Addresses           []enrichment.PostalAddress `json:"addresses,omitempty"`
+	Detections          []enrichment.Detection     `json:"detections,omitempty"`
+	TrackerDetections   []enrichment.Detection     `json:"tracker_detections,omitempty"`
+	ErrorScreenshotPath string                     `json:"error_screenshot_path,omitempty"`
+}
+
+// ContentAuditRows renders the basic website quality audit as label/present
+// pairs so a template can list them without repeating the field names.
+func (view WebsiteView) ContentAuditRows() []WebsiteContentAuditRow {
+	audit := view.ContentAudit
+
+	return []WebsiteContentAuditRow{
+		{Label: "Contact page", Present: audit.ContactPage},
+		{Label: "About page", Present: audit.AboutPage},
+		{Label: "Visible phone", Present: audit.VisiblePhone},
+		{Label: "Visible email", Present: audit.VisibleEmail},
+		{Label: "Postal address", Present: audit.PostalAddress},
+		{Label: "Social links", Present: audit.SocialLinks},
+		{Label: "Page title", Present: audit.PageTitle},
+		{Label: "Meta description", Present: audit.MetaDescription},
+		{Label: "Mobile viewport", Present: audit.MobileViewport},
+	}
+}
+
+// WebsiteContentAuditRow is one checked element of the basic quality audit.
+type WebsiteContentAuditRow struct {
+	Label   string `json:"label"`
+	Present bool   `json:"present"`
+}
+
+// DetectionRows merges technology and tracker detections into one confidence
+// ordered list. Every row carries the confidence the signature produced, so
+// the interface reports a likelihood rather than a certainty.
+func (view WebsiteView) DetectionRows() []WebsiteDetectionRow {
+	rows := make([]WebsiteDetectionRow, 0, len(view.Detections)+len(view.TrackerDetections))
+
+	for _, detection := range view.Detections {
+		rows = append(rows, newWebsiteDetectionRow(detection, "technology"))
+	}
+
+	for _, detection := range view.TrackerDetections {
+		rows = append(rows, newWebsiteDetectionRow(detection, "tracker"))
+	}
+
+	sort.SliceStable(rows, func(left, right int) bool {
+		if rows[left].Confidence != rows[right].Confidence {
+			return rows[left].Confidence > rows[right].Confidence
+		}
+
+		return rows[left].Name < rows[right].Name
+	})
+
+	return rows
+}
+
+// WebsiteDetectionRow is one signature match with its confidence and the
+// patterns that produced it.
+type WebsiteDetectionRow struct {
+	Name            string  `json:"name"`
+	Kind            string  `json:"kind"`
+	Confidence      float64 `json:"confidence"`
+	ConfidenceLabel string  `json:"confidence_label"`
+	Evidence        string  `json:"evidence,omitempty"`
+}
+
+func newWebsiteDetectionRow(detection enrichment.Detection, kind string) WebsiteDetectionRow {
+	return WebsiteDetectionRow{
+		Name:            detection.Name,
+		Kind:            kind,
+		Confidence:      detection.Confidence,
+		ConfidenceLabel: fmt.Sprintf("%.0f%% confidence", detection.Confidence*100),
+		Evidence:        strings.Join(detection.Evidence, ", "),
+	}
 }
 
 // EmailView is one locally extracted and classified email address.

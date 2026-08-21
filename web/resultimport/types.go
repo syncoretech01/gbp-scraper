@@ -101,6 +101,10 @@ const (
 	IssueDuplicateContact  IssueCode = "duplicate_contact"
 	IssueUnsupportedScheme IssueCode = "unsupported_url_scheme"
 	IssueMissingIdentity   IssueCode = "missing_identity"
+	// IssueDomainMismatch marks a contact whose domain does not belong to the
+	// business's own website. It is a review prompt, never a rejection: a
+	// mailbox provider or a marketing domain is a perfectly normal reason.
+	IssueDomainMismatch IssueCode = "domain_mismatch"
 )
 
 // Warning describes a non-fatal row issue. Message is intentionally generic;

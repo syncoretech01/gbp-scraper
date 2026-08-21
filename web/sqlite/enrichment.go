@@ -1208,6 +1208,38 @@ func (repo *repo) AttachAuditScreenshot(ctx context.Context, auditID int64, rela
 	return tx.Commit()
 }
 
+// AttachAuditErrorScreenshot stores the optional capture of a site that failed
+// its audit. It is deliberately kept on the immutable audit row only: the
+// current websites row keeps the last good homepage preview, so a failing
+// rescan never replaces evidence of a site that used to work.
+func (repo *repo) AttachAuditErrorScreenshot(ctx context.Context, auditID int64, relativePath string) error {
+	relativePath = strings.TrimSpace(relativePath)
+	if relativePath == "" {
+		return fmt.Errorf("attach audit error screenshot: empty screenshot path")
+	}
+
+	result, err := repo.db.ExecContext(
+		ctx,
+		`UPDATE website_audits SET error_screenshot_path = ? WHERE id = ?`,
+		relativePath,
+		auditID,
+	)
+	if err != nil {
+		return fmt.Errorf("store audit error screenshot path: %w", err)
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store audit error screenshot path: %w", err)
+	}
+
+	if affected == 0 {
+		return fmt.Errorf("attach audit error screenshot: website audit %d not found", auditID)
+	}
+
+	return nil
+}
+
 // RecordScreenshotEvent appends one auditable screenshot event, for example
 // screenshot_failed or screenshot_skipped_no_driver. Events deliberately live
 // in audit_logs so a capture problem never rewrites audit evidence.
@@ -1242,7 +1274,7 @@ func (repo *repo) WebsiteAuditHistory(
 			redirect_chain, internal_links_checked, broken_internal_link_count,
 			broken_internal_links, mixed_content, parked, coming_soon, placeholder,
 			template_indicators, technologies, trackers, emails, phones,
-			social_profiles, screenshot_path, raw_result, error, started_at, completed_at
+			social_profiles, screenshot_path, error_screenshot_path, raw_result, error, started_at, completed_at
 		FROM website_audits WHERE business_id = ?
 		ORDER BY completed_at DESC, id DESC LIMIT ?`,
 		businessID,
@@ -1290,6 +1322,7 @@ func (repo *repo) WebsiteAuditHistory(
 			&phonesJSON,
 			&socialsJSON,
 			&audit.ScreenshotPath,
+			&audit.ErrorScreenshotPath,
 			&rawJSON,
 			&audit.Error,
 			&startedAt,
@@ -1317,6 +1350,11 @@ func (repo *repo) WebsiteAuditHistory(
 		var raw enrichment.Result
 		if json.Unmarshal([]byte(rawJSON), &raw) == nil {
 			audit.Pages = raw.Pages
+			// Postal addresses and the content audit round-trip through the
+			// immutable raw result, so an audit stored by an older build simply
+			// reports their zero values.
+			audit.Addresses = raw.Addresses
+			audit.ContentAudit = raw.ContentAudit
 		}
 		audits = append(audits, audit)
 	}

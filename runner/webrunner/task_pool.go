@@ -112,6 +112,23 @@ type taskPoolRun struct {
 	windowSuccesses atomic.Int64
 	failureBudget   atomic.Int64
 
+	// windowBlocks counts the attempts in the current window that failed
+	// because the platform refused them (rate limit, challenge, or consent
+	// interstitial) rather than because of a local fault. Blocks decay the
+	// budget faster than ordinary failures and veto every recovery step.
+	windowBlocks atomic.Int64
+	blockBudget  atomic.Int64
+
+	// browserBudget and pagesBudget are the per-task browser pool and
+	// pages-per-browser values new tasks take. They start at the plan's
+	// values and only ever shrink, under measured RAM pressure.
+	browserBudget atomic.Int64
+	pagesBudget   atomic.Int64
+	// baselineBrowsers and baselinePages remember the configured budgets so
+	// an adaptation can recover exactly to them and never beyond.
+	baselineBrowsers int
+	baselinePages    int
+
 	// live carries the between-task reconfiguration state: extendable
 	// deadline, switchable proxy plan, and retry-current signalling.
 	live *liveRunState
@@ -207,17 +224,22 @@ func (w *webrunner) runTaskPool(
 	extras taskPoolExtras,
 ) jobruntime.StopReason {
 	run := &taskPoolRun{
-		job:          job,
-		outpath:      outpath,
-		live:         newLiveRunState(deadline),
-		coverage:     extras.coverage,
-		dedup:        extras.dedup,
-		extraReviews: extras.extraReviews,
+		job:              job,
+		outpath:          outpath,
+		live:             newLiveRunState(deadline),
+		coverage:         extras.coverage,
+		dedup:            extras.dedup,
+		extraReviews:     extras.extraReviews,
+		baselineBrowsers: plan.PerTaskBrowserPool,
+		baselinePages:    job.Data.PagesBrowser,
 	}
 	run.desiredConcurrency.Store(int64(desiredConcurrency))
 	run.effectiveConcurrency.Store(int64(plan.PerTaskConcurrency * plan.Workers))
 	run.workers.Store(int64(plan.Workers))
 	run.failureBudget.Store(int64(desiredConcurrency))
+	run.blockBudget.Store(int64(desiredConcurrency))
+	run.browserBudget.Store(int64(plan.PerTaskBrowserPool))
+	run.pagesBudget.Store(int64(job.Data.PagesBrowser))
 
 	if extras.proxyPlan != nil {
 		run.live.setProxyPlan(extras.proxyPlan, false)
@@ -270,6 +292,7 @@ func (w *webrunner) runTaskPool(
 	}
 
 	group.Wait()
+	flushListingKeys(context.Background(), run.dedup)
 	runCancel()
 	<-stopWatchDone
 	<-supervisorDone
@@ -454,8 +477,15 @@ func (w *webrunner) executeLeasedTask(
 		taskJob.Data.Proxies = assignment.proxies
 	}
 
-	if plan.PerTaskBrowserPool > 0 {
-		taskJob.Data.BrowserPool = plan.PerTaskBrowserPool
+	// Browser and page budgets are taken per task for the same reason as
+	// concurrency: a task boundary is the only safe reconfiguration point the
+	// engine supports. Both only ever shrink below the configured values.
+	if browsers := run.browserBudget.Load(); browsers > 0 {
+		taskJob.Data.BrowserPool = int(browsers)
+	}
+
+	if pages := run.pagesBudget.Load(); pages > 0 {
+		taskJob.Data.PagesBrowser = int(pages)
 	}
 
 	heartbeatCtx, stopHeartbeat := context.WithCancel(runCtx)
@@ -554,6 +584,10 @@ func (w *webrunner) executeLeasedTask(
 		run.windowSuccesses.Add(1)
 		w.recordProxyTaskOutcome(run, assignment, true, taskDuration, nil)
 
+		// The task reached a durable boundary: persist the listing identities
+		// discovered since the last one so a restart does not re-visit them.
+		flushListingKeys(context.Background(), run.dedup)
+
 		if completeErr := w.svc.CompleteJobTask(context.Background(), job.ID, task.Key, checkpoint); completeErr != nil {
 			_ = w.svc.RecordJobWorkerEvent(
 				context.Background(), job.ID, "task-commit-failed", "error",
@@ -573,6 +607,12 @@ func (w *webrunner) executeLeasedTask(
 	}
 
 	failureKind := classifyTaskFailure(taskErr)
+	if failureKind == "blocked" {
+		// Block evidence is measured here, where the attempt error is still
+		// available. It feeds the adaptive block rate without any extra
+		// request or engine change.
+		run.windowBlocks.Add(1)
+	}
 
 	// A failed attempt is not evidence about the area: the coverage engine
 	// rejects it, so it neither enters the saturation window nor evicts the
@@ -586,7 +626,10 @@ func (w *webrunner) executeLeasedTask(
 		map[string]any{"task_key": task.Key, "error": jobruntime.RedactString(taskErr.Error())},
 	)
 
-	if failureKind == "proxy-failure" && assignment.index >= 0 {
+	// A refusal is attributed to the exit it came through: the proxy is not
+	// broken, but it is burned for this run, so rotation must move on exactly
+	// as it does for a proxy failure.
+	if (failureKind == "proxy-failure" || failureKind == "blocked") && assignment.index >= 0 {
 		if run.live.markProxyFailed(assignment.index) {
 			// The last usable proxy just failed: pause instead of burning the
 			// remaining attempts of every task against a dead pool.
@@ -639,6 +682,8 @@ func (w *webrunner) concludeInterruptedTask(
 			)
 		}
 	}
+
+	flushListingKeys(context.Background(), run.dedup)
 
 	reason := run.currentStop()
 	if reason == jobruntime.StopReasonNone {
@@ -786,6 +831,12 @@ func (w *webrunner) superviseTaskPool(
 	ticker := time.NewTicker(resourceSampleInterval)
 	defer ticker.Stop()
 
+	// The configurable interval checkpoint complements the one written after
+	// every completed task, so a long task still reports how recently the run
+	// was making progress.
+	checkpointInterval := job.Data.CheckpointInterval()
+	lastCheckpoint := time.Now()
+
 	for {
 		sample, err := w.sampleWorkerResources(ctx)
 		if err == nil {
@@ -829,6 +880,12 @@ func (w *webrunner) superviseTaskPool(
 			}
 		}
 
+		if time.Since(lastCheckpoint) >= checkpointInterval {
+			lastCheckpoint = time.Now()
+
+			w.recordIntervalCheckpoint(run, checkpointInterval)
+		}
+
 		w.pollLiveControls(run, runCancel)
 
 		select {
@@ -839,26 +896,86 @@ func (w *webrunner) superviseTaskPool(
 	}
 }
 
+// recordIntervalCheckpoint flushes the durable deduplication state and appends
+// a time-based safe resume boundary describing where the plan stands.
+//
+// It records where the run is, never what it collected, and a repository
+// without durable listing state simply skips it: the per-task checkpoint
+// remains the authoritative resume point either way.
+func (w *webrunner) recordIntervalCheckpoint(run *taskPoolRun, interval time.Duration) {
+	ctx := context.Background()
+
+	flushListingKeys(ctx, run.dedup)
+
+	if !w.svc.SupportsListingState() {
+		return
+	}
+
+	execution, err := w.svc.GetJobExecution(ctx, run.job.ID)
+	if err != nil {
+		return
+	}
+
+	listingKeys, _ := w.svc.CountJobListingKeys(ctx, run.job.ID)
+
+	_ = w.svc.RecordJobIntervalCheckpoint(ctx, run.job.ID, web.JobIntervalCheckpoint{
+		Reason:           "interval",
+		IntervalSeconds:  int(interval / time.Second),
+		TasksCompleted:   execution.Tasks.Completed,
+		TasksRunning:     execution.Tasks.Running,
+		TasksPending:     execution.Tasks.Pending,
+		TasksFailed:      execution.Tasks.Failed,
+		ListingKeys:      listingKeys,
+		CommittedMerges:  run.committedWrites.Load(),
+		EffectiveWorkers: run.effectiveConcurrency.Load(),
+	})
+}
+
 // adaptTaskPool records an adaptive change to the shared concurrency budget.
 // The pool size itself stays fixed for the run so leases and browser shares
 // remain predictable; what changes is the effective capacity new tasks take.
 //
-// Two independent signals cap the budget: resource pressure (CPU, RAM, disk)
-// and the recent task failure rate. The failure budget halves when at least
-// half of a meaningful window failed, and recovers one step at a time only
-// after a fully clean window, so recovery is deliberately slower than decay.
+// Three independent signals cap the budget: resource pressure (CPU, RAM, free
+// disk, and the live browser-process census), the recent task failure rate,
+// and the recent block rate. The failure budget halves when at least half of a
+// meaningful window failed; the block budget halves as soon as one attempt was
+// refused by the platform. Recovery is one step at a time and only when every
+// measured dimension has head-room, so recovery is always slower than decay.
 func (w *webrunner) adaptTaskPool(run *taskPoolRun, sample workerResourceSample) {
 	desired := int(run.desiredConcurrency.Load())
 
 	failures := run.windowFailures.Swap(0)
 	successes := run.windowSuccesses.Swap(0)
-	failureBudget := decideFailureBudget(
-		int(run.failureBudget.Load()), desired, int(failures), int(successes),
-	)
+	blocks := run.windowBlocks.Swap(0)
+	attempts := int(failures + successes)
+
+	w.adaptBrowserBudget(run, sample)
+
+	allowedBrowsers := int(run.browserBudget.Load()) * int(max(1, run.workers.Load()))
+	headroom := recoveryHasHeadroom(sample, int(blocks), allowedBrowsers)
+
+	currentFailureBudget := int(run.failureBudget.Load())
+	failureBudget := decideFailureBudget(currentFailureBudget, desired, int(failures), int(successes))
+
+	// A clean failure window is not on its own a reason to take capacity
+	// back: CPU, RAM, browser count, and the block rate must all agree.
+	if failureBudget > currentFailureBudget && !headroom {
+		failureBudget = currentFailureBudget
+	}
+
 	run.failureBudget.Store(int64(failureBudget))
 
+	currentBlockBudget := int(run.blockBudget.Load())
+	blockBudget := decideBlockBudget(currentBlockBudget, desired, int(blocks), attempts)
+
+	if blockBudget > currentBlockBudget && !headroom {
+		blockBudget = currentBlockBudget
+	}
+
+	run.blockBudget.Store(int64(blockBudget))
+
 	resourceBudget := adaptiveWorkerConcurrency(desired, sample, run.job.Data.LowDiskBytes)
-	next := int64(min(resourceBudget, failureBudget))
+	next := int64(min(resourceBudget, failureBudget, blockBudget))
 
 	previous := run.effectiveConcurrency.Load()
 	if next == previous {
@@ -868,10 +985,14 @@ func (w *webrunner) adaptTaskPool(run *taskPoolRun, sample workerResourceSample)
 	run.effectiveConcurrency.Store(next)
 
 	reason := "resource pressure"
-	if failureBudget < resourceBudget {
+
+	switch {
+	case blocks > 0 || blockBudget < min(resourceBudget, failureBudget):
+		reason = "platform block rate"
+	case failureBudget < resourceBudget:
 		reason = "task failure rate"
-	} else if next > previous {
-		reason = "recovered after a stable success window"
+	case next > previous:
+		reason = "recovered after a stable success window with measured head-room"
 	}
 
 	_ = w.svc.RecordJobWorkerEvent(
@@ -882,13 +1003,52 @@ func (w *webrunner) adaptTaskPool(run *taskPoolRun, sample workerResourceSample)
 			"effective_concurrency":  next,
 			"desired_concurrency":    desired,
 			"failure_budget":         failureBudget,
+			"block_budget":           blockBudget,
 			"resource_budget":        resourceBudget,
 			"window_failures":        failures,
 			"window_successes":       successes,
+			"window_blocks":          blocks,
 			"task_workers":           run.workers.Load(),
 			"cpu_percent":            sample.CPUPercent,
 			"memory_available_bytes": sample.MemoryAvailableBytes,
 			"disk_free_bytes":        sample.DiskFreeBytes,
+			"browser_processes":      sample.BrowserProcesses,
+			"recovery_headroom":      headroom,
+		},
+	)
+}
+
+// adaptBrowserBudget lowers the per-task browser pool and pages-per-browser
+// budgets while RAM pressure lasts and restores the configured values when it
+// clears. Every change is recorded with the measurement that caused it.
+func (w *webrunner) adaptBrowserBudget(run *taskPoolRun, sample workerResourceSample) {
+	pool, pages := adaptiveBrowserBudget(run.baselineBrowsers, run.baselinePages, sample)
+
+	previousPool := run.browserBudget.Load()
+	previousPages := run.pagesBudget.Load()
+
+	if int64(pool) == previousPool && int64(pages) == previousPages {
+		return
+	}
+
+	run.browserBudget.Store(int64(pool))
+	run.pagesBudget.Store(int64(pages))
+
+	_ = w.svc.RecordJobWorkerEvent(
+		context.Background(), run.job.ID, "adaptive-performance", "information",
+		fmt.Sprintf(
+			"Adaptive performance changed the per-task browser budget from %d browsers/%d pages to %d browsers/%d pages (memory pressure)",
+			previousPool, previousPages, pool, pages,
+		),
+		map[string]any{
+			"previous_browser_pool":  previousPool,
+			"previous_pages_browser": previousPages,
+			"browser_pool":           pool,
+			"pages_per_browser":      pages,
+			"baseline_browser_pool":  run.baselineBrowsers,
+			"baseline_pages_browser": run.baselinePages,
+			"memory_available_bytes": sample.MemoryAvailableBytes,
+			"browser_processes":      sample.BrowserProcesses,
 		},
 	)
 }

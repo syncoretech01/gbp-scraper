@@ -843,7 +843,7 @@ func assertCurrentSchema(t *testing.T, db *sql.DB) {
 		"businesses_fts", "contact_evidence", "dedup_rules", "duplicate_candidates",
 		"emails", "enrichment_tasks", "export_parts", "export_presets",
 		"exports", "field_provenance", "integrations", "job_businesses",
-		"job_checkpoints", "job_config_versions", "job_events", "job_logs",
+		"job_checkpoints", "job_config_versions", "job_events", "job_listing_keys", "job_logs",
 		"job_progress", "job_runtime", "job_tags", "job_tasks",
 		"jobs", "keyword_sets", "legacy_imports", "notes", "phones",
 		"proxies", "proxy_health", "proxy_pool_members", "proxy_pools",
@@ -868,8 +868,13 @@ func assertCurrentSchema(t *testing.T, db *sql.DB) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migration_checksums`).Scan(&checksums); err != nil {
 		t.Fatalf("count migration checksums: %v", err)
 	}
-	if migrations != currentSchemaVersion || checksums != currentSchemaVersion {
-		t.Fatalf("migration rows = %d checksums = %d, want %d each", migrations, checksums, currentSchemaVersion)
+	// Every declared migration must be applied and checksummed. The count is
+	// compared against the declared list rather than the version number
+	// because version numbers are reserved per work stream and may leave gaps
+	// until every stream has landed.
+	if migrations != len(schemaMigrations) || checksums != len(schemaMigrations) {
+		t.Fatalf("migration rows = %d checksums = %d, want %d each",
+			migrations, checksums, len(schemaMigrations))
 	}
 
 	var integrity string

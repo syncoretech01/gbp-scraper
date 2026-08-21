@@ -77,6 +77,8 @@ type enrichmentRepositoryStub struct {
 	finishErr     error
 	attachedAudit int64
 	attachedPath  string
+	errorAudit    int64
+	errorPath     string
 	attachErr     error
 	events        []string
 	eventDetails  []string
@@ -164,6 +166,19 @@ func (repository *enrichmentRepositoryStub) AttachAuditScreenshot(
 ) error {
 	repository.attachedAudit = auditID
 	repository.attachedPath = relativePath
+
+	return repository.attachErr
+}
+
+// AttachAuditErrorScreenshot satisfies the optional error-capture
+// attachment point used by the enrichment queue.
+func (repository *enrichmentRepositoryStub) AttachAuditErrorScreenshot(
+	_ context.Context,
+	auditID int64,
+	relativePath string,
+) error {
+	repository.errorAudit = auditID
+	repository.errorPath = relativePath
 
 	return repository.attachErr
 }

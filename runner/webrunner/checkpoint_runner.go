@@ -35,6 +35,11 @@ type workerResourceSample struct {
 	MemoryUsedBytes      uint64
 	MemoryAvailableBytes uint64
 	DiskFreeBytes        uint64
+	// BrowserProcesses is how many browser processes this application
+	// currently owns, measured from the local process table. Zero means the
+	// census has not produced a value yet and must be treated as unknown
+	// rather than as "no browsers are running".
+	BrowserProcesses int
 }
 
 type seedTaskMetadata struct {
@@ -499,12 +504,24 @@ func normalizeCheckpointRunError(ctx context.Context, runErr error, seedComplete
 	return runErr
 }
 
+// sampleWorkerResources measures the four local dimensions adaptive
+// performance reads: CPU, RAM, free disk, and the number of browser processes
+// this application owns. The browser census is cached and never fails the
+// sample, so a host that refuses process enumeration simply keeps the last
+// known count.
 func (w *webrunner) sampleWorkerResources(ctx context.Context) (workerResourceSample, error) {
 	if w.sampleResources != nil {
 		return w.sampleResources(ctx, w.cfg.DataFolder)
 	}
 
-	return defaultWorkerResourceSample(ctx, w.cfg.DataFolder)
+	sample, err := defaultWorkerResourceSample(ctx, w.cfg.DataFolder)
+	if err != nil {
+		return sample, err
+	}
+
+	sample.BrowserProcesses = w.browsers.countBrowsers(ctx, int32(os.Getpid()))
+
+	return sample, nil
 }
 
 func defaultWorkerResourceSample(ctx context.Context, dataFolder string) (workerResourceSample, error) {
