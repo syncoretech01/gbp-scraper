@@ -86,6 +86,8 @@ static/css/views/dashboard.css; components come from app.css unchanged.
                                 <th scope="col">State</th>
                                 <th scope="col" class="dash-progress-col">Progress</th>
                                 <th scope="col" class="num">Unique</th>
+                                <th scope="col" class="num">Emails</th>
+                                <th scope="col">Runtime</th>
                                 <th scope="col">Controls</th>
                             </tr>
                         </thead>
@@ -104,6 +106,8 @@ static/css/views/dashboard.css; components come from app.css unchanged.
                                     </div>
                                 </td>
                                 <td class="num">{{.UniqueRecords}}<small class="cell-subtitle num">{{.RawRecords}} raw</small></td>
+                                <td class="num">{{.Emails}}<small class="cell-subtitle num">{{.EmailShare}}</small></td>
+                                <td><small class="dash-timestamp">{{.Runtime}}</small></td>
                                 <td>
                                     <div class="table-actions">
                                         {{if .CanPause}}<form action="/api/v1/jobs/{{.ID}}/pause" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-ghost" type="submit" data-action="pause-job" data-endpoint="/api/v1/jobs/{{.ID}}/pause">Pause</button></form>{{end}}

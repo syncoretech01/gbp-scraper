@@ -152,9 +152,9 @@
          * every such value is dropped to the design system's inline empty
          * treatment instead — the same rule the benchmark report follows. */
         const EMPTY_VALUES = [
-            "not reported by worker", "not reported", "not recorded", "not measured",
-            "not available", "not started", "no data", "none", "unknown", "n/a",
-            "-", "–", "—", ""
+            "not reported by worker", "not reported", "not reported yet", "not recorded",
+            "not measured", "not available", "not started", "not created yet", "no data",
+            "none", "unknown", "n/a", "-", "–", "—", ""
         ];
 
         function markEmpty(node) {
@@ -190,8 +190,9 @@
             line.hidden = !known;
         }
 
-        monitor.querySelectorAll("[data-progress-field], .ops-fact dd, .ops-current strong, .stat-value, .ops-readout b")
-            .forEach(markEmpty);
+        monitor.querySelectorAll(
+            "[data-progress-field], .ops-fact dd, .ops-stage-metric dd, .ops-current strong, .stat-value, .ops-readout b"
+        ).forEach(markEmpty);
         syncCurrentLine();
 
         const TERMINAL_STATES = ["completed", "failed", "cancelled", "canceled", "ok", "archived"];

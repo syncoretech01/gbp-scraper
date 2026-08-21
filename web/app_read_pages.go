@@ -824,7 +824,24 @@ func (s *Server) buildJobMonitorPage(r *http.Request, id string) (jobMonitorPage
 		page.Job.HasRuntimeControls = page.Job.CanAddRuntime || page.Job.CanChangeConcurrency ||
 			page.Job.CanChangeProxyPool || page.Job.CanRetryCurrent
 
-		if page.Job.CanChangeProxyPool || job.Data.ProxyPoolID != "" {
+		// A live control can reroute a running job, so the effective pool is
+		// the override when one is pending and the configured pool otherwise.
+		// Printing the configured pool while the worker is using another one
+		// would be a diagnostic that lies.
+		effectivePool := job.Data.ProxyPoolID
+		if liveControlsAvailable {
+			if controls, controlErr := s.svc.JobLiveControls(r.Context(), job.ID); controlErr == nil &&
+				controls.ProxyPoolOverride != "" {
+				effectivePool = controls.ProxyPoolOverride
+				page.Job.ActiveProxy = "pending override at the next task boundary"
+				if controls.ProxyPoolOverride == DirectConnectionPool {
+					effectivePool = ""
+					page.Job.ActiveProxy = "direct connection (override pending)"
+				}
+			}
+		}
+
+		if page.Job.CanChangeProxyPool || effectivePool != "" {
 			if pools, poolsErr := s.svc.ListProxyPools(r.Context()); poolsErr == nil {
 				for _, pool := range pools {
 					if page.Job.CanChangeProxyPool {
@@ -832,10 +849,17 @@ func (s *Server) buildJobMonitorPage(r *http.Request, id string) (jobMonitorPage
 							ID: pool.ID, Name: pool.Name, Healthy: int(pool.HealthyCount),
 						})
 					}
-					if pool.ID == job.Data.ProxyPoolID {
+					if pool.ID == effectivePool {
 						page.Job.ProxyPoolLabel = fmt.Sprintf(
 							"%s — %d of %d proxies healthy",
 							pool.Name, pool.HealthyCount, pool.TotalCount,
+						)
+						// The worker binds a specific proxy per task and never
+						// publishes which one, so the honest answer is the pool
+						// the next task will draw from.
+						page.Job.ActiveProxy = fmt.Sprintf(
+							"%s pool, %d healthy proxy(ies) available",
+							pool.Name, pool.HealthyCount,
 						)
 					}
 				}
