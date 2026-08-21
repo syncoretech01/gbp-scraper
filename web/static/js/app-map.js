@@ -675,7 +675,7 @@
         const coverageLegend = explorer.querySelector("[data-map-coverage-legend]");
         if (coverageLegend) coverageLegend.hidden = mode === "results" || activeOverlay() !== "coverage";
         updateSaturationLegend();
-        if (!heatLegend) return;
+        if (!heatLegend) { syncLegendPanel(); return; }
         heatLegend.replaceChildren();
         const addSection = function (title, rows) {
             if (!rows.length) return;
@@ -705,6 +705,18 @@
             addSection("Duplicate-heavy shading:", rows);
         }
         heatLegend.hidden = !heatLegend.childNodes.length;
+        syncLegendPanel();
+    }
+
+    // The legend panel is only worth its space while it explains something: in
+    // Results mode with no heat layer on, every group inside it is hidden and
+    // an empty titled card would just cover the map.
+    function syncLegendPanel() {
+        const panel = explorer.querySelector("[data-map-legend]");
+        if (!panel) return;
+        const visible = Array.from(panel.querySelectorAll(".explorer-legend-group"))
+            .some((group) => !group.hidden);
+        panel.hidden = !visible;
     }
 
     function densityBucketSizeDegrees() {

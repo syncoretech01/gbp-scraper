@@ -142,12 +142,12 @@ dead strip below the map.
         <div class="coverage-map" id="map-canvas" data-map-canvas tabindex="0" aria-label="Interactive map of the selected search area"></div>
         <div class="coverage-unavailable" data-map-unavailable hidden><strong>Interactive map unavailable</strong><p>The geometry APIs still work, but the locally bundled map library could not start. Reload the page or inspect System diagnostics.</p></div>
         {{/* The grid layer is removed in Results mode, so app-map.js hides this legend there rather than explaining colours that are not on screen. */}}
-        <details class="coverage-legend" data-map-legend open>
-            <summary class="coverage-legend-summary"><span>Legend</span>{{template "app/icon-chevron-down"}}</summary>
-            <div class="coverage-legend-body">
-                <div class="coverage-legend-group" data-map-coverage-legend aria-label="Coverage state legend">
+        <details class="explorer-legend" data-map-legend open>
+            <summary class="explorer-legend-summary"><span>Legend</span>{{template "app/icon-chevron-down"}}</summary>
+            <div class="explorer-legend-body">
+                <div class="explorer-legend-group" data-map-coverage-legend aria-label="Coverage state legend">
                     <p class="heat-legend-title t-overline">Grid cell state</p>
-                    <ul class="coverage-legend-list">
+                    <ul class="explorer-legend-list">
                         <li><i class="legend-swatch cell-waiting"></i>Waiting</li>
                         <li><i class="legend-swatch cell-running"></i>Running</li>
                         <li><i class="legend-swatch cell-completed"></i>Completed</li>
@@ -156,12 +156,12 @@ dead strip below the map.
                         <li><i class="legend-swatch cell-paused"></i>Paused</li>
                     </ul>
                 </div>
-                <div class="coverage-legend-group" data-map-saturation-legend hidden aria-label="Saturation legend">
+                <div class="explorer-legend-group" data-map-saturation-legend hidden aria-label="Saturation legend">
                     <p class="heat-legend-title t-overline" data-map-saturation-title>Saturation</p>
-                    <div class="coverage-ramp" data-map-saturation-ramp aria-hidden="true"></div>
-                    <p class="coverage-ramp-scale"><span>low</span><span class="num" data-map-saturation-max>0</span></p>
+                    <div class="explorer-ramp" data-map-saturation-ramp aria-hidden="true"></div>
+                    <p class="explorer-ramp-scale"><span>low</span><span class="num" data-map-saturation-max>0</span></p>
                 </div>
-                <div class="coverage-legend-group map-heat-legend" data-map-heat-legend hidden aria-label="Heat layer legend" role="note"></div>
+                <div class="explorer-legend-group map-heat-legend" data-map-heat-legend hidden aria-label="Heat layer legend" role="note"></div>
             </div>
         </details>
         <noscript><div class="coverage-unavailable"><strong>JavaScript is required for the interactive map.</strong><p>Saved GeoJSON and normalized result data remain available through the local API.</p></div></noscript>
