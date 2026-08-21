@@ -44,6 +44,53 @@ type jobsPageData struct {
 	Sparse          bool
 	CanViewArchived bool
 	ShowArchived    bool
+	// ActiveFolder is the folder filter in force; CanApplyLabels gates the
+	// folder picker and the tag column so neither renders without storage
+	// behind it.
+	ActiveFolder   string
+	CanApplyLabels bool
+}
+
+// jobFolderOptions turns the folders in use into a sorted picker. A folder
+// that no job carries is never offered, so the control can never filter the
+// table down to nothing.
+func jobFolderOptions(folders map[string]struct{}) []appSelectOption {
+	names := make([]string, 0, len(folders))
+	for name := range folders {
+		names = append(names, name)
+	}
+	sort.SliceStable(names, func(left, right int) bool {
+		return strings.ToLower(names[left]) < strings.ToLower(names[right])
+	})
+
+	options := make([]appSelectOption, 0, len(names))
+	for _, name := range names {
+		options = append(options, appSelectOption{Value: name, Label: name})
+	}
+
+	return options
+}
+
+// jobLabelsMatchQuery lets the jobs search find a job by a tag, a folder, or an
+// owner, which is what the search field has always promised.
+func jobLabelsMatchQuery(labels JobLabels, query string) bool {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return false
+	}
+
+	if strings.Contains(strings.ToLower(labels.Folder), query) ||
+		strings.Contains(strings.ToLower(labels.Owner), query) {
+		return true
+	}
+
+	for _, tag := range labels.Tags {
+		if strings.Contains(strings.ToLower(tag), query) {
+			return true
+		}
+	}
+
+	return false
 }
 
 type appSelectOption struct {
@@ -79,6 +126,8 @@ type jobsPageJob struct {
 	QuerySummary    string
 	LocationSummary string
 	Tags            []string
+	Folder          string
+	Owner           string
 	HasResults      bool
 	CanStart        bool
 	CanPause        bool
@@ -112,6 +161,14 @@ type jobMonitorPageData struct {
 	LogAutoscroll   bool
 	CanDownloadLogs bool
 	HasResources    bool
+	// Labels and Notes are the operator-applied organisation for this job.
+	// CanApplyLabels gates the whole editor: without label storage there is no
+	// form, rather than a form that cannot save.
+	Labels         JobLabels
+	TagsValue      string
+	Notes          string
+	CanApplyLabels bool
+	CanEditNotes   bool
 }
 
 // jobLogLevelOptions renders the severity filter, marking the active level.
@@ -400,6 +457,23 @@ func (s *Server) buildJobsPage(r *http.Request) (jobsPageData, appActivity, erro
 	activity := appActivity{}
 	states := parseStateFilter(page.ActiveState)
 
+	// Labels are read once for the whole page rather than per row, and a
+	// repository without label support simply renders no tags and no folder
+	// filter instead of an empty control.
+	labels := map[string]JobLabels{}
+	page.CanApplyLabels = s.svc.SupportsJobLabels()
+	if page.CanApplyLabels {
+		loaded, labelErr := s.svc.AllJobLabels(r.Context())
+		if labelErr != nil && !errors.Is(labelErr, ErrJobLabelsUnsupported) {
+			return jobsPageData{}, appActivity{}, labelErr
+		}
+		if loaded != nil {
+			labels = loaded
+		}
+	}
+	page.ActiveFolder = strings.TrimSpace(r.URL.Query().Get("folder"))
+	folders := map[string]struct{}{}
+
 	// Archived jobs stay out of the default queue view but remain one query
 	// parameter away, so nothing is hidden permanently.
 	archived := map[string]struct{}{}
@@ -438,13 +512,24 @@ func (s *Server) buildJobsPage(r *http.Request) (jobsPageData, appActivity, erro
 			page.Counts.Attention++
 		}
 
+		// Folder options are collected from every job, not only the visible
+		// ones, so choosing a folder never empties the picker that produced it.
+		jobLabels := labels[job.ID]
+		if jobLabels.Folder != "" {
+			folders[jobLabels.Folder] = struct{}{}
+		}
+
 		if len(states) > 0 {
 			if _, included := states[state]; !included {
 				continue
 			}
 		}
 
-		if !jobMatchesQuery(job, page.Query) {
+		if page.ActiveFolder != "" && jobLabels.Folder != page.ActiveFolder {
+			continue
+		}
+
+		if !jobMatchesQuery(job, page.Query) && !jobLabelsMatchQuery(jobLabels, page.Query) {
 			continue
 		}
 
@@ -482,6 +567,9 @@ func (s *Server) buildJobsPage(r *http.Request) (jobsPageData, appActivity, erro
 			CanRetry: lifecycleAvailable &&
 				(runtime.State == jobruntime.StatePartial || runtime.State == jobruntime.StateFailed) &&
 				canApplyControl(runtime, jobruntime.ControlRestart),
+			Tags:      jobLabels.Tags,
+			Folder:    jobLabels.Folder,
+			Owner:     jobLabels.Owner,
 			CanRename: organisationAvailable,
 			// Archiving is only offered once a job has stopped, so an operator
 			// cannot hide work that is still running.
@@ -504,9 +592,9 @@ func (s *Server) buildJobsPage(r *http.Request) (jobsPageData, appActivity, erro
 	}
 
 	sortJobRows(rows, page.Sort)
+	page.Folders = jobFolderOptions(folders)
 	start, end, previousURL, nextURL := paginationWindow(r, len(rows))
-	page.Filtered = page.Query != "" || page.ActiveState != "" ||
-		strings.TrimSpace(r.URL.Query().Get("folder")) != ""
+	page.Filtered = page.Query != "" || page.ActiveState != "" || page.ActiveFolder != ""
 	// Three or fewer jobs is a workspace that is still being set up, not a
 	// queue an operator is managing.
 	page.Sparse = !page.Filtered && len(rows) > 0 && len(rows) <= 3
@@ -674,6 +762,31 @@ func (s *Server) buildJobMonitorPage(r *http.Request, id string) (jobMonitorPage
 			return jobMonitorPageData{}, logErr
 		}
 		page.Logs = logs
+	}
+
+	page.CanApplyLabels = s.svc.SupportsJobLabels()
+	if page.CanApplyLabels {
+		labels, labelErr := s.svc.JobLabels(r.Context(), job.ID)
+		if labelErr != nil && !errors.Is(labelErr, ErrJobLabelsUnsupported) &&
+			!errors.Is(labelErr, ErrLifecycleNotFound) {
+			return jobMonitorPageData{}, labelErr
+		}
+		page.Labels = labels
+		page.TagsValue = strings.Join(labels.Tags, ", ")
+		page.Job.Owner = labels.Owner
+	}
+	if page.Job.Owner == "" {
+		page.Job.Owner = "not recorded"
+	}
+
+	page.CanEditNotes = s.jobOrganisationAvailable()
+	if page.CanEditNotes {
+		organisation, organisationErr := s.svc.GetJobOrganisation(r.Context(), job.ID)
+		if organisationErr != nil && !errors.Is(organisationErr, ErrJobOrganisationUnsupported) &&
+			!errors.Is(organisationErr, ErrLifecycleNotFound) {
+			return jobMonitorPageData{}, organisationErr
+		}
+		page.Notes = organisation.Notes
 	}
 
 	// A recorded build identity is evidence about this run; an unsupported

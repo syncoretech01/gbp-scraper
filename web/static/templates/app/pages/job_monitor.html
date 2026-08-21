@@ -295,6 +295,41 @@ scrolls past the status header.
                 </div>
             </article>
 
+            {{/*
+            Organisation. The card is rendered only when the repository can
+            store labels, so there is never an input with nowhere to save. One
+            submit applies the folder, tags, owner, and note together, because
+            they are one operator decision rather than four.
+            */}}
+            {{if .Page.CanApplyLabels}}
+            <article class="card" id="job-labels">
+                <div class="card-header"><div><h2>Organisation</h2><p>Folder, tags, owner, and notes for this job</p></div></div>
+                <form class="card-body stack" style="--stack-space: var(--space-3)" action="/api/v1/jobs/{{.Page.Job.ID}}/labels" method="post" data-job-label-form>
+                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                    <div class="field">
+                        <label for="job-folder-input">Folder</label>
+                        <input class="input input-sm" id="job-folder-input" name="folder" type="text" maxlength="60" value="{{.Page.Labels.Folder}}" placeholder="Unfiled">
+                    </div>
+                    <div class="field">
+                        <label for="job-tags-input">Tags</label>
+                        <input class="input input-sm" id="job-tags-input" name="tags" type="text" value="{{.Page.TagsValue}}" placeholder="austin, plumbing, q3" aria-describedby="job-tags-help">
+                        <p class="field-hint" id="job-tags-help">Comma separated, up to 12 tags of 40 characters.</p>
+                    </div>
+                    <div class="field">
+                        <label for="job-owner-input">Owner</label>
+                        <input class="input input-sm" id="job-owner-input" name="owner" type="text" maxlength="60" value="{{.Page.Labels.Owner}}" placeholder="Unassigned">
+                    </div>
+                    {{if .Page.CanEditNotes}}
+                    <div class="field">
+                        <label for="job-notes-input">Notes</label>
+                        <textarea class="input input-sm" id="job-notes-input" name="notes" rows="3" maxlength="5000" placeholder="What this run is for, and anything the next person needs to know.">{{.Page.Notes}}</textarea>
+                    </div>
+                    {{end}}
+                    <div class="cluster"><button class="button button-sm button-primary" type="submit" data-endpoint="/api/v1/jobs/{{.Page.Job.ID}}/labels">Save organisation</button></div>
+                </form>
+            </article>
+            {{end}}
+
             <article class="card">
                 <div class="card-header"><div><h2>Checkpoint</h2><p>Crash-safe resume position</p></div></div>
                 <div class="card-body">

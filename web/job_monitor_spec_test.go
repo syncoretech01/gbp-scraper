@@ -17,9 +17,11 @@ import (
 type monitorSpecRepository struct {
 	fakeLifecycleRepository
 
-	facts     JobPipelineFacts
-	version   string
-	execution JobExecutionSnapshot
+	facts        JobPipelineFacts
+	version      string
+	execution    JobExecutionSnapshot
+	labels       JobLabels
+	organisation JobOrganisation
 }
 
 func (r *monitorSpecRepository) JobPipelineFacts(context.Context, string) (JobPipelineFacts, error) {

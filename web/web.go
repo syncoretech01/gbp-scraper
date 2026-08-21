@@ -192,6 +192,7 @@ func New(svc *Service, addr string) (*Server, error) {
 	})
 	ans.registerLifecycleRoutes(mux)
 	ans.registerJobOrganisationRoutes(mux)
+	ans.registerJobLabelRoutes(mux)
 	ans.registerRetentionRoutes(mux)
 	ans.registerAuthRoutes(mux)
 	ans.registerKeywordSetRoutes(mux)
