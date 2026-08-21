@@ -216,10 +216,33 @@
             return Math.round(((total - done) * elapsed) / progressed);
         }
 
+        // The server renders a human stage label; a live snapshot carries the
+        // raw identifier, so humanise it here or the header regresses to
+        // reading like a database value (e.g. "saving_exporting").
+        const stageLabels = {
+            preparing_queries: "Preparing queries",
+            generating_grid: "Generating grid",
+            searching_maps: "Searching Maps",
+            extracting_details: "Extracting details",
+            crawling_websites: "Crawling websites",
+            extracting_contacts: "Extracting contacts",
+            deduplicating: "Deduplicating",
+            saving_exporting: "Saving and exporting",
+        };
+
+        function humanStage(stage) {
+            if (!stage) return stage;
+            if (stageLabels[stage]) return stageLabels[stage];
+            const words = String(stage).replace(/_/g, " ").trim();
+            if (!words) return stage;
+
+            return words.charAt(0).toUpperCase() + words.slice(1);
+        }
+
         function render(snapshot) {
             if (!snapshot) return;
             put("state", snapshot.state);
-            put("stage", snapshot.stage);
+            put("stage", humanStage(snapshot.stage));
             const counters = snapshot.counters || {};
             const results = snapshot.results || {};
             const execution = snapshot.execution || {};
@@ -286,7 +309,7 @@
             if (announce && snapshot.state) {
                 announce.textContent = "Job " + snapshot.state +
                     (percent == null ? "" : ", " + Math.round(percent) + "% complete") +
-                    (snapshot.stage ? ", stage " + snapshot.stage : "") + ".";
+                    (snapshot.stage ? ", stage " + humanStage(snapshot.stage) : "") + ".";
             }
         }
 
