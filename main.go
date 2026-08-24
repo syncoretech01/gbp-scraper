@@ -15,10 +15,16 @@ import (
 	"github.com/gosom/google-maps-scraper/runner/installplaywright"
 	"github.com/gosom/google-maps-scraper/runner/lambdaaws"
 	"github.com/gosom/google-maps-scraper/runner/webrunner"
+	"github.com/gosom/google-maps-scraper/web"
 )
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
+
+	// Structured, redacted logging for the workspace's own records. The
+	// standard logger is redirected through the same handler so existing
+	// log.Printf calls cannot leak a credential either.
+	web.InstallProcessLogger(os.Stderr)
 
 	runner.Banner()
 
