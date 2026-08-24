@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"log/slog"
 	"strings"
 	"testing"
@@ -183,5 +184,26 @@ func TestLogJobEventWritesTheStructuredRecordWithoutAStore(t *testing.T) {
 
 	if record["rows_added"] != float64(3) {
 		t.Fatalf("attribute lost: %#v", record)
+	}
+}
+
+// TestStandardLogPackageFlowsThroughRedaction pins the claim that installing
+// the process logger also protects the pre-existing log.Printf call sites.
+func TestStandardLogPackageFlowsThroughRedaction(t *testing.T) {
+	var buffer bytes.Buffer
+
+	previous := slog.Default()
+
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	slog.SetDefault(jsonLogger(&buffer))
+	log.Printf("dial %s failed", "http://user:hunter2@proxy.internal:8080")
+
+	if buffer.Len() == 0 {
+		t.Fatal("the standard logger did not reach the slog handler")
+	}
+
+	if strings.Contains(buffer.String(), "hunter2") {
+		t.Fatalf("standard log output leaked a credential: %s", buffer.String())
 	}
 }
