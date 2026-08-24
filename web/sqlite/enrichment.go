@@ -1355,6 +1355,10 @@ func (repo *repo) WebsiteAuditHistory(
 			// reports their zero values.
 			audit.Addresses = raw.Addresses
 			audit.ContentAudit = raw.ContentAudit
+			// The crawl URL patterns that were actually applied round-trip
+			// through the same immutable result, so an audit stored before the
+			// control existed simply reports none.
+			audit.URLPatterns = raw.URLPatterns
 		}
 		audits = append(audits, audit)
 	}

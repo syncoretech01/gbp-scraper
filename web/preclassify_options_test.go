@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -50,7 +51,10 @@ func TestPreclassifyOptionsCoerceLightweightProfile(t *testing.T) {
 		t.Fatalf("default caps = %+v", defaults)
 	}
 
-	if profile := PreclassifyProfile(); profile != defaults {
+	// EnrichmentOptions carries the crawl URL pattern slices, so the profile
+	// comparison is a deep one. The intent is unchanged: PreclassifyProfile
+	// must be exactly the coerced default profile.
+	if profile := PreclassifyProfile(); !reflect.DeepEqual(profile, defaults) {
 		t.Fatalf("PreclassifyProfile() = %+v, want %+v", profile, defaults)
 	}
 }

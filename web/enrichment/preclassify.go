@@ -101,6 +101,16 @@ func preclassifyConfig(cfg Config) Config {
 	cfg.DisableInternalLinkChecks = true
 	cfg.MaxInternalLinkChecks = 0
 	cfg.CheckMX = false
+	// Crawl URL patterns are cleared, not honoured. The probe fetches the
+	// homepage and nothing else: it selects no supporting page and checks no
+	// internal link, so the two places patterns act have nothing to act on.
+	// The one remaining candidate, the homepage's own redirect target, must be
+	// followed for a reachability probe to mean anything — a site that
+	// redirects "/" to "/home" is live, and reporting it dead because a
+	// pattern did not name "/home" would be a false signal, not a filter.
+	// Clearing the set also keeps the probe from recording pattern evidence
+	// that claims a filter was applied when none was.
+	cfg.URLPatterns = URLPatternSet{}
 
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = preclassifyDefaultTimeout

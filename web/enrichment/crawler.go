@@ -83,6 +83,13 @@ func NewCrawler(config Config) (*Crawler, error) { //nolint:gocritic // A copy i
 		config.UserAgent = defaultUserAgent
 	}
 
+	patterns, err := config.URLPatterns.Normalized()
+	if err != nil {
+		return nil, err
+	}
+
+	config.URLPatterns = patterns
+
 	guard := URLGuard{
 		Resolver:                  config.Resolver,
 		UnsafeAllowPrivateNetwork: config.UnsafeAllowPrivateNetwork,
@@ -121,6 +128,9 @@ func (c *Crawler) Analyze(ctx context.Context, rawURL string) (Result, error) {
 	allAddresses := make([]rawAddress, 0)
 	internalLinks := make(map[string]struct{})
 	fetchedURLs := make(map[string]struct{})
+	// patternSkipped collects every candidate URL the operator's patterns kept
+	// out of this run, so the stored audit can show what was actually applied.
+	patternSkipped := make([]string, 0)
 	technologies := make(map[string]Detection)
 	trackers := make(map[string]Detection)
 	indicators := make(map[string]struct{})
@@ -165,7 +175,9 @@ func (c *Crawler) Analyze(ctx context.Context, rawURL string) (Result, error) {
 	result.HTTPS = strings.HasPrefix(strings.ToLower(result.FinalURL), schemeHTTPS+"://")
 	result.TLSValid = homepage.tlsVerified
 
-	supportingPages := selectSupportingPages(homepage.discovered, c.config.Scope)
+	supportingPages, skippedByPattern := selectSupportingPages(homepage.discovered, c.config.Scope, c.config.URLPatterns)
+	patternSkipped = append(patternSkipped, skippedByPattern...)
+
 	for _, selectedPage := range supportingPages {
 		if len(result.Pages) >= c.config.MaxPages {
 			break
@@ -181,6 +193,12 @@ func (c *Crawler) Analyze(ctx context.Context, rawURL string) (Result, error) {
 		if pageErr != nil {
 			if err := ctx.Err(); err != nil {
 				return Result{}, err
+			}
+
+			// A supporting page whose redirect landed on an excluded path is
+			// pattern evidence, not a site fault: record the rejected target.
+			if errors.Is(pageErr, ErrURLPatternExcluded) && len(page.page.Redirects) > 0 {
+				patternSkipped = append(patternSkipped, page.page.Redirects[len(page.page.Redirects)-1].To)
 			}
 
 			continue
@@ -221,6 +239,19 @@ func (c *Crawler) Analyze(ctx context.Context, rawURL string) (Result, error) {
 	result.TemplateIndicators = sortedKeys(indicators)
 
 	if !c.config.DisableInternalLinkChecks && c.config.MaxInternalLinkChecks > 0 {
+		// The bounded link-health probe fetches same-origin URLs too, so the
+		// operator's patterns govern it as well: excluding a path must mean no
+		// request reaches it, not merely that its content is not parsed.
+		if !c.config.URLPatterns.Empty() {
+			for link := range internalLinks {
+				if !c.config.URLPatterns.Allows(link) {
+					delete(internalLinks, link)
+
+					patternSkipped = append(patternSkipped, link)
+				}
+			}
+		}
+
 		checks, checkErr := c.checkInternalLinks(ctx, internalLinks, fetchedURLs)
 		if checkErr != nil {
 			return Result{}, checkErr
@@ -237,6 +268,7 @@ func (c *Crawler) Analyze(ctx context.Context, rawURL string) (Result, error) {
 	}
 
 	result.ContentAudit = auditContent(&result)
+	result.URLPatterns = c.config.URLPatterns.Evidence(patternSkipped)
 
 	return result, nil
 }
@@ -322,7 +354,11 @@ func (c *Crawler) fetchPage(ctx context.Context, rawURL string, kind PageKind) (
 		return extractedPage{page: page}, err
 	}
 
-	response, redirects, elapsed, err := c.request(ctx, http.MethodGet, validatedURL.String())
+	// The entry page is never pattern-filtered on redirect: it is the URL the
+	// operator asked about, and refusing its own redirect would report a live
+	// site as unreachable. Patterns govern the pages the crawl chooses to
+	// visit next, so only those follow their redirects under the rules.
+	response, redirects, elapsed, err := c.request(ctx, http.MethodGet, validatedURL.String(), kind != PageHomepage)
 	page.ResponseTime = elapsed
 	page.Redirects = redirects
 
@@ -380,10 +416,16 @@ func (c *Crawler) fetchPage(ctx context.Context, rawURL string, kind PageKind) (
 	return extracted, nil
 }
 
+// request performs one bounded HTTP request and records its redirect chain.
+//
+// applyPatterns decides whether the operator's crawl URL patterns also govern
+// the redirect targets of this request. It is false only for the entry page,
+// whose own redirects must always be followed.
 func (c *Crawler) request(
 	ctx context.Context,
 	method string,
 	rawURL string,
+	applyPatterns bool,
 ) (*http.Response, []Redirect, time.Duration, error) {
 	request, err := http.NewRequestWithContext(ctx, method, rawURL, http.NoBody)
 	if err != nil {
@@ -410,6 +452,12 @@ func (c *Crawler) request(
 				To:         nextRequest.URL.String(),
 				StatusCode: nextRequest.Response.StatusCode,
 			})
+		}
+
+		// The hop is recorded before the pattern test so a refused redirect
+		// still shows the operator exactly which target was rejected.
+		if applyPatterns && !c.config.URLPatterns.Allows(nextRequest.URL.String()) {
+			return fmt.Errorf("%w: %s", ErrURLPatternExcluded, nextRequest.URL.String())
 		}
 
 		if originalRedirectPolicy != nil {
@@ -453,10 +501,10 @@ func (c *Crawler) checkInternalLinks(
 
 		check := LinkCheck{URL: rawURL}
 
-		response, _, _, err := c.request(ctx, http.MethodHead, rawURL)
+		response, _, _, err := c.request(ctx, http.MethodHead, rawURL, true)
 		if err == nil && (response.StatusCode == http.StatusMethodNotAllowed || response.StatusCode == http.StatusNotImplemented) {
 			response.Body.Close()
-			response, _, _, err = c.request(ctx, http.MethodGet, rawURL)
+			response, _, _, err = c.request(ctx, http.MethodGet, rawURL, true)
 		}
 
 		if err != nil {
@@ -517,17 +565,36 @@ func mergeExtractedPage(
 	result.Placeholder = result.Placeholder || page.placeholder
 }
 
-func selectSupportingPages(discovered []discoveredPage, scope CrawlScope) []discoveredPage {
+// selectSupportingPages picks at most one page per kind from the candidates
+// the homepage discovered, and reports which candidates the operator's URL
+// patterns kept out.
+//
+// The pattern test runs before the one-per-kind choice on purpose: a contact
+// page the operator excluded must not consume the contact slot, so the next
+// best contact candidate still gets its chance. An empty pattern set skips the
+// test entirely and reproduces the historical selection exactly.
+func selectSupportingPages(
+	discovered []discoveredPage,
+	scope CrawlScope,
+	patterns URLPatternSet,
+) (selected []discoveredPage, skipped []string) {
 	if scope == ScopeHomepage {
-		return nil
+		return nil, nil
 	}
 
-	selected := make([]discoveredPage, 0, 2)
+	selected = make([]discoveredPage, 0, 2)
+	skipped = make([]string, 0)
 	selectedKinds := make(map[PageKind]struct{})
 	selectedURLs := make(map[string]struct{})
 
 	for _, candidate := range discovered {
 		if candidate.kind == PageAbout && scope != ScopeContactAbout {
+			continue
+		}
+
+		if !patterns.Allows(candidate.url) {
+			skipped = append(skipped, candidate.url)
+
 			continue
 		}
 
@@ -544,7 +611,7 @@ func selectSupportingPages(discovered []discoveredPage, scope CrawlScope) []disc
 		selectedURLs[candidate.url] = struct{}{}
 	}
 
-	return selected
+	return selected, skipped
 }
 
 func mergePhones(findings []rawPhone) []Phone {
