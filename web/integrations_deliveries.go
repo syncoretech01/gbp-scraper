@@ -213,15 +213,16 @@ func (s *Server) emitTerminalJobEvents(ctx context.Context) {
 			continue
 		}
 		for _, job := range jobs {
+			facts := map[string]any{
+				"job_id":     job.ID,
+				"job_name":   job.Name,
+				"status":     job.Status,
+				"created_at": job.Date.UTC(),
+			}
 			s.broadcastIntegrationEvent(ctx, integrationEvent{
-				Name: event, SubjectID: job.ID, OccurredAt: time.Now().UTC(),
-				Data: map[string]any{
-					"job_id":     job.ID,
-					"job_name":   job.Name,
-					"status":     job.Status,
-					"created_at": job.Date.UTC(),
-				},
+				Name: event, SubjectID: job.ID, OccurredAt: time.Now().UTC(), Data: facts,
 			})
+			s.runJobCompletedHook(ctx, job.ID, facts)
 		}
 	}
 }

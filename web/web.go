@@ -34,6 +34,9 @@ type Server struct {
 	apiRates     apiRateState
 	apiRateLimit apiAtomicInt64
 	auth         authState
+	// hooks runs the operator's local automation programs. It is configured
+	// from the environment at start-up and never from a request.
+	hooks *AutomationHooks
 }
 
 func New(svc *Service, addr string) (*Server, error) {
@@ -51,6 +54,7 @@ func New(svc *Service, addr string) (*Server, error) {
 		tmpl:        make(map[string]*template.Template),
 		csrfToken:   csrfToken,
 		systemProbe: newDefaultLocalSystemProbe(),
+		hooks:       NewAutomationHooks(),
 		srv: &http.Server{
 			Addr:              addr,
 			ReadHeaderTimeout: 10 * time.Second,
@@ -208,6 +212,7 @@ func New(svc *Service, addr string) (*Server, error) {
 	ans.registerCheckpointRoutes(mux)
 	ans.registerBenchmarkRoutes(mux)
 	ans.registerCoverageRoutes(mux)
+	ans.registerAutomationHookRoutes(mux)
 	ans.registerRerunRoutes(mux)
 	ans.registerCampaignTemplateRoutes(mux)
 	ans.registerExportProfileRoutes(mux)

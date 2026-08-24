@@ -73,3 +73,47 @@ works without proxies for modest local research. Large reliable proxy networks,
 CAPTCHA solving, and high-confidence mailbox verification are not included and
 may require paid third-party services. SMTP or mailbox heuristics must never be
 treated as proof that a person owns or reads an address.
+
+## Local automation hooks
+
+The workspace can run your own program at five points: after a job finishes
+(`job_completed`) and around `enrichment`, `validation`, `scoring` and
+`export`. Every point is off unless you configure it.
+
+Configure a hook by setting an environment variable on the process. The value
+is a JSON array of arguments, and the first element must be an absolute path:
+
+```
+GMAPS_HOOK_JOB_COMPLETED=["/usr/local/bin/notify.sh","--source","gmaps"]
+GMAPS_HOOK_SCORING=["/usr/bin/python3","/opt/hooks/score.py"]
+GMAPS_HOOK_TIMEOUT_SECONDS=120
+```
+
+In Compose, add them under the service's `environment:` block.
+
+The program receives a JSON document on stdin — `{"point", "subject_id",
+"payload"}` — and the variables `GMAPS_HOOK_POINT` and `GMAPS_HOOK_SUBJECT_ID`.
+If it writes a JSON object to stdout, the extension points may use it; anything
+unparseable is ignored rather than failing the pipeline. Every run is bounded by
+a timeout, its output is captured and truncated into the job event log, and a
+non-zero exit is recorded but never fails the job.
+
+### Why hooks are configured this way
+
+A hook command can only come from the process environment. It is deliberately
+not a setting, not a database row and not a form field, and there is no API
+route that accepts a command — a regression test drives every registered route
+with command-shaped payloads and asserts that none of them leaves a hook
+configured. That boundary is the whole security model: because a command can
+never arrive in an HTTP request, no request forgery or authentication mistake
+can turn the local web UI into a way to run programs on your machine.
+
+Commands are executed from their argument array, never through a shell, and no
+scraped value is ever placed on a command line, so quoting and expansion — the
+usual route to command injection — do not occur. Whoever can set these
+variables already decides which binary this process is, so a hook grants them
+nothing they did not already have.
+
+If you would rather not run programs from the workspace at all, leave the
+variables unset and use the signed outbound webhook instead: a self-hosted n8n
+or Activepieces instance consumes it and runs your scripts there.
