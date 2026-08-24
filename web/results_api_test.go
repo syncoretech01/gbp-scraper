@@ -155,12 +155,14 @@ func TestBusinessWorkflowHandlerRequiresCSRFAndBoundsRedirect(t *testing.T) {
 func TestParseResultSearchBoundsInput(t *testing.T) {
 	t.Parallel()
 
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/results?page=2&page_size=500&filter_field=city&filter_operator=eq&filter_value=San+Francisco", nil)
+	// The Results table windows its rows, so the page it may ask for is larger
+	// than it was; anything beyond the cap is still clamped rather than obeyed.
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/results?page=2&page_size=5000&filter_field=city&filter_operator=eq&filter_value=San+Francisco", nil)
 	search, err := parseResultSearch(request)
 	if err != nil {
 		t.Fatalf("parseResultSearch() error = %v", err)
 	}
-	if search.Limit != 250 || search.Offset != 250 || len(search.Filters) != 1 {
+	if search.Limit != maximumResultPageSize || search.Offset != maximumResultPageSize || len(search.Filters) != 1 {
 		t.Fatalf("parseResultSearch() = %+v", search)
 	}
 

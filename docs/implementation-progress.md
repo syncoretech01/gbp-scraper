@@ -759,7 +759,7 @@ Last updated: 2026-08-19
 - [ ] **Server-rendered UI:** Go templates + HTMX — Small local footprint and straightforward integration.
 - [ ] **Client-side helpers:** Alpine.js — Lightweight state for modals, forms, and local interactions.
 - [ ] **Styling:** Tailwind CSS or a small custom design system — Fast, consistent local UI without a heavy SPA requirement.
-- [ ] **Data table:** Tabulator — Virtual scrolling, editing, filtering, grouping, and export support.
+- [x] **Data table:** the Results table in `web/static/js/app-results.js` — virtual scrolling (a windowed row renderer with spacer rows, `aria-rowcount`/`aria-rowindex` over the whole set, and full rendering below 120 rows), inline editing through the audited manual-edit route, filtering (toolbar, chips, and the nested filter builder), grouping (`data-layout-group`), and export (`web/export_builder.go`, CSV/JSON/XLSX) — the capability the Tabulator recommendation stood for, without the dependency.
 - [x] **Maps:** Leaflet + OpenStreetMap — Open-source map interface and drawing ecosystem.
 - [ ] **Charts:** Apache ECharts — Rich dashboards and large-data performance.
 - [x] **Database:** SQLite + FTS5 — Simple local deployment with strong search and indexing.
@@ -826,7 +826,7 @@ Last updated: 2026-08-19
 ### Performance and reliability criteria
 
 - [x] No loss of committed records after simulated interrupted retry-file recovery/restart and the final Docker restart smoke.
-- [ ] Large tables remain responsive using virtualisation and indexed queries.
+- [x] Large tables remain responsive using virtualisation and indexed queries. The Results table renders only the rows covering its scroll viewport plus a 12-row overscan buffer, reconciling row nodes incrementally on scroll inside one `requestAnimationFrame`; spacer rows carry the rest of the height so the scrollbar still describes the whole page. Verified in a container against a 600-business workspace: a 500-row page kept 31–43 rows in the document at every scroll position, the sticky header stayed pinned, column widths did not move, selection and content survived a row scrolling out and back, and 300 consecutive arrow-key moves never lost the caret.
 - [x] Browser crashes do not automatically fail the entire job.
 - [x] Timeout/record-limit/incomplete completion is labelled Partial rather than Completed.
 - [x] Every exported record retains source job/query/cell and scrape timestamp in the standard export schema.

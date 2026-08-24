@@ -31,13 +31,18 @@ type resultsPageData struct {
 	IncludeDuplicates bool
 	Results           []appResultRow
 	Total             int64
-	RangeLabel        string
-	CurrentURL        string
-	ExportURL         string
-	MapURL            string
-	PreviousURL       string
-	NextURL           string
-	Capabilities      appResultCapabilities
+	// RowOffset is the zero-based index of the first row on this page inside
+	// the whole result set. The virtualised table numbers its rows from it so
+	// aria-rowindex keeps reporting a row's true position, not its position
+	// inside the rendered window.
+	RowOffset    int
+	RangeLabel   string
+	CurrentURL   string
+	ExportURL    string
+	MapURL       string
+	PreviousURL  string
+	NextURL      string
+	Capabilities appResultCapabilities
 	// QuickFilters are the one-click lead workflows rendered as chips above
 	// the table. Each one is a real URL into the existing filter language.
 	QuickFilters []resultQuickFilter
@@ -405,6 +410,7 @@ func (s *Server) buildResultsPage(r *http.Request, search ResultSearch) (results
 		FilterLogic:       "and",
 		IncludeDuplicates: search.IncludeDuplicates,
 		Total:             resultPage.Total,
+		RowOffset:         resultPage.Offset,
 		CurrentURL:        r.URL.RequestURI(),
 		ExportURL:         resultExportURL(r.URL),
 		MapURL:            resultMapURL(r.URL),

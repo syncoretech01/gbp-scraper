@@ -16,6 +16,14 @@ const (
 	maximumFilterJSONLength  = 16 << 10
 	maximumFilterDepth       = 4
 	maximumFilterNodes       = 50
+	// defaultResultPageSize is the page the Results table asks for when no
+	// page_size is supplied. It deliberately stays at 25: row virtualisation
+	// makes a larger page affordable, it does not make it the right default.
+	defaultResultPageSize = 25
+	// maximumResultPageSize bounds page_size for the Results table and the
+	// /api/v1/results route. The table windows its rows client side, so a
+	// larger page no longer costs a proportionally larger DOM.
+	maximumResultPageSize = 500
 )
 
 func (s *Server) registerResultRoutes(mux *http.ServeMux) {
@@ -186,8 +194,8 @@ func parseResultSearch(r *http.Request) (ResultSearch, error) {
 		return ResultSearch{}, errors.New("search text is too long")
 	}
 
-	limit := positiveQueryInt(r.URL.Query().Get("page_size"), 25)
-	limit = min(limit, 250)
+	limit := positiveQueryInt(r.URL.Query().Get("page_size"), defaultResultPageSize)
+	limit = min(limit, maximumResultPageSize)
 	page := positiveQueryInt(r.URL.Query().Get("page"), 1)
 	search := ResultSearch{
 		Query:             query,
