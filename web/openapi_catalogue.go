@@ -110,6 +110,7 @@ func localAPICatalogue() []localAPIOperation {
 		{Group: "Integrations", Method: "GET", Path: "/api/v1/integrations/{id}/deliveries", Summary: "Read delivery history for one destination"},
 		{Group: "Integrations", Method: "POST", Path: "/api/v1/integrations/{id}/test", Summary: "Send one signed test delivery"},
 		{Group: "System", Method: "POST", Path: "/api/v1/onboarding/complete", Summary: "Mark the first-run checklist complete"},
+		{Group: "System", Method: "GET", Path: "/api/v1/automation/hooks", Summary: "List local automation hook points and their last run"},
 		{Group: "System", Method: "POST", Path: "/api/v1/onboarding/self-test", Summary: "Run the first-run connectivity and capacity checks"},
 		{Group: "System", Method: "POST", Path: "/api/v1/system/artifacts/cleanup", Summary: "Delete old unregistered artifacts from a contained directory"},
 		{Group: "System", Method: "POST", Path: "/api/v1/system/backups", Summary: "Create a verified local database backup"},
