@@ -46,10 +46,21 @@ if [[ ! -f "$proxy_file" ]]; then
 	exit 1
 fi
 
-if [[ $(stat -c '%a' "$proxy_file" 2>/dev/null || stat -f '%Lp' "$proxy_file") != '600' ]]; then
-	echo "proxy file permissions are not 600" >&2
-	exit 1
-fi
+# POSIX permission bits are only meaningful on a POSIX filesystem. Git Bash on
+# Windows reports 0644 no matter what chmod was asked to do, so assert the mode
+# where it can be honoured and state plainly that it was skipped where it
+# cannot, instead of recording a permanent baseline failure.
+case "$(uname -s 2>/dev/null || echo unknown)" in
+MINGW* | MSYS* | CYGWIN* | Windows_NT)
+	echo "skipping proxy file permission check: POSIX modes are not enforced on this filesystem"
+	;;
+*)
+	if [[ $(stat -c '%a' "$proxy_file" 2>/dev/null || stat -f '%Lp' "$proxy_file") != '600' ]]; then
+		echo "proxy file permissions are not 600" >&2
+		exit 1
+	fi
+	;;
+esac
 
 if [[ "$configure_output" == *"$secret"* ]]; then
 	echo "configure-proxy.sh printed proxy credentials" >&2

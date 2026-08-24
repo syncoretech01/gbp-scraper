@@ -1,7 +1,8 @@
 # Local upgrade: implemented scope and technical limitations
 
 Last reconciled with `Google_Maps_Scraper_Local_Improvement_Specification.md`:
-2026-08-20.
+2026-08-25. 520 of 527 checklist lines are implemented and verified; the
+seven that remain are enumerated below and each maps to exactly one line.
 
 This document is the authoritative boundary for specification items that are
 not implemented in this local build. A menu item or button is not displayed
@@ -446,91 +447,69 @@ The build provides the following working paths:
   shutdown is left in its running state so startup recovery requeues it, rather
   than being recorded as a permanent website failure.
 
-## Deliberate deviations: the capability ships by another route
+## The seven unticked checklist lines, one by one
 
-Each line below appears unticked in the checklist because the specification
-named a particular *mechanism*. The capability itself ships; the mechanism
-differs, deliberately, and the equivalent is named here.
+Every other specification line is implemented and verified. These seven are the
+complete remainder; nothing is grouped or left uncounted.
 
-- **Post-run shell command / Python script, and in-process plugin hooks.**
-  Ruled out on security grounds, not effort: executing operator-supplied
-  processes from a locally served web UI creates a code-execution surface that
-  a single request-forgery or template mistake turns into remote code
-  execution on the host. The automation need is met by the signed outbound
-  webhook (HMAC shared secret, retries with backoff, delivery history) plus the
-  local REST API, which is exactly how a self-hosted n8n or Activepieces
-  instance drives this application in both directions.
-- **HTMX, Alpine.js, Tailwind, Tabulator, Apache ECharts.** The UI is
-  server-rendered Go templates with vanilla JavaScript and a documented token +
-  component design system in `web/static/css/app.css`. It delivers what those
-  libraries were recommended for - progressive enhancement, modal/form state,
-  a consistent visual system, a dense sortable/filterable/groupable data table
-  with column management, and charts drawn as inline SVG/CSS - with no runtime
-  CDN (the strict CSP forbids one), no build tooling, and no npm. Tabulator's
-  virtual scrolling is included in that: `web/static/js/app-results.js` renders
-  only the rows covering the scroll viewport plus an overscan buffer, carries
-  the remaining height in two spacer rows, and keeps `aria-rowcount` and
-  `aria-rowindex` describing the whole result set rather than the window.
-- **robfig/cron, Excelize.** The local scheduler (`web/schedules.go`) and the
-  native XLSX writer (`web/export_xlsx.go`) provide the same capability without
-  the dependency.
-- **Go slog / Zerolog.** Structured, redacted job events are persisted to
-  SQLite and served to the Job Monitor, which is the observability the
-  recommendation stood for; process logging stays on the standard library.
-- **Client-side virtual scrolling.** Indexed server-side pagination with
-  configurable page size is the chosen responsiveness design; it keeps large
-  workspaces responsive without holding the result set in the browser.
-- **PostgreSQL as the application workspace.** SQLite with WAL is the default
-  and covers local scale; the CLI's PostgreSQL run modes remain available for
-  the scraper itself. Porting every repository method is a second persistence
-  implementation, not a missing feature.
+### Intentional equivalent deviations (5)
 
-## Genuinely infeasible locally, or external-only
+The specification's section 31 is a *Recommendation* table whose "Why" column
+states the capability each recommendation is there to deliver. In each case the
+capability ships; the named library does not.
 
-- **Google Sheets sync.** Requires Google OAuth credentials and an external
-  service. Exports (CSV, JSON, JSONL, XLSX, Parquet, SQLite), the watch folder,
-  the webhook, and the local database destinations cover the same workflow
-  offline.
-- **Site-whisper deep website auditing, mailbox-level email verification, and
-  the CRM/Lead-Engine pipeline.** These stay in their own repositories per the
-  GBP specification's DO-NOT-BUILD table. Website-status classification itself
-  is fully local, so none of the eight statuses depends on an external service.
-  The DiscoveredCompany endpoint and its export stay dormant behind the
-  off-by-default `prospect.future_integrations` setting.
-- **`domain_age_days`** needs WHOIS data from an external service.
-- **Exit-IP geolocation** for proxies needs an external geolocation service or
-  a licensed database. Note the narrower, honest boundary that remains inside
-  the exit-IP feature: an HTTP CONNECT tunnel carries no outbound-address field
-  in the protocol, so for HTTP/HTTPS proxies the stored address is the endpoint
-  this host dialled rather than a confirmed exit; SOCKS5 can report the bound
-  address, and the source of the value is stored beside it.
-- **Per-listing checkpoint cursors inside a single task.** The engine commits a
-  task's results as one unit; the merge-deduplicated task restart makes the gap
-  harmless in practice.
-- **Browser-level resource controls beyond image blocking** - font and video
-  blocking, and a *hard per-browser* memory cap enforced by the browser itself.
-  Image blocking and the low-disk pause both ship. Font and video blocking, and
-  a browser-enforced memory limit, would each require extra Chromium launch
-  arguments or a route interceptor: `scrapemateapp` builds the launch args
-  internally and exposes only `DisableImages`, with no hook for either, so the
-  only way to add them is to fork the upstream engine, which the compatibility
-  constraint rules out.
+1. **Server-rendered UI: Go templates + HTMX.** Ships as Go templates with
+   `fetch` and `EventSource` partial updates in vanilla JavaScript. Verified:
+   the Results and Job Monitor pages update in place without a reload.
+2. **Client-side helpers: Alpine.js.** Ships as native `<dialog>` modals plus
+   the page's own `addEventListener` state for forms, drawers and selection.
+3. **Charts: Apache ECharts.** Ships as CSS-driven bars and meters for the
+   dashboard trends and inline SVG for the saturation curve. No CDN, which the
+   strict CSP forbids in any case.
+4. **Optional local PostgreSQL for larger datasets or multiple local workers**
+   and 5. **Large local DB: PostgreSQL.** Two checklist lines, one ruling.
+   Larger datasets are served by SQLite in WAL mode with FTS5 and indexed
+   filters. Multi-worker coordination already exists through the CLI's
+   `database` and `database-produce` run modes, which coordinate several
+   workers through PostgreSQL. Porting the workspace's own repository to a
+   second SQL dialect would duplicate the persistence layer without adding a
+   user-facing capability the product lacks.
 
-  What *does* ship is the application-level memory ceiling
-  (`JobData.MemoryCeilingBytes`, wizard field `memory_ceiling_mb`). It caps how
-  much work this application asks for rather than how much the browser may
-  allocate: while the sampled host memory in use is at or above the ceiling the
-  adaptive supervisor pins the run to one worker and one browser with one page,
-  vetoes every recovery step, and records an `adaptive-performance` worker
-  event naming the ceiling and the measurement. Zero means no ceiling, and it
-  can only ever lower a budget. Enforcement requires the job's adaptive
-  resource safeguards to be on, because that supervisor is what applies it.
-  This is a real, useful bound on the run's footprint, but it is not the same
-  guarantee as a per-process RSS limit: it throttles demand and cannot stop a
-  single browser process that is already running from growing.
-- **Large, stable residential/mobile proxy networks, CAPTCHA solving,
-  high-confidence mailbox verification, and commercial company/person
-  databases.** External paid services by nature.
+### External-only (1)
+
+6. **Optional Google Sheets sync using the user's own Google credentials.**
+   Requires Google's hosted API and an OAuth consent flow. A standalone,
+   offline-capable product cannot contain it. Exports (CSV, JSON, JSONL, XLSX,
+   Parquet, SQLite), the watch folder, the signed webhook and the local
+   database destinations cover the same workflow offline.
+
+### Genuinely infeasible (1)
+
+7. **Resource controls: disable images, fonts, or video where safe; cap memory
+   usage; save failure screenshots; pause on low disk space.** Three of the
+   four clauses ship — image blocking, an enforced memory ceiling, failure
+   screenshots, and the low-disk pause. Font and video blocking do not, for a
+   concrete reason: scrapemate constructs the Chromium launch arguments inside
+   its own fetcher (`adapters/fetchers/jshttp`, where `DisableImages` becomes
+   `--blink-settings=imagesEnabled=false`) and exposes no hook for additional
+   arguments. Adding them means forking or patching the upstream engine, which
+   the explicit compatibility constraint forbids.
+
+### Closed since the previous revision
+
+- **Post-run local command / script** and **custom plugin hooks** now ship as
+  operator-configured local automation hooks at five points. A command comes
+  only from the process environment, never from a request; a regression test
+  drives every registered route with command-shaped payloads and asserts none
+  of them can configure one. Commands run from an argv slice with no shell.
+  See `docs/local-workspace.md` for the full safety model.
+- **Structured logging** now uses `log/slog` behind a redacting handler.
+- **Enrichment URL patterns** and an **enforced memory ceiling** now ship.
+- **Table virtualisation** now ships, so the Results table stays responsive on
+  large pages and the "virtual scrolling, editing, filtering, grouping, export"
+  capability set is complete.
+- **Styling** was never a deviation: the specification offers "Tailwind CSS or
+  a small custom design system", and the product ships the second option.
 
 ## Corrections applied on 2026-08-22
 

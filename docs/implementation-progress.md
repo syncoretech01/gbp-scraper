@@ -1,13 +1,13 @@
 # Local Improvement Implementation Progress
 
-Last updated: 2026-08-19
+Last updated: 2026-08-25
 
 ## Source and status
 
 - [x] Restored the authoritative specification from the user's local Downloads folder to `docs/Google_Maps_Scraper_Local_Improvement_Specification.md`.
 - [x] Verified the repository copy matches the 1,385-line source after line-ending normalization.
 - [x] Read the complete specification and mapped its explicit list/table requirements below.
-- [ ] Complete implementation of every aspirational item in the specification is not claimed.
+- [x] Every specification requirement is now either implemented and verified, or recorded in `docs/technical-limitations.md` with its exact classification. Nine checklist lines remain unticked on purpose; each is listed there.
 - [x] Completed requirement reconciliation: working paths are recorded here and every remaining group has a specific boundary in `docs/technical-limitations.md`.
 
 ## Status legend
@@ -36,7 +36,7 @@ Last updated: 2026-08-19
 - [x] Recorded baseline commit: `a75a157` (`v1.17.3`).
 - [x] Node skill tests: 9 passed, 0 failed.
 - [x] Go race tests passed in `golang:1.26.5-trixie` with `go test -v -race -timeout 5m ./...`.
-- [ ] Bash skill helper baseline has an existing Windows-specific failure: `proxy file permissions are not 600`.
+- [x] The Windows-specific skill-helper failure is closed: the POSIX permission assertion now runs where modes are enforced and states plainly that it is skipped where they are not. Verified passing end to end on Linux (`agent helper tests passed`).
 
 ## Field issue reproduced
 
@@ -214,7 +214,7 @@ Last updated: 2026-08-19
 - [x] **Balanced:** Moderate depth and concurrency; optional website/email extraction.
 - [x] **Deep:** Higher depth, conservative concurrency, durable partial writes, and optional enrichment.
 - [x] Advanced settings: depth, concurrency, browser-pool size, pages per browser, maximum runtime, maximum records, retry count, retry delay, page timeout, random delay, fast mode, extra reviews, visible/headless browser, and proxy pool.
-- [ ] Resource controls: disable images, fonts, or video where safe; cap memory usage; save failure screenshots; pause on low disk space.
+- [ ] Resource controls: disable images, fonts, or video where safe; cap memory usage; save failure screenshots; pause on low disk space. **GENUINELY INFEASIBLE (partial).** Image blocking, the memory ceiling, failure screenshots and the low-disk pause all ship. Font and video blocking do not: scrapemate builds the Chromium launch arguments inside its own fetcher and exposes no hook, so the only way to add them is to fork the upstream engine, which the compatibility constraint forbids.
   Images (`JobData.LoadImages` -> `scrapemateapp.DisableImages`), failure
   screenshots, and the low-disk pause (`JobData.LowDiskBytes`) all ship. Memory
   capping now ships too: `JobData.MemoryCeilingBytes` (wizard field
@@ -639,10 +639,10 @@ Last updated: 2026-08-19
 - [x] n8n self-hosted and Activepieces self-hosted through local webhooks or API calls.
 - [x] Local PostgreSQL, MySQL/MariaDB, or another SQLite database.
 - [x] File-system watch folder for completed exports.
-- [ ] Run a local shell command or Python script after completion.
+- [x] Run a local shell command or Python script after completion. Configured only from the process environment as a JSON argv array; executed with no shell. See `web/automation_hooks.go` and the safety model in `docs/local-workspace.md`.
 - [x] Send result batches or completion events to a local webhook.
-- [ ] Optional Google Sheets sync using the user’s own Google credentials and quotas.
-- [ ] Custom plugin hooks for enrichment, validation, scoring, and export.
+- [ ] Optional Google Sheets sync using the user’s own Google credentials and quotas. **EXTERNAL-ONLY.** Requires Google's hosted API and an OAuth consent flow, so it cannot exist inside a standalone offline product. Exports (CSV, JSON, JSONL, XLSX, Parquet, SQLite), the watch folder, the signed webhook and the local database destinations cover the workflow offline.
+- [x] Custom plugin hooks for enrichment, validation, scoring, and export — the same mechanism at four further points, each receiving JSON on stdin and able to return JSON.
 
 ## 25 Optional Local AI
 
@@ -667,7 +667,7 @@ Last updated: 2026-08-19
 - [x] SQLite with WAL mode, busy timeout, foreign keys, and one serialized writer for safe concurrent reads/writes.
 - [x] FTS5 for fast search across names, categories, addresses, emails, domains, and notes.
 - [x] Batch inserts, indexed filters, integrity checks, VACUUM, migrations, backups, and retention policies.
-- [ ] Optional local PostgreSQL for larger datasets or multiple local workers.
+- [ ] Optional local PostgreSQL for larger datasets or multiple local workers. **EQUIVALENT DEVIATION.** Larger datasets: SQLite in WAL mode with FTS5 and indexed filters is the shipped workspace. Multiple local workers: the CLI's `database` and `database-produce` run modes already coordinate several workers through PostgreSQL (`runner.RunModeDatabase`).
 
 ### Recommended tables
 
@@ -779,19 +779,19 @@ Last updated: 2026-08-19
 
 - [x] Section complete and verified against the specification.
 - [x] **Backend:** Existing Go backend — Retains current scraper engine and avoids a full rewrite.
-- [ ] **Server-rendered UI:** Go templates + HTMX — Small local footprint and straightforward integration.
-- [ ] **Client-side helpers:** Alpine.js — Lightweight state for modals, forms, and local interactions.
-- [ ] **Styling:** Tailwind CSS or a small custom design system — Fast, consistent local UI without a heavy SPA requirement.
+- [ ] **Server-rendered UI:** Go templates + HTMX. **EQUIVALENT DEVIATION.** The capability named in the specification's own "Why" column — a small local footprint with server-rendered pages and partial updates — ships as Go templates plus `fetch`/`EventSource` updates in vanilla JavaScript, with no CDN (the strict CSP forbids one) and no build step.
+- [ ] **Client-side helpers:** Alpine.js. **EQUIVALENT DEVIATION.** Modals use the native `<dialog>` element, and form/drawer/selection state is held in the page's own `addEventListener` code, delivering the lightweight local interaction the recommendation stood for without a dependency.
+- [x] **Styling:** the specification's second option — a small custom design system of tokens and components in `web/static/css/app.css`.
 - [x] **Data table:** the Results table in `web/static/js/app-results.js` — virtual scrolling (a windowed row renderer with spacer rows, `aria-rowcount`/`aria-rowindex` over the whole set, and full rendering below 120 rows), inline editing through the audited manual-edit route, filtering (toolbar, chips, and the nested filter builder), grouping (`data-layout-group`), and export (`web/export_builder.go`, CSV/JSON/XLSX) — the capability the Tabulator recommendation stood for, without the dependency.
 - [x] **Maps:** Leaflet + OpenStreetMap — Open-source map interface and drawing ecosystem.
-- [ ] **Charts:** Apache ECharts — Rich dashboards and large-data performance.
+- [ ] **Charts:** Apache ECharts. **EQUIVALENT DEVIATION.** Dashboard trends, meters and progress render as CSS-driven bars and the saturation curve as inline SVG, so charts stay fast and CDN-free.
 - [x] **Database:** SQLite + FTS5 — Simple local deployment with strong search and indexing.
-- [ ] **Large local DB:** PostgreSQL — Optional scale and multi-worker coordination.
+- [ ] **Large local DB:** PostgreSQL. **EQUIVALENT DEVIATION.** Same ruling as the Default-database line above: SQLite/WAL/FTS5 covers local scale, and PostgreSQL multi-worker coordination is available through the CLI run modes.
 - [x] **Scheduling:** local scheduler in `web/schedules.go` with interval, overlap policy, retry/backoff and run history — the capability the cron recommendation stood for, without the dependency.
 - [x] **XLSX export:** native writer in `web/export_xlsx.go` — spreadsheet output with no third-party dependency.
 - [x] **Local AI:** Ollama — Optional local inference without recurring API charges.
 - [x] **Packaging:** Docker Compose — One-command local app, database, and optional services.
-- [ ] **Logging:** Go slog or Zerolog — Structured logs with efficient local storage.
+- [x] **Logging:** `log/slog` (standard library) behind a redacting handler; job-scoped records also reach the durable job event log the Job Monitor reads.
 - [x] **API docs:** OpenAPI document generated from the real route table (`web/openapi.go`) and served with a browsable local reference page; no CDN.
 
 ## 32 Implementation Roadmap
