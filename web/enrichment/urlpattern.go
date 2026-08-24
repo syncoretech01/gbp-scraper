@@ -101,6 +101,7 @@ func NormalizeURLPatterns(patterns []string) ([]string, error) {
 		}
 
 		seen[candidate] = struct{}{}
+
 		normalized = append(normalized, candidate)
 	}
 
@@ -190,6 +191,7 @@ func (set URLPatternSet) Evidence(skipped []string) *URLPatternEvidence {
 	}
 
 	unique := make(map[string]struct{}, len(skipped))
+
 	for _, candidate := range skipped {
 		if strings.TrimSpace(candidate) == "" {
 			continue
