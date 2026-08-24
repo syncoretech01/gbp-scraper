@@ -192,39 +192,39 @@ func TestRecoveryHasHeadroomRequiresEveryMeasuredDimension(t *testing.T) {
 		MemoryAvailableBytes: 8 << 30, DiskFreeBytes: 64 << 30, BrowserProcesses: 4,
 	}
 
-	if !recoveryHasHeadroom(healthy, 0, 4) {
+	if !recoveryHasHeadroom(healthy, 0, 4, 0) {
 		t.Fatal("a healthy sample with no blocks must allow recovery")
 	}
 
-	if recoveryHasHeadroom(healthy, 1, 4) {
+	if recoveryHasHeadroom(healthy, 1, 4, 0) {
 		t.Fatal("a window containing a block must veto recovery")
 	}
 
 	busy := healthy
 	busy.CPUPercent = recoveryCPUPercent
 
-	if recoveryHasHeadroom(busy, 0, 4) {
+	if recoveryHasHeadroom(busy, 0, 4, 0) {
 		t.Fatal("a busy CPU must veto recovery")
 	}
 
 	tight := healthy
 	tight.MemoryAvailableBytes = recoveryMemoryBytes - 1
 
-	if recoveryHasHeadroom(tight, 0, 4) {
+	if recoveryHasHeadroom(tight, 0, 4, 0) {
 		t.Fatal("low available memory must veto recovery")
 	}
 
 	crowded := healthy
 	crowded.BrowserProcesses = 4 + browserHeadroomSlack + 1
 
-	if recoveryHasHeadroom(crowded, 0, 4) {
+	if recoveryHasHeadroom(crowded, 0, 4, 0) {
 		t.Fatal("more live browsers than the plan allows must veto recovery")
 	}
 
 	unknownMemory := healthy
 	unknownMemory.MemoryAvailableBytes = 0
 
-	if !recoveryHasHeadroom(unknownMemory, 0, 4) {
+	if !recoveryHasHeadroom(unknownMemory, 0, 4, 0) {
 		t.Fatal("an unmeasured memory reading must not block recovery on its own")
 	}
 }
@@ -253,6 +253,7 @@ func TestAdaptiveBrowserBudgetShrinksUnderMemoryPressure(t *testing.T) {
 			pool, pages := adaptiveBrowserBudget(
 				test.desiredPool, test.desiredPages,
 				workerResourceSample{MemoryAvailableBytes: test.available},
+				0,
 			)
 			if pool != test.wantPool || pages != test.wantPages {
 				t.Fatalf("adaptiveBrowserBudget(%d, %d, %d bytes) = (%d, %d), want (%d, %d)",

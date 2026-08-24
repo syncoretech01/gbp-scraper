@@ -46,7 +46,28 @@ const (
 	// browserHeadroomSlack tolerates browsers that are still shutting down
 	// when the census runs, so a normal teardown does not block recovery.
 	browserHeadroomSlack = 2
+	// bytesPerMebibyteShift converts a byte count to mebibytes for the
+	// operator-facing text of a worker event. Operators configure the memory
+	// ceiling in MB, so the evidence has to read back in the same unit.
+	bytesPerMebibyteShift = 20
 )
+
+// memoryCeilingExceeded reports whether the sampled memory use has reached an
+// operator-configured ceiling.
+//
+// The ceiling is enforced here, at the application level, because that is the
+// only place this project controls: the scraping engine builds its own browser
+// launch arguments and exposes no hook for a per-process memory limit, and
+// forking it is out of scope. What this application does control is how much
+// work it asks for, so the ceiling acts on exactly that.
+//
+// The measurement is MemoryUsedBytes, the same host memory-in-use figure the
+// job monitor already reports, so an operator sets the ceiling against the
+// number the UI shows them. A zero ceiling is "no ceiling" and reproduces the
+// behaviour every run had before the control existed.
+func memoryCeilingExceeded(ceiling uint64, sample workerResourceSample) bool {
+	return ceiling > 0 && sample.MemoryUsedBytes >= ceiling
+}
 
 // browserProcessNames are the executable names a Playwright-driven browser
 // runs under. Matching is case-insensitive and ignores a trailing extension.
@@ -228,8 +249,15 @@ func decideBlockBudget(current, desired, blocks, attempts int) int {
 // allowedBrowsers is the browser count the current plan expects; a census
 // above it (beyond a small teardown slack) means browsers from the previous
 // budget are still alive, so more parallelism would overshoot the host.
-func recoveryHasHeadroom(sample workerResourceSample, blocks, allowedBrowsers int) bool {
+//
+// memoryCeiling is the operator's optional memory ceiling. While it is
+// exceeded there is no head-room by definition, so no budget may recover.
+func recoveryHasHeadroom(sample workerResourceSample, blocks, allowedBrowsers int, memoryCeiling uint64) bool {
 	if blocks > 0 {
+		return false
+	}
+
+	if memoryCeilingExceeded(memoryCeiling, sample) {
 		return false
 	}
 
@@ -254,8 +282,21 @@ func recoveryHasHeadroom(sample workerResourceSample, blocks, allowedBrowsers in
 //
 // The result never exceeds the configured budget, so this can only ever lower
 // the memory the run asks for.
-func adaptiveBrowserBudget(desiredPool, desiredPages int, sample workerResourceSample) (pool, pages int) {
+//
+// memoryCeiling is the operator's optional ceiling. Crossing it applies the
+// severe step directly — one browser, one page — regardless of how much memory
+// the host still reports as available, because the ceiling is a statement
+// about how much this run may use rather than about how loaded the host is.
+func adaptiveBrowserBudget(
+	desiredPool, desiredPages int,
+	sample workerResourceSample,
+	memoryCeiling uint64,
+) (pool, pages int) {
 	pool, pages = desiredPool, desiredPages
+
+	if memoryCeilingExceeded(memoryCeiling, sample) {
+		return 1, 1
+	}
 
 	available := sample.MemoryAvailableBytes
 	if available == 0 {
