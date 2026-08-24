@@ -81,6 +81,19 @@ const (
 	MaximumCheckpointSeconds = 3600
 )
 
+// Memory ceiling bounds. The ceiling is a host memory-in-use figure, so it has
+// to be large enough to be a real working limit rather than a value that trips
+// the moment the browser starts.
+const (
+	// MinimumMemoryCeilingBytes is the smallest ceiling worth configuring.
+	// Below it a run would be pinned to its minimum budget permanently, which
+	// is a stopped job dressed up as a running one.
+	MinimumMemoryCeilingBytes uint64 = 512 << 20
+	// MaximumMemoryCeilingBytes bounds a stored job at 1 TiB, matching the
+	// low-disk threshold's ceiling.
+	MaximumMemoryCeilingBytes uint64 = 1 << 40
+)
+
 // CheckpointInterval returns the effective interval between time-based
 // checkpoints for one job.
 func (d JobData) CheckpointInterval() time.Duration {
@@ -124,14 +137,26 @@ type JobData struct {
 	// resume boundary in addition to the one written after every completed
 	// task. Zero keeps the default interval.
 	CheckpointSeconds int `json:"checkpoint_seconds,omitempty"`
-	LowDiskBytes    uint64                `json:"low_disk_bytes,omitempty"`
-	ProxyPoolID     string                `json:"proxy_pool_id,omitempty"`
-	Proxies         []string              `json:"proxies"`
-	SavedAreaID     string                `json:"saved_area_id,omitempty"`
-	AreaGeoJSON     string                `json:"area_geojson,omitempty"`
-	GridBBox        string                `json:"grid_bbox,omitempty"`
-	GridCellKM      float64               `json:"grid_cell_km,omitempty"`
-	IncrementalMode string                `json:"incremental_mode,omitempty"`
+	// MemoryCeilingBytes is the operator's memory ceiling for this job. It is
+	// compared against the same host memory-in-use figure the job monitor
+	// already reports, and crossing it makes the adaptive supervisor apply its
+	// severe-memory reduction: one worker, one browser, one page per browser.
+	// It can only ever lower a budget, and it is enforced by this application
+	// rather than by the browser, which exposes no memory limit hook.
+	//
+	// Zero means "no ceiling", which is exactly the behaviour every job had
+	// before the control existed. Enforcement additionally requires the job's
+	// adaptive resource safeguards to be on, because the supervisor that
+	// applies it only runs then.
+	MemoryCeilingBytes uint64   `json:"memory_ceiling_bytes,omitempty"`
+	LowDiskBytes       uint64   `json:"low_disk_bytes,omitempty"`
+	ProxyPoolID        string   `json:"proxy_pool_id,omitempty"`
+	Proxies            []string `json:"proxies"`
+	SavedAreaID        string   `json:"saved_area_id,omitempty"`
+	AreaGeoJSON        string   `json:"area_geojson,omitempty"`
+	GridBBox           string   `json:"grid_bbox,omitempty"`
+	GridCellKM         float64  `json:"grid_cell_km,omitempty"`
+	IncrementalMode    string   `json:"incremental_mode,omitempty"`
 	// Fields is the wizard's data-field selection. An empty slice means
 	// "retain, display and export everything", which is exactly the
 	// behaviour every job had before the step existed. The engine always
@@ -245,6 +270,13 @@ func (d *JobData) Validate() error {
 	}
 	if d.LowDiskBytes > 1<<40 {
 		return errors.New("low disk threshold must be at most 1 TiB")
+	}
+	if d.MemoryCeilingBytes > 0 &&
+		(d.MemoryCeilingBytes < MinimumMemoryCeilingBytes || d.MemoryCeilingBytes > MaximumMemoryCeilingBytes) {
+		return fmt.Errorf(
+			"memory ceiling must be between %d and %d MB when set",
+			MinimumMemoryCeilingBytes>>20, MaximumMemoryCeilingBytes>>20,
+		)
 	}
 	if d.CheckpointSeconds < 0 || d.CheckpointSeconds > MaximumCheckpointSeconds ||
 		(d.CheckpointSeconds > 0 && d.CheckpointSeconds < MinimumCheckpointSeconds) {

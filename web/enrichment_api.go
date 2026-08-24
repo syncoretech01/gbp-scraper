@@ -169,6 +169,8 @@ func enrichmentOptionsFromForm(r *http.Request) EnrichmentOptions {
 		AdaptiveTimeout:       r.FormValue("enrichment_adaptive_timeout") == "on",
 		Force:                 r.FormValue("enrichment_force") == "on",
 		StaleAfterHours:       formInteger(r.FormValue("enrichment_stale_hours")),
+		IncludeURLPatterns:    splitFilterList(r.FormValue("enrichment_include_url_patterns")),
+		ExcludeURLPatterns:    splitFilterList(r.FormValue("enrichment_exclude_url_patterns")),
 	}
 }
 

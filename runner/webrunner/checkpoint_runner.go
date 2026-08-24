@@ -318,7 +318,9 @@ func (w *webrunner) scrapeJobCheckpointed(
 
 	if job.Data.Adaptive {
 		resourceSample, _ := w.sampleWorkerResources(runCtx)
-		effectiveConcurrency = adaptiveWorkerConcurrency(desiredConcurrency, resourceSample, job.Data.LowDiskBytes)
+		effectiveConcurrency = adaptiveWorkerConcurrency(
+			desiredConcurrency, resourceSample, job.Data.LowDiskBytes, job.Data.MemoryCeilingBytes,
+		)
 	}
 
 	// Tasks run side by side, but the browser budget is divided between them, so
@@ -548,7 +550,20 @@ func defaultWorkerResourceSample(ctx context.Context, dataFolder string) (worker
 	}, nil
 }
 
-func adaptiveWorkerConcurrency(desired int, sample workerResourceSample, lowDiskThreshold uint64) int {
+// adaptiveWorkerConcurrency caps the worker concurrency a run may take from
+// the local measurements. Every rule here can only lower the desired value.
+//
+// memoryCeiling is the operator's optional memory ceiling. Crossing it is
+// treated exactly like the severe available-memory step: the run is pinned to
+// a single worker until the measurement falls back under the ceiling. A zero
+// ceiling is "no ceiling" and reproduces the behaviour every run had before
+// the control existed.
+func adaptiveWorkerConcurrency(
+	desired int,
+	sample workerResourceSample,
+	lowDiskThreshold uint64,
+	memoryCeiling uint64,
+) int {
 	if desired < 1 {
 		desired = 1
 	}
@@ -560,6 +575,9 @@ func adaptiveWorkerConcurrency(desired int, sample workerResourceSample, lowDisk
 		effective = 1
 	}
 	if lowDiskThreshold > 0 && sample.DiskFreeBytes < lowDiskThreshold*2 {
+		effective = 1
+	}
+	if memoryCeilingExceeded(memoryCeiling, sample) {
 		effective = 1
 	}
 

@@ -84,6 +84,10 @@ type Config struct {
 	UnsafeAllowPrivateNetwork bool
 	UserAgent                 string
 	DisposableDomains         []string
+	// URLPatterns is the operator's control over which same-origin candidate
+	// URLs the crawl may fetch beyond its entry page. The zero value filters
+	// nothing and reproduces the built-in heuristic exactly.
+	URLPatterns URLPatternSet
 }
 
 // Source records the page and method that produced a value.
@@ -249,5 +253,10 @@ type Result struct {
 	ComingSoon              bool            `json:"coming_soon"`
 	Placeholder             bool            `json:"placeholder"`
 	TemplateIndicators      []string        `json:"template_indicators,omitempty"`
-	Error                   string          `json:"error,omitempty"`
+	// URLPatterns records the operator-configured crawl URL patterns that were
+	// in force for this run and the candidate URLs they kept out. It is nil
+	// whenever no pattern was configured, so an unfiltered audit serialises
+	// exactly as it always did.
+	URLPatterns *URLPatternEvidence `json:"url_patterns,omitempty"`
+	Error       string              `json:"error,omitempty"`
 }

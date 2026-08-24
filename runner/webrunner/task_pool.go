@@ -129,6 +129,11 @@ type taskPoolRun struct {
 	baselineBrowsers int
 	baselinePages    int
 
+	// memoryCeilingActive remembers whether the operator's memory ceiling was
+	// exceeded at the previous sample, so the crossing is reported once when
+	// it happens and once when it clears rather than on every sample.
+	memoryCeilingActive atomic.Bool
+
 	// live carries the between-task reconfiguration state: extendable
 	// deadline, switchable proxy plan, and retry-current signalling.
 	live *liveRunState
@@ -949,10 +954,12 @@ func (w *webrunner) adaptTaskPool(run *taskPoolRun, sample workerResourceSample)
 	blocks := run.windowBlocks.Swap(0)
 	attempts := int(failures + successes)
 
+	ceiling := run.job.Data.MemoryCeilingBytes
+	w.recordMemoryCeilingTransition(run, sample, ceiling)
 	w.adaptBrowserBudget(run, sample)
 
 	allowedBrowsers := int(run.browserBudget.Load()) * int(max(1, run.workers.Load()))
-	headroom := recoveryHasHeadroom(sample, int(blocks), allowedBrowsers)
+	headroom := recoveryHasHeadroom(sample, int(blocks), allowedBrowsers, ceiling)
 
 	currentFailureBudget := int(run.failureBudget.Load())
 	failureBudget := decideFailureBudget(currentFailureBudget, desired, int(failures), int(successes))
@@ -974,7 +981,7 @@ func (w *webrunner) adaptTaskPool(run *taskPoolRun, sample workerResourceSample)
 
 	run.blockBudget.Store(int64(blockBudget))
 
-	resourceBudget := adaptiveWorkerConcurrency(desired, sample, run.job.Data.LowDiskBytes)
+	resourceBudget := adaptiveWorkerConcurrency(desired, sample, run.job.Data.LowDiskBytes, ceiling)
 	next := int64(min(resourceBudget, failureBudget, blockBudget))
 
 	previous := run.effectiveConcurrency.Load()
@@ -984,6 +991,7 @@ func (w *webrunner) adaptTaskPool(run *taskPoolRun, sample workerResourceSample)
 
 	run.effectiveConcurrency.Store(next)
 
+	ceilingExceeded := memoryCeilingExceeded(ceiling, sample)
 	reason := "resource pressure"
 
 	switch {
@@ -991,6 +999,11 @@ func (w *webrunner) adaptTaskPool(run *taskPoolRun, sample workerResourceSample)
 		reason = "platform block rate"
 	case failureBudget < resourceBudget:
 		reason = "task failure rate"
+	case ceilingExceeded:
+		reason = fmt.Sprintf(
+			"the configured memory ceiling of %d MB was reached at %d MB in use",
+			ceiling>>bytesPerMebibyteShift, sample.MemoryUsedBytes>>bytesPerMebibyteShift,
+		)
 	case next > previous:
 		reason = "recovered after a stable success window with measured head-room"
 	}
@@ -1011,6 +1024,9 @@ func (w *webrunner) adaptTaskPool(run *taskPoolRun, sample workerResourceSample)
 			"task_workers":           run.workers.Load(),
 			"cpu_percent":            sample.CPUPercent,
 			"memory_available_bytes": sample.MemoryAvailableBytes,
+			"memory_used_bytes":      sample.MemoryUsedBytes,
+			"memory_ceiling_bytes":   ceiling,
+			"memory_ceiling_reached": ceilingExceeded,
 			"disk_free_bytes":        sample.DiskFreeBytes,
 			"browser_processes":      sample.BrowserProcesses,
 			"recovery_headroom":      headroom,
@@ -1022,7 +1038,8 @@ func (w *webrunner) adaptTaskPool(run *taskPoolRun, sample workerResourceSample)
 // budgets while RAM pressure lasts and restores the configured values when it
 // clears. Every change is recorded with the measurement that caused it.
 func (w *webrunner) adaptBrowserBudget(run *taskPoolRun, sample workerResourceSample) {
-	pool, pages := adaptiveBrowserBudget(run.baselineBrowsers, run.baselinePages, sample)
+	ceiling := run.job.Data.MemoryCeilingBytes
+	pool, pages := adaptiveBrowserBudget(run.baselineBrowsers, run.baselinePages, sample, ceiling)
 
 	previousPool := run.browserBudget.Load()
 	previousPages := run.pagesBudget.Load()
@@ -1048,6 +1065,57 @@ func (w *webrunner) adaptBrowserBudget(run *taskPoolRun, sample workerResourceSa
 			"baseline_browser_pool":  run.baselineBrowsers,
 			"baseline_pages_browser": run.baselinePages,
 			"memory_available_bytes": sample.MemoryAvailableBytes,
+			"memory_used_bytes":      sample.MemoryUsedBytes,
+			"memory_ceiling_bytes":   ceiling,
+			"memory_ceiling_reached": memoryCeilingExceeded(ceiling, sample),
+			"browser_processes":      sample.BrowserProcesses,
+		},
+	)
+}
+
+// recordMemoryCeilingTransition reports each time the operator's memory
+// ceiling starts or stops being exceeded.
+//
+// It is edge-triggered on purpose. The supervisor samples every few seconds,
+// so a level-triggered event would fill the worker log with one identical line
+// per sample for as long as the pressure lasted. Recording only the two
+// transitions gives an operator the ceiling, the measurement that crossed it,
+// and the moment it cleared, which is what the event is for.
+//
+// A job without a ceiling records nothing at all.
+func (w *webrunner) recordMemoryCeilingTransition(
+	run *taskPoolRun,
+	sample workerResourceSample,
+	ceiling uint64,
+) {
+	if ceiling == 0 {
+		return
+	}
+
+	exceeded := memoryCeilingExceeded(ceiling, sample)
+	if exceeded == run.memoryCeilingActive.Swap(exceeded) {
+		return
+	}
+
+	message := fmt.Sprintf(
+		"Memory use fell back below the configured ceiling of %d MB (%d MB in use); budgets may recover",
+		ceiling>>bytesPerMebibyteShift, sample.MemoryUsedBytes>>bytesPerMebibyteShift,
+	)
+	if exceeded {
+		message = fmt.Sprintf(
+			"Memory use reached the configured ceiling of %d MB (%d MB in use); "+
+				"reducing to one worker and one browser with one page",
+			ceiling>>bytesPerMebibyteShift, sample.MemoryUsedBytes>>bytesPerMebibyteShift,
+		)
+	}
+
+	_ = w.svc.RecordJobWorkerEvent(
+		context.Background(), run.job.ID, "adaptive-performance", "information", message,
+		map[string]any{
+			"memory_ceiling_bytes":   ceiling,
+			"memory_used_bytes":      sample.MemoryUsedBytes,
+			"memory_available_bytes": sample.MemoryAvailableBytes,
+			"memory_ceiling_reached": exceeded,
 			"browser_processes":      sample.BrowserProcesses,
 		},
 	)

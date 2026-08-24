@@ -72,6 +72,13 @@ type JobEnrichmentOptions struct {
 	// ForceReaudit ignores StaleAfterHours and re-audits every business the
 	// job observed.
 	ForceReaudit bool `json:"force_reaudit,omitempty"`
+	// IncludeURLPatterns and ExcludeURLPatterns steer which same-origin pages
+	// the local audit visits beyond the homepage. They are glob-style path
+	// patterns, never regular expressions; see enrichment.URLPatternSet for
+	// the grammar and bounds. Both empty keeps the built-in heuristic exactly
+	// as it has always behaved.
+	IncludeURLPatterns []string `json:"include_url_patterns,omitempty"`
+	ExcludeURLPatterns []string `json:"exclude_url_patterns,omitempty"`
 }
 
 // DefaultEnrichmentStaleHours is the staleness window a job uses when none is
@@ -112,6 +119,8 @@ func EnrichmentOptionsForJob(data JobData) (EnrichmentOptions, bool, error) {
 		AdaptiveTimeout:       data.Enrichment.AdaptiveTimeout,
 		StaleAfterHours:       jobEnrichmentStaleHours(data),
 		Force:                 data.Enrichment.ForceReaudit,
+		IncludeURLPatterns:    data.Enrichment.IncludeURLPatterns,
+		ExcludeURLPatterns:    data.Enrichment.ExcludeURLPatterns,
 	}).normalized()
 
 	return options, true, err
@@ -147,6 +156,8 @@ func (options JobEnrichmentOptions) Validate() error {
 		CheckMX:               options.CheckMX,
 		Preclassify:           options.Preclassify,
 		AdaptiveTimeout:       options.AdaptiveTimeout,
+		IncludeURLPatterns:    options.IncludeURLPatterns,
+		ExcludeURLPatterns:    options.ExcludeURLPatterns,
 	}).normalized()
 	if err != nil {
 		return err
@@ -173,6 +184,15 @@ type EnrichmentOptions struct {
 	Preclassify           bool   `json:"preclassify,omitempty"`
 	Force                 bool   `json:"force,omitempty"`
 	StaleAfterHours       int    `json:"stale_after_hours,omitempty"`
+	// IncludeURLPatterns and ExcludeURLPatterns are the operator's glob-style
+	// path filters over the same-origin pages one audit may visit beyond the
+	// homepage. Excludes beat includes, an empty include list means "anything
+	// not excluded", and both empty keeps exactly the built-in heuristic. They
+	// are matched by enrichment.URLPatternSet, which is deliberately a glob
+	// rather than a regular expression so no configured pattern can hang a
+	// crawl. They round-trip into the immutable per-audit options evidence.
+	IncludeURLPatterns []string `json:"include_url_patterns,omitempty"`
+	ExcludeURLPatterns []string `json:"exclude_url_patterns,omitempty"`
 	// AdaptiveTimeout opts one enrichment run into spending its time budget
 	// where it pays: observed per-host latency and failure history shorten the
 	// per-request timeout, never lengthen it. Absent (the default) reproduces
@@ -215,6 +235,12 @@ func (options EnrichmentOptions) normalized() (EnrichmentOptions, error) {
 		options.MaxInternalLinkChecks = 0
 		options.CheckMX = false
 		options.CaptureScreenshot = false
+		// The probe fetches only the homepage, so it selects no supporting
+		// page and checks no internal link: crawl URL patterns have nothing to
+		// act on and are cleared rather than recorded as if they applied. See
+		// enrichment.preclassifyConfig for the full reasoning.
+		options.IncludeURLPatterns = nil
+		options.ExcludeURLPatterns = nil
 
 		if options.TimeoutSeconds <= 0 {
 			options.TimeoutSeconds = preclassifyDefaultTimeoutSeconds
@@ -280,7 +306,24 @@ func (options EnrichmentOptions) normalized() (EnrichmentOptions, error) {
 		return EnrichmentOptions{}, fmt.Errorf("%w: stale age must be between 0 and 8760 hours", ErrInvalidEnrichment)
 	}
 
+	patterns, err := options.urlPatterns().Normalized()
+	if err != nil {
+		return EnrichmentOptions{}, fmt.Errorf("%w: %w", ErrInvalidEnrichment, err)
+	}
+
+	options.IncludeURLPatterns = patterns.Include
+	options.ExcludeURLPatterns = patterns.Exclude
+
 	return options, nil
+}
+
+// urlPatterns bundles the two configured pattern lists into the matcher the
+// crawler consumes.
+func (options EnrichmentOptions) urlPatterns() enrichment.URLPatternSet {
+	return enrichment.URLPatternSet{
+		Include: options.IncludeURLPatterns,
+		Exclude: options.ExcludeURLPatterns,
+	}
 }
 
 func (options EnrichmentOptions) crawlerConfig() enrichment.Config {
@@ -293,6 +336,7 @@ func (options EnrichmentOptions) crawlerConfig() enrichment.Config {
 		DisableInternalLinkChecks: options.DisableInternalChecks,
 		Scope:                     enrichment.CrawlScope(options.Scope),
 		CheckMX:                   options.CheckMX,
+		URLPatterns:               options.urlPatterns(),
 	}
 }
 
@@ -344,11 +388,15 @@ type WebsiteAuditView struct {
 	Addresses               []enrichment.PostalAddress `json:"addresses,omitempty"`
 	SocialProfiles          []enrichment.SocialProfile `json:"social_profiles,omitempty"`
 	ContentAudit            enrichment.ContentAudit    `json:"content_audit"`
-	ScreenshotPath          string                     `json:"screenshot_path,omitempty"`
-	ErrorScreenshotPath     string                     `json:"error_screenshot_path,omitempty"`
-	Error                   string                     `json:"error,omitempty"`
-	StartedAt               time.Time                  `json:"started_at"`
-	CompletedAt             time.Time                  `json:"completed_at"`
+	// URLPatterns reports the crawl URL patterns that were in force for this
+	// run and the candidate URLs they kept out. It is absent for a run without
+	// patterns and for audits stored before patterns existed.
+	URLPatterns         *enrichment.URLPatternEvidence `json:"url_patterns,omitempty"`
+	ScreenshotPath      string                         `json:"screenshot_path,omitempty"`
+	ErrorScreenshotPath string                         `json:"error_screenshot_path,omitempty"`
+	Error               string                         `json:"error,omitempty"`
+	StartedAt           time.Time                      `json:"started_at"`
+	CompletedAt         time.Time                      `json:"completed_at"`
 }
 
 // EnrichmentBatch reports which durable tasks were created or reused.

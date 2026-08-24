@@ -184,7 +184,20 @@ Last updated: 2026-08-19
 - [x] Extract emails, visible phone numbers, contact pages, about pages, and social links.
 - [x] Collect page title, meta description, language, CMS, analytics tools, SSL state, HTTP status, redirect chain, and response time.
 - [x] Choose crawl scope: homepage only; homepage + contact; homepage + contact + about; or maximum page count.
-- [ ] Set page timeout, URL patterns, and whether to save screenshots on errors.
+- [x] Set page timeout, URL patterns, and whether to save screenshots on errors.
+  Page timeout is `enrichment_timeout_seconds`; error screenshots are
+  `shouldCaptureErrorScreenshot` / `captureAuditErrorScreenshot`. URL patterns
+  are `enrichment_include_url_patterns` / `enrichment_exclude_url_patterns`:
+  glob-style path filters (`*`, `?`, everything else literal), never regular
+  expressions, bounded at `enrichment.MaximumURLPatterns` patterns of
+  `MaximumURLPatternLength` bytes. Excludes beat includes; both empty keeps the
+  built-in heuristic exactly. They are applied in `selectSupportingPages`, to
+  redirect targets of supporting pages, and to the bounded internal-link probe,
+  and the effective patterns plus the URLs they kept out are stored as
+  `Result.URLPatterns` in the immutable audit evidence. The preclassify probe
+  clears them deliberately — it fetches only the homepage, so nothing is left
+  for them to act on, and its own redirect must be followed for reachability to
+  mean anything (`enrichment.preclassifyConfig`).
 
 ### Step 5 — Filters
 
@@ -202,6 +215,16 @@ Last updated: 2026-08-19
 - [x] **Deep:** Higher depth, conservative concurrency, durable partial writes, and optional enrichment.
 - [x] Advanced settings: depth, concurrency, browser-pool size, pages per browser, maximum runtime, maximum records, retry count, retry delay, page timeout, random delay, fast mode, extra reviews, visible/headless browser, and proxy pool.
 - [ ] Resource controls: disable images, fonts, or video where safe; cap memory usage; save failure screenshots; pause on low disk space.
+  Images (`JobData.LoadImages` -> `scrapemateapp.DisableImages`), failure
+  screenshots, and the low-disk pause (`JobData.LowDiskBytes`) all ship. Memory
+  capping now ships too: `JobData.MemoryCeilingBytes` (wizard field
+  `memory_ceiling_mb`, zero = today's behaviour) is enforced by the adaptive
+  supervisor, which pins the run to one worker and one browser with one page
+  while the sampled host memory in use is at or above the ceiling, vetoes every
+  recovery step, and records an `adaptive-performance` worker event naming the
+  ceiling and the measurement. It can only ever lower a budget. **Font and
+  video blocking remain unimplemented** — see `docs/technical-limitations.md`;
+  the box stays unticked until that clause is met.
 
 ### Step 7 — Review and estimate
 
