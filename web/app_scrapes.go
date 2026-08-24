@@ -210,6 +210,10 @@ func parseWizardJob(r *http.Request) (Job, jobruntime.State, error) {
 	if err != nil {
 		return Job{}, "", err
 	}
+	memoryCeilingMB, err := optionalFormInt(r, "memory_ceiling_mb")
+	if err != nil {
+		return Job{}, "", err
+	}
 	enrichmentMaxPages, err := optionalFormInt(r, "enrichment_max_pages")
 	if err != nil {
 		return Job{}, "", err
@@ -271,9 +275,12 @@ func parseWizardJob(r *http.Request) (Job, jobruntime.State, error) {
 		Adaptive:          r.FormValue("adaptive_performance") == "on",
 		CheckpointSeconds: max(0, checkpointSeconds),
 		LowDiskBytes:      uint64(max(0, lowDiskMB)) * 1024 * 1024,
-		ProxyPoolID:       strings.TrimSpace(r.FormValue("proxy_pool_id")),
-		SavedAreaID:       strings.TrimSpace(r.FormValue("saved_area_id")),
-		IncrementalMode:   strings.TrimSpace(r.FormValue("incremental_mode")),
+		// An empty field is zero, which means "no ceiling" and keeps exactly
+		// the behaviour a job had before the control existed.
+		MemoryCeilingBytes: uint64(max(0, memoryCeilingMB)) * 1024 * 1024,
+		ProxyPoolID:        strings.TrimSpace(r.FormValue("proxy_pool_id")),
+		SavedAreaID:        strings.TrimSpace(r.FormValue("saved_area_id")),
+		IncrementalMode:    strings.TrimSpace(r.FormValue("incremental_mode")),
 	}
 
 	fields, err := wizardFieldSelection(r)
@@ -322,6 +329,8 @@ func parseWizardJob(r *http.Request) (Job, jobruntime.State, error) {
 			StaleAfterHours:       enrichmentStaleHours,
 			ForceReaudit:          r.FormValue("enrichment_force_reaudit") == "on",
 			AdaptiveTimeout:       r.FormValue("enrichment_adaptive_timeout") == "on",
+			IncludeURLPatterns:    splitFilterList(r.FormValue("enrichment_include_url_patterns")),
+			ExcludeURLPatterns:    splitFilterList(r.FormValue("enrichment_exclude_url_patterns")),
 		}
 		// The stale-contacts rescan mode is the one incremental mode that
 		// changes work actually done, because the website audit is local. It

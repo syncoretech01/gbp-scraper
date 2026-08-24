@@ -117,10 +117,10 @@ The build provides the following working paths:
 - No job-engine pre-scrape filters for rating, review count, included/excluded
   categories, open/closed status, claimed status, or business-name conditions.
   Equivalent filters can be applied in Results after collection.
-- No crawler URL include/exclude patterns. Crawl targeting is fixed to the
-  contact/about page heuristics.
-- No failure screenshots, no memory cap, and no per-request font or video
-  blocking. Image blocking and the low-disk pause are implemented.
+- No per-request font or video blocking. Image blocking, the low-disk pause,
+  failure screenshots, crawler URL include/exclude patterns, and an
+  application-level memory ceiling all ship; see the browser-level resource
+  control entry below for what remains and why.
 
 ### 05: Map Explorer
 
@@ -504,10 +504,26 @@ differs, deliberately, and the equivalent is named here.
   task's results as one unit; the merge-deduplicated task restart makes the gap
   harmless in practice.
 - **Browser-level resource controls beyond image blocking** - font and video
-  blocking, and a hard per-browser memory cap. Image blocking and the low-disk
-  pause both ship; the remaining two would require forking the upstream
-  scraping engine's browser setup, which the compatibility constraint rules
-  out.
+  blocking, and a *hard per-browser* memory cap enforced by the browser itself.
+  Image blocking and the low-disk pause both ship. Font and video blocking, and
+  a browser-enforced memory limit, would each require extra Chromium launch
+  arguments or a route interceptor: `scrapemateapp` builds the launch args
+  internally and exposes only `DisableImages`, with no hook for either, so the
+  only way to add them is to fork the upstream engine, which the compatibility
+  constraint rules out.
+
+  What *does* ship is the application-level memory ceiling
+  (`JobData.MemoryCeilingBytes`, wizard field `memory_ceiling_mb`). It caps how
+  much work this application asks for rather than how much the browser may
+  allocate: while the sampled host memory in use is at or above the ceiling the
+  adaptive supervisor pins the run to one worker and one browser with one page,
+  vetoes every recovery step, and records an `adaptive-performance` worker
+  event naming the ceiling and the measurement. Zero means no ceiling, and it
+  can only ever lower a budget. Enforcement requires the job's adaptive
+  resource safeguards to be on, because that supervisor is what applies it.
+  This is a real, useful bound on the run's footprint, but it is not the same
+  guarantee as a per-process RSS limit: it throttles demand and cannot stop a
+  single browser process that is already running from growing.
 - **Large, stable residential/mobile proxy networks, CAPTCHA solving,
   high-confidence mailbox verification, and commercial company/person
   databases.** External paid services by nature.
