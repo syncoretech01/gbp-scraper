@@ -221,6 +221,25 @@
     scrollbar-gutter: stable;
 }
 
+/* Row virtualisation. On a large page only the rows covering the viewport are
+   in the document; two presentational spacer rows carry the height of
+   everything above and below, so the scrollbar still describes the whole page.
+   They must not inherit a data cell's padding or border, or the window would
+   drift by a few pixels per screen. Scroll anchoring is disabled while the
+   window is live: the browser correcting scrollTop after a swap fights the
+   window we just computed. */
+.results-workspace .results-table-wrap[data-virtual-rows="true"] { overflow-anchor: none; }
+
+.results-workspace .results-virtual-spacer,
+.results-workspace .results-virtual-spacer:hover { background: transparent; }
+
+.results-workspace .results-virtual-spacer > td {
+    padding: 0;
+    border: 0;
+    font-size: 0;
+    line-height: 0;
+}
+
 .results-workspace .results-table th {
     background: var(--surface-muted);
     box-shadow: inset 0 -1px 0 var(--border);

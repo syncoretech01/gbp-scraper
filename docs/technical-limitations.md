@@ -466,7 +466,11 @@ differs, deliberately, and the equivalent is named here.
   libraries were recommended for - progressive enhancement, modal/form state,
   a consistent visual system, a dense sortable/filterable/groupable data table
   with column management, and charts drawn as inline SVG/CSS - with no runtime
-  CDN (the strict CSP forbids one), no build tooling, and no npm.
+  CDN (the strict CSP forbids one), no build tooling, and no npm. Tabulator's
+  virtual scrolling is included in that: `web/static/js/app-results.js` renders
+  only the rows covering the scroll viewport plus an overscan buffer, carries
+  the remaining height in two spacer rows, and keeps `aria-rowcount` and
+  `aria-rowindex` describing the whole result set rather than the window.
 - **robfig/cron, Excelize.** The local scheduler (`web/schedules.go`) and the
   native XLSX writer (`web/export_xlsx.go`) provide the same capability without
   the dependency.

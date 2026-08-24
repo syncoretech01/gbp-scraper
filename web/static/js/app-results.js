@@ -13,7 +13,10 @@
     const maximumFrozenColumns = 4;
     const table = explorer.querySelector(".results-table");
     const tableBody = table && table.tBodies[0];
-    const tableWrap = explorer.querySelector(".results-table-wrap");
+    // The scroll container is declared in the markup because row
+    // virtualisation measures and listens on it rather than on the window.
+    const tableWrap = explorer.querySelector("[data-results-virtual-scroll]") ||
+        explorer.querySelector(".results-table-wrap");
     const tablePane = explorer.querySelector("[data-results-table-pane]");
     const mapPane = explorer.querySelector("[data-results-map-pane]");
     const mapFrame = explorer.querySelector("[data-results-map-frame]");
@@ -26,10 +29,20 @@
     const statusRegion = explorer.querySelector("[data-results-status]");
     const count = explorer.querySelector("[data-selection-count]");
     const bar = explorer.querySelector("[data-selection-bar]");
-    const checkboxes = () => Array.from(explorer.querySelectorAll('[name="result_ids"]'));
-    const resultRows = () => Array.from(explorer.querySelectorAll("[data-result-row]"));
+    const rowSelectionSelector = 'input[type="checkbox"][name="result_ids"]';
+    const checkboxes = () => Array.from(explorer.querySelectorAll(rowSelectionSelector));
+    // orderedRows is the authoritative list of every business row on this page,
+    // kept in visual order. Row virtualisation detaches the rows outside the
+    // scroll window, so a DOM query would only ever see the window; everything
+    // that means "the rows on this page" reads this list instead.
+    let orderedRows = Array.from(explorer.querySelectorAll("[data-result-row]"));
+    const resultRows = () => orderedRows;
+    // selectionCheckboxes is snapshotted here, while every row is still in the
+    // document, and then held by reference. A windowed-out checkbox keeps its
+    // checked state while it is detached, so the selection survives scrolling.
+    const selectionCheckboxes = checkboxes();
     const selectedRows = () => resultRows().filter((row) => {
-        const checkbox = row.querySelector('[name="result_ids"]');
+        const checkbox = row.querySelector(rowSelectionSelector);
         return checkbox && checkbox.checked;
     });
 
@@ -351,8 +364,26 @@
         return table && Array.from(table.querySelectorAll("thead [data-column]")).find((cell) => cell.dataset.column === key);
     }
 
+    // Cells are moved by reordering but never replaced, so each row's column
+    // index is built once. Without it every layout pass costs one scan of the
+    // row per column, which is what made a large page feel heavy.
+    const rowColumnIndex = new WeakMap();
+
     function cellFor(row, key) {
-        return Array.from(row.children).find((cell) => cell.dataset && cell.dataset.column === key);
+        let index = rowColumnIndex.get(row);
+        if (!index) {
+            index = new Map();
+            Array.from(row.children).forEach((cell) => {
+                if (cell.dataset && cell.dataset.column) index.set(cell.dataset.column, cell);
+            });
+            rowColumnIndex.set(row, index);
+        }
+
+        return index.get(key);
+    }
+
+    function columnCells(key) {
+        return [headerFor(key)].concat(resultRows().map((row) => cellFor(row, key))).filter(Boolean);
     }
 
     function reorderColumns() {
@@ -373,7 +404,7 @@
         layout.order.forEach((key) => {
             const visible = layout.visible.includes(key);
             const width = layout.widths[key];
-            const cells = [headerFor(key)].concat(resultRows().map((row) => cellFor(row, key))).filter(Boolean);
+            const cells = columnCells(key);
             cells.forEach((cell) => {
                 cell.hidden = !visible;
                 cell.style.width = width ? width + "px" : "";
@@ -383,57 +414,371 @@
         });
     }
 
+    // Frozen state is written onto every row on the page, windowed out or not,
+    // so a row that scrolls back in is already pinned correctly. Only the
+    // columns that stop being frozen are cleared: sweeping the whole table on
+    // every pointer move during a resize is what a large page cannot afford.
+    let appliedFrozenColumns = [];
+
     function applyFrozenColumns() {
         if (!table) return;
-        table.querySelectorAll("[data-column]").forEach((cell) => {
-            delete cell.dataset.frozen;
-            cell.style.left = "";
+        const frozen = layout.order.filter((key) =>
+            layout.visible.includes(key) && (key === "select" || layout.frozen.includes(key)));
+        appliedFrozenColumns.forEach((key) => {
+            if (frozen.includes(key)) return;
+            columnCells(key).forEach((cell) => {
+                delete cell.dataset.frozen;
+                cell.style.left = "";
+            });
         });
         let left = 0;
-        layout.order.filter((key) => layout.visible.includes(key)).forEach((key) => {
-            const frozen = key === "select" || layout.frozen.includes(key);
-            if (!frozen) return;
+        frozen.forEach((key) => {
             const header = headerFor(key);
-            const cells = [header].concat(resultRows().map((row) => cellFor(row, key))).filter(Boolean);
-            cells.forEach((cell) => {
+            columnCells(key).forEach((cell) => {
                 cell.dataset.frozen = "true";
                 cell.style.left = left + "px";
             });
             if (header) left += Math.ceil(header.getBoundingClientRect().width);
         });
+        appliedFrozenColumns = frozen;
     }
 
+    // groupRows rebuilds the row model — the visual order of the table, with
+    // group heading rows interleaved when grouping is on — and then hands it to
+    // the renderer. It never writes rows into the document itself; renderRows
+    // is the only place that does, so grouping and virtualisation cannot
+    // disagree about what is on screen.
     function groupRows() {
         if (!tableBody) return;
-        tableBody.querySelectorAll("[data-result-group]").forEach((row) => row.remove());
-        const rows = resultRows().sort((left, right) => Number(left.dataset.originalIndex) - Number(right.dataset.originalIndex));
+        const rows = resultRows().slice().sort((left, right) =>
+            Number(left.dataset.originalIndex) - Number(right.dataset.originalIndex));
+        const model = [];
         if (layout.group === "none") {
-            rows.forEach((row) => tableBody.appendChild(row));
+            rows.forEach((row) => model.push({ node: row, group: false }));
+        } else {
+            const groups = new Map();
+            rows.forEach((row) => {
+                const dataName = "group" + layout.group.charAt(0).toUpperCase() + layout.group.slice(1);
+                const label = String(row.dataset[dataName] || "").trim() || "Not specified";
+                if (!groups.has(label)) groups.set(label, []);
+                groups.get(label).push(row);
+            });
+            groups.forEach((groupRowsForLabel, label) => {
+                model.push({ node: groupHeadingRow(label, groupRowsForLabel.length), group: true });
+                groupRowsForLabel.forEach((row) => model.push({ node: row, group: false }));
+            });
+        }
+        rowModel = model;
+        orderedRows = model.filter((entry) => !entry.group).map((entry) => entry.node);
+        applyRowIndexes();
+        renderRows(true);
+    }
+
+    function groupHeadingRow(label, size) {
+        const heading = document.createElement("tr");
+        heading.dataset.resultGroup = "true";
+        heading.className = "results-group-row";
+        const cell = document.createElement("td");
+        cell.colSpan = Math.max(1, layout.visible.length);
+        cell.setAttribute("role", "rowheader");
+        const strong = document.createElement("strong");
+        strong.textContent = label;
+        const suffix = document.createElement("span");
+        suffix.textContent = " (" + size + ")";
+        cell.append(strong, suffix);
+        heading.appendChild(cell);
+
+        return heading;
+    }
+
+    // --- Row virtualisation -------------------------------------------------
+    // A large page is rendered through a scroll window: only the rows covering
+    // the viewport plus an overscan buffer are in the document, and two spacer
+    // rows carry the height of everything above and below so the scrollbar
+    // still describes the whole page. Row elements are moved, never rebuilt, so
+    // a row that scrolls out and back returns with the same markup, the same
+    // inline edits, and the same selection. Below virtualRowThreshold rows the
+    // table renders in full and none of this machinery does any work.
+    const virtualRowThreshold = 120;
+    const virtualOverscanRows = 12;
+    const virtualWindowLimit = 400;
+    const minimumVirtualRowHeight = 16;
+    const estimatedVirtualRowHeight = 34;
+
+    let rowModel = orderedRows.map((row) => ({ node: row, group: false }));
+    let rowOffsets = [];
+    let rowWindow = { start: 0, end: 0 };
+    let rowRenderFrame = 0;
+    let rowRenderRemeasure = false;
+    let virtualActive = false;
+    const rowMetrics = { row: estimatedVirtualRowHeight, group: estimatedVirtualRowHeight, measured: false };
+    const rowIndexBase = Math.max(0, Number(explorer.dataset.rowOffset) || 0);
+    const serverRowCount = table ? Math.max(0, Number(table.getAttribute("aria-rowcount")) || 0) : 0;
+    const selectionMirror = explorer.querySelector("[data-selection-mirror]");
+    const topSpacerRow = spacerRow("top");
+    const bottomSpacerRow = spacerRow("bottom");
+
+    function spacerRow(position) {
+        const row = document.createElement("tr");
+        row.className = "results-virtual-spacer";
+        row.dataset.virtualSpacer = position;
+        row.setAttribute("role", "presentation");
+        row.setAttribute("aria-hidden", "true");
+        const cell = document.createElement("td");
+        cell.setAttribute("role", "presentation");
+        row.appendChild(cell);
+
+        return row;
+    }
+
+    // rowIndexAtOffset returns the index of the row containing a pixel offset.
+    // offsets is the ascending prefix sum of row heights, one entry longer than
+    // the row model.
+    function rowIndexAtOffset(offsets, value) {
+        let low = 0;
+        let high = Math.max(0, offsets.length - 2);
+        while (low < high) {
+            const middle = (low + high + 1) >> 1;
+            if (offsets[middle] <= value) low = middle;
+            else high = middle - 1;
+        }
+
+        return low;
+    }
+
+    // computeRowWindow returns the half-open [start, end) slice of the row
+    // model that covers the viewport plus an overscan buffer. It is pure
+    // arithmetic over the offsets, so the window it produces can be proved
+    // bounded without a browser: end - start never exceeds maximumRows, however
+    // many rows the page holds.
+    function computeRowWindow(offsets, scrollTop, viewportHeight, overscan, maximumRows) {
+        const total = Array.isArray(offsets) ? Math.max(0, offsets.length - 1) : 0;
+        if (total <= 0) return { start: 0, end: 0 };
+        const buffer = Math.max(0, Math.floor(Number(overscan) || 0));
+        const limit = Math.max(1, Math.floor(Number(maximumRows) || 0));
+        const height = Math.max(0, Number(viewportHeight) || 0);
+        const top = Math.min(Math.max(0, Number(scrollTop) || 0), offsets[total]);
+        const first = rowIndexAtOffset(offsets, top);
+        const last = rowIndexAtOffset(offsets, top + height);
+        const start = Math.max(0, first - buffer);
+        const end = Math.min(total, Math.max(start + 1, last + 1 + buffer));
+
+        return { start: start, end: Math.min(end, start + limit) };
+    }
+
+    function rowEntryHeight(entry) {
+        return Math.max(minimumVirtualRowHeight, entry.group ? rowMetrics.group : rowMetrics.row);
+    }
+
+    function rebuildRowOffsets() {
+        const offsets = new Array(rowModel.length + 1);
+        offsets[0] = 0;
+        for (let index = 0; index < rowModel.length; index += 1) {
+            offsets[index + 1] = offsets[index] + rowEntryHeight(rowModel[index]);
+        }
+        rowOffsets = offsets;
+    }
+
+    // measureRowHeights reads one painted business row and, when grouping is
+    // on, one painted group row. Every row of a kind is the same height (one
+    // line per cell), so two measurements describe the whole page and no
+    // per-row layout is ever forced.
+    function measureRowHeights() {
+        if (!tableBody) return false;
+        let changed = false;
+        const sample = tableBody.querySelector("[data-result-row]");
+        if (sample) {
+            const height = Math.round(sample.getBoundingClientRect().height);
+            if (height >= minimumVirtualRowHeight && height !== rowMetrics.row) {
+                rowMetrics.row = height;
+                changed = true;
+            }
+        }
+        const heading = tableBody.querySelector("[data-result-group]");
+        if (heading) {
+            const height = Math.round(heading.getBoundingClientRect().height);
+            if (height >= minimumVirtualRowHeight && height !== rowMetrics.group) {
+                rowMetrics.group = height;
+                changed = true;
+            }
+        } else if (rowMetrics.group !== rowMetrics.row) {
+            rowMetrics.group = rowMetrics.row;
+            changed = true;
+        }
+        rowMetrics.measured = Boolean(sample);
+
+        return changed;
+    }
+
+    function setSpacerHeight(row, height) {
+        const cell = row.firstElementChild;
+        row.hidden = height <= 0;
+        if (!cell) return;
+        cell.colSpan = Math.max(1, layout.visible.length);
+        cell.style.height = Math.max(0, height) + "px";
+    }
+
+    // paintRowWindow reconciles the document against the requested window
+    // instead of rewriting the whole body. Only the rows that actually leave or
+    // enter are touched, so scrolling by one row costs one removal and one
+    // insertion. That matters for more than speed: a row that is never detached
+    // keeps the caret inside it, keeps an open inline edit, and gives the
+    // browser nothing above the viewport to correct the scroll position for.
+    function paintRowWindow(next) {
+        const total = rowModel.length;
+        setSpacerHeight(topSpacerRow, rowOffsets[next.start] || 0);
+        setSpacerHeight(bottomSpacerRow, (rowOffsets[total] || 0) - (rowOffsets[next.end] || 0));
+
+        const wanted = [topSpacerRow];
+        for (let index = next.start; index < next.end; index += 1) wanted.push(rowModel[index].node);
+        wanted.push(bottomSpacerRow);
+
+        const keep = new Set(wanted);
+        for (let child = tableBody.firstElementChild; child;) {
+            const following = child.nextElementSibling;
+            if (!keep.has(child)) tableBody.removeChild(child);
+            child = following;
+        }
+        // What survived is already in the wanted order, so walking the two in
+        // step inserts exactly the rows that are missing and moves nothing.
+        let anchor = tableBody.firstElementChild;
+        for (let index = 0; index < wanted.length; index += 1) {
+            const node = wanted[index];
+            if (node === anchor) {
+                anchor = anchor.nextElementSibling;
+                continue;
+            }
+            tableBody.insertBefore(node, anchor);
+        }
+
+        rowWindow = next;
+        ensureFocusableCell();
+        syncSelectionMirror();
+    }
+
+    // renderEveryRow is the safe degradation: a short page, and any page while
+    // it is being printed, holds every row exactly as the server sent it.
+    function renderEveryRow() {
+        if (!tableBody) return;
+        virtualActive = false;
+        if (tableWrap) delete tableWrap.dataset.virtualRows;
+        topSpacerRow.remove();
+        bottomSpacerRow.remove();
+        rowWindow = { start: 0, end: rowModel.length };
+        tableBody.replaceChildren.apply(tableBody, rowModel.map((entry) => entry.node));
+        syncSelectionMirror();
+    }
+
+    // renderRows is the only writer of table rows. It reads the scroll geometry
+    // once, decides the window, and then writes; a scroll never measures a row.
+    // A forced render (a layout, density, or grouping change) remeasures once
+    // afterwards because the new rows may be a different height.
+    function renderRows(force) {
+        if (!tableBody) return;
+        if (!tableWrap || rowModel.length < virtualRowThreshold) {
+            if (virtualActive || force) renderEveryRow();
             return;
         }
-        const groups = new Map();
-        rows.forEach((row) => {
-            const dataName = "group" + layout.group.charAt(0).toUpperCase() + layout.group.slice(1);
-            const label = String(row.dataset[dataName] || "").trim() || "Not specified";
-            if (!groups.has(label)) groups.set(label, []);
-            groups.get(label).push(row);
+        if (!virtualActive) {
+            virtualActive = true;
+            tableWrap.dataset.virtualRows = "true";
+        }
+        if (force || !rowMetrics.measured) measureRowHeights();
+        if (force || rowOffsets.length !== rowModel.length + 1) rebuildRowOffsets();
+        const next = computeRowWindow(rowOffsets, tableWrap.scrollTop, tableWrap.clientHeight,
+            virtualOverscanRows, virtualWindowLimit);
+        if (!force && next.start === rowWindow.start && next.end === rowWindow.end) return;
+        paintRowWindow(next);
+        if (!force) return;
+        if (measureRowHeights()) {
+            rebuildRowOffsets();
+            paintRowWindow(computeRowWindow(rowOffsets, tableWrap.scrollTop, tableWrap.clientHeight,
+                virtualOverscanRows, virtualWindowLimit));
+        }
+    }
+
+    function scheduleRowRender(remeasure) {
+        if (remeasure) rowRenderRemeasure = true;
+        if (rowRenderFrame) return;
+        rowRenderFrame = window.requestAnimationFrame(() => {
+            rowRenderFrame = 0;
+            const force = rowRenderRemeasure;
+            rowRenderRemeasure = false;
+            renderRows(force);
         });
-        groups.forEach((groupRowsForLabel, label) => {
-            const heading = document.createElement("tr");
-            heading.dataset.resultGroup = "true";
-            heading.className = "results-group-row";
-            const cell = document.createElement("td");
-            cell.colSpan = Math.max(1, layout.visible.length);
-            cell.setAttribute("role", "rowheader");
-            const strong = document.createElement("strong");
-            strong.textContent = label;
-            const suffix = document.createElement("span");
-            suffix.textContent = " (" + groupRowsForLabel.length + ")";
-            cell.append(strong, suffix);
-            heading.appendChild(cell);
-            tableBody.appendChild(heading);
-            groupRowsForLabel.forEach((row) => tableBody.appendChild(row));
+    }
+
+    // applyRowIndexes keeps the grid's row model true while it is windowed:
+    // every row carries its real position in the result set and aria-rowcount
+    // covers the whole set, so assistive technology never reports only the rows
+    // that happen to be painted. The header row is row 1, so a data row at
+    // model index i sits at rowIndexBase + i + 2.
+    function applyRowIndexes() {
+        if (!table) return;
+        const headerRow = table.tHead && table.tHead.rows[0];
+        if (headerRow) headerRow.setAttribute("aria-rowindex", "1");
+        rowModel.forEach((entry, index) => {
+            entry.node.setAttribute("aria-rowindex", String(rowIndexBase + index + 2));
         });
+        table.setAttribute("aria-rowcount",
+            String(Math.max(serverRowCount, rowIndexBase + rowModel.length) + 1));
+    }
+
+    // syncSelectionMirror keeps the bulk form honest while rows are windowed: a
+    // checkbox that is not in the document is not submitted, so every selected
+    // row outside the window contributes a hidden id in its place. It walks the
+    // cached checkbox list, not the row model, so a scroll frame costs one pass
+    // over the selection rather than one over the page, and it reads
+    // isConnected — a plain tree flag — rather than measuring anything.
+    function syncSelectionMirror() {
+        if (!selectionMirror) return;
+        const mirrored = [];
+        if (virtualActive) {
+            for (let index = 0; index < selectionCheckboxes.length; index += 1) {
+                const checkbox = selectionCheckboxes[index];
+                if (!checkbox.checked || checkbox.isConnected || !checkbox.value) continue;
+                const field = document.createElement("input");
+                field.type = "hidden";
+                field.name = "result_ids";
+                field.value = checkbox.value;
+                mirrored.push(field);
+            }
+        }
+        if (!mirrored.length && !selectionMirror.childElementCount) return;
+        selectionMirror.replaceChildren.apply(selectionMirror, mirrored);
+    }
+
+    // revealRow brings a row the window has scrolled out of the document back
+    // into it, so focus or a highlight has something to land on. It is a coarse
+    // jump from the offsets and nothing more: a row that is already painted is
+    // left exactly where it is, because scrollCellIntoView then positions it
+    // from its measured rectangle rather than from an estimate.
+    function revealRow(row) {
+        if (!virtualActive || !tableWrap || !row || row.isConnected) return;
+        const index = rowModel.findIndex((entry) => entry.node === row);
+        if (index < 0) return;
+        const headerHeight = table && table.tHead ? table.tHead.getBoundingClientRect().height : 0;
+        tableWrap.scrollTop = Math.max(0, (rowOffsets[index] || 0) - headerHeight);
+        renderRows(false);
+    }
+
+    // scrollCellIntoView is the grid's own scroll-into-view. The browser's does
+    // not know that the sticky header covers the top of the scroll viewport, so
+    // it will happily park a row underneath it; and because it runs after our
+    // window is painted, its correction and the window can disagree by a row
+    // and then chase each other. This measures the painted cell and moves the
+    // scroll by exactly the shortfall, which cannot drift.
+    function scrollCellIntoView(cell) {
+        if (!tableWrap || !cell || !cell.isConnected) return;
+        const headerHeight = table && table.tHead ? table.tHead.getBoundingClientRect().height : 0;
+        const wrapBox = tableWrap.getBoundingClientRect();
+        const cellBox = cell.getBoundingClientRect();
+        const top = cellBox.top - wrapBox.top;
+        const bottom = cellBox.bottom - wrapBox.top;
+        if (top < headerHeight) tableWrap.scrollTop -= Math.ceil(headerHeight - top);
+        else if (bottom > tableWrap.clientHeight) {
+            tableWrap.scrollTop += Math.ceil(bottom - tableWrap.clientHeight);
+        }
     }
 
     function setViewMode(mode) {
@@ -514,11 +859,14 @@
 
     function applyLayout(candidate, persist) {
         layout = normalizeLayout(candidate);
+        // Density is written before the rows are rendered: the renderer
+        // measures a painted row, so it has to measure it at the density the
+        // operator just chose.
+        if (table) table.dataset.density = layout.density;
+        if (tableWrap) tableWrap.dataset.density = layout.density;
         reorderColumns();
         applyColumnVisibilityAndWidths();
         groupRows();
-        if (table) table.dataset.density = layout.density;
-        if (tableWrap) tableWrap.dataset.density = layout.density;
         // The density control is a segmented radio group, so the stored value
         // selects an input rather than writing to a single control's value.
         explorer.querySelectorAll("[data-layout-density]").forEach((control) => {
@@ -530,6 +878,10 @@
         syncProfileSelect();
         renderColumnControls();
         window.requestAnimationFrame(applyFrozenColumns);
+        // Column widths and frozen offsets settle after the frame above, and a
+        // row can be a different height once they do, so the window is
+        // remeasured on the next frame rather than guessed at now.
+        scheduleRowRender(true);
         if (persist) persistCurrentLayout();
         syncSavedViewLayout();
         updateLayoutState();
@@ -622,10 +974,10 @@
         if (valueUnused) value.value = "";
     }
 
-    // Selection state is recomputed from a cached checkbox list and only the
-    // rows that actually changed are touched. Rebuilding the table on every
-    // click would thrash layout on a 250-row page for no benefit.
-    const selectionCheckboxes = checkboxes();
+    // Selection state is recomputed from the cached checkbox list snapshotted
+    // at the top of this script and only the rows that actually changed are
+    // touched. Rebuilding the table on every click would thrash layout on a
+    // large page for no benefit.
     const selectAllBox = explorer.querySelector("[data-select-all]");
     const requiresSelection = Array.from(explorer.querySelectorAll("[data-requires-selection]"));
 
@@ -648,6 +1000,7 @@
             selectAllBox.checked = selectionCount > 0 && selectionCount === selectionCheckboxes.length;
             selectAllBox.indeterminate = selectionCount > 0 && selectionCount < selectionCheckboxes.length;
         }
+        syncSelectionMirror();
     }
 
     function clearSelection() {
@@ -792,18 +1145,51 @@
         return layout.order.map((key) => cellFor(row, key)).filter((cell) => cell && !cell.hidden);
     }
 
+    // The grid keeps exactly one tab stop, tracked in a variable rather than
+    // swept out of the document on every move: sweeping would mean touching
+    // every cell on the page, which is the cost windowing exists to avoid.
+    // The tab stop always sits on a painted cell, so Tab can always reach the
+    // grid however far the operator has scrolled.
+    let focusedCell = null;
+
+    function setFocusedCell(cell) {
+        if (focusedCell === cell) return;
+        if (focusedCell) focusedCell.tabIndex = -1;
+        focusedCell = cell || null;
+        if (focusedCell) focusedCell.tabIndex = 0;
+    }
+
+    // The search starts at the window rather than at the top of the page, so
+    // recovering the tab stop after a scroll costs one row, not one page.
     function ensureFocusableCell() {
         if (!table) return;
-        const cells = resultRows().flatMap(visibleCells);
-        const current = cells.find((cell) => cell.tabIndex === 0);
-        cells.forEach((cell) => { cell.tabIndex = cell === current ? 0 : -1; });
-        if (!current && cells[0]) cells[0].tabIndex = 0;
+        if (focusedCell && !focusedCell.hidden && focusedCell.isConnected) return;
+        const from = virtualActive ? rowWindow.start : 0;
+        for (let index = from; index < rowModel.length; index += 1) {
+            const entry = rowModel[index];
+            if (entry.group || !entry.node.isConnected) continue;
+            const cell = visibleCells(entry.node)[0];
+            if (cell) {
+                setFocusedCell(cell);
+                return;
+            }
+        }
+        setFocusedCell(null);
     }
 
     function focusCell(cell) {
         if (!cell || cell.hidden) return;
-        table.querySelectorAll("tbody td[tabindex]").forEach((candidate) => { candidate.tabIndex = candidate === cell ? 0 : -1; });
-        cell.focus();
+        revealRow(cell.closest("[data-result-row]"));
+        setFocusedCell(cell);
+        if (!virtualActive) {
+            cell.focus();
+
+            return;
+        }
+        // While the rows are windowed the grid does its own scrolling, so the
+        // browser is asked to move focus and nothing else.
+        cell.focus({ preventScroll: true });
+        scrollCellIntoView(cell);
     }
 
     function handleTableKeydown(event) {
@@ -1095,7 +1481,7 @@
     // endpoint. The server coerces {"preclassify":true} into the bounded
     // profile, so this stays a pure client-side action.
     async function preclassifySelected(trigger) {
-        const ids = checkboxes().filter((item) => item.checked).map((item) => item.value).filter(Boolean);
+        const ids = selectionCheckboxes.filter((item) => item.checked).map((item) => item.value).filter(Boolean);
         if (!ids.length) {
             announce("Select at least one business first.", "error");
             return;
@@ -1292,7 +1678,7 @@
         });
         table.addEventListener("focusin", (event) => {
             const cell = event.target.closest && event.target.closest("td[data-column]");
-            if (cell) table.querySelectorAll("tbody td[tabindex]").forEach((candidate) => { candidate.tabIndex = candidate === cell ? 0 : -1; });
+            if (cell) setFocusedCell(cell);
         });
     }
 
@@ -1344,6 +1730,22 @@
             header.replaceChildren(button);
         });
     }
+
+    // Scrolling only ever schedules a frame; the frame does one geometry read
+    // and one write. Scroll anchoring is turned off while the rows are
+    // windowed because swapping the window under the browser would otherwise
+    // make it correct the scroll position we just honoured.
+    if (tableWrap) {
+        tableWrap.addEventListener("scroll", () => scheduleRowRender(false), { passive: true });
+        if (typeof window.ResizeObserver === "function") {
+            new window.ResizeObserver(() => scheduleRowRender(true)).observe(tableWrap);
+        } else {
+            window.addEventListener("resize", () => scheduleRowRender(true));
+        }
+    }
+    // Printing needs the whole page, not the window.
+    window.addEventListener("beforeprint", renderEveryRow);
+    window.addEventListener("afterprint", () => scheduleRowRender(true));
 
     explorer.querySelectorAll(".filter-row").forEach(updateFilterRow);
     restoreStoredProfile();

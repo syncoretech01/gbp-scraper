@@ -26,7 +26,11 @@ import (
 
 const (
 	defaultResultLimit = 25
-	maximumResultLimit = 250
+	// maximumResultLimit bounds one SearchBusinesses page. The Results table
+	// renders only the rows inside its scroll viewport, so it can ask for a
+	// larger page than the DOM could previously carry; every query behind it
+	// is still index backed and offset paged.
+	maximumResultLimit = 500
 )
 
 // businessCoreColumnSQL completes the specification's core column set for one

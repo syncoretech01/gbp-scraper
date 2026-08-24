@@ -18,7 +18,10 @@ test-agent-skill: ## tests the bundled AI agent workflow
 	node --test skills/google-maps-scraper/scripts/status-local.test.mjs
 	bash skills/google-maps-scraper/scripts/helpers_test.sh
 
-test: test-agent-skill ## runs the unit tests
+test-web-js: ## tests the browser-side logic of the local web application
+	node --test scripts/js/results-virtualisation.test.mjs
+
+test: test-agent-skill test-web-js ## runs the unit tests
 	go test -v -race -timeout 5m ./...
 
 test-cover: ## outputs the coverage statistics
