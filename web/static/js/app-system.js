@@ -41,12 +41,18 @@
         output.appendChild(wrap);
     }
 
-    async function run(includeNetwork, button) {
+    async function run(mode, button) {
+        const includeNetwork = mode === "network";
+        const includeBrowser = mode === "browser";
         panel.setAttribute("aria-busy", "true");
         button.disabled = true;
-        output.textContent = "Running bounded local diagnostics…";
+        output.textContent = includeBrowser
+            ? "Launching a headless browser to verify the runtime… this can take a few seconds"
+            : "Running bounded local diagnostics…";
         try {
-            const endpoint = panel.dataset.selfTestEndpoint + "?include_network=" + (includeNetwork ? "true" : "false");
+            const endpoint = panel.dataset.selfTestEndpoint +
+                "?include_network=" + (includeNetwork ? "true" : "false") +
+                "&include_browser=" + (includeBrowser ? "true" : "false");
             const response = await fetch(endpoint, {
                 method: "POST",
                 credentials: "same-origin",
@@ -93,7 +99,7 @@
     panel.addEventListener("click", (event) => {
         const button = event.target.closest("[data-system-self-test]");
         if (!button) return;
-        run(button.dataset.systemSelfTest === "network", button);
+        run(button.dataset.systemSelfTest, button);
     });
 
     document.addEventListener("click", (event) => {

@@ -65,6 +65,78 @@ but before every detail row was committed. The upgraded lifecycle labels this
 as **Partial**, preserves every committed row, and allows a restart. It does not
 mislabel a deadline-limited file as a fully completed job.
 
+## Browser runtime, memory, and concurrency
+
+Browser-mode scrapes (the default coverage mode) drive a real headless Chromium
+per task worker. Fast Mode is a pure-HTTP path that uses **no browser at all**,
+so everything in this section applies only to browser-mode runs.
+
+### Each concurrent browser costs memory
+
+Measured inside a container built from this repo's `Dockerfile`, one headless
+Chromium rendering a heavy local page holds roughly **300 MB of RSS**, and the
+cost scales linearly with the number of browsers:
+
+| Concurrent browsers | Total browser RSS | Per browser |
+| --- | --- | --- |
+| 1 | ~300 MB | ~300 MB |
+| 2 | ~590 MB | ~295 MB |
+| 4 | ~1.19 GB | ~297 MB |
+| 6 | ~1.80 GB | ~300 MB |
+| 8 | ~2.35 GB | ~294 MB |
+
+A live Google Maps tab is heavier than the synthetic page used for this
+measurement — expect **~450–750 MB per browser** in a real run once map tiles,
+consent frames, and network buffers are resident. Budget with the higher figure.
+
+The task pool runs several task workers side by side, and **each worker owns its
+own browser pool** (its own Chromium process). The number of simultaneous
+browsers is therefore `task workers × per-task browser pool`, not one. Four task
+workers at one browser each means four concurrent Chromium processes.
+
+### Maximum safe concurrent browsers
+
+Reserve ~1.5 GB for the OS, the Go service, and SQLite, then divide the rest by
+a conservative ~700 MB per live browser:
+
+| Host RAM | Safe concurrent browsers |
+| --- | --- |
+| 8 GB | 4–6 (fewer if other containers are running) |
+| 16 GB | 10–14 |
+| 32 GB | 20+ |
+
+The container is not given a memory limit, so browsers compete for host RAM with
+everything else on the machine. When RAM runs out, the Linux OOM killer
+terminates a Chromium process; the app sees "target closed" / "browser closed"
+and records a **`browser-failure`** worker event, then adaptive performance
+lowers concurrency. This is why a run can fail under load while a single-browser
+run of the same job succeeds. Keep concurrency within the table above for the
+host, or run Fast Mode, which needs no browser.
+
+### Shared memory (`shm_size`)
+
+`compose.yaml` sets `shm_size: "1gb"`. Chromium keeps transport and compositor
+buffers in shared memory, and the Docker default `/dev/shm` is only **64 MiB** —
+measured to be exhausted by about four concurrent browsers, which surfaces as a
+crashed renderer (another `browser-failure`). The scrape engine already passes
+`--disable-dev-shm-usage`, which redirects those buffers to `/tmp`; the larger
+`/dev/shm` is defense-in-depth for the Chromium subsystems that ignore that flag
+and future-proofs the setting. It is a tmpfs cap, so only the bytes actually
+used cost RAM. No `pids_limit` or file-descriptor `ulimits` are set: the runtime
+already reports `Max open files = 1048576` and `Max processes = unlimited`, so
+neither is the bottleneck.
+
+### Checking the browser at startup
+
+The **System** page self-test includes a **Launch a test browser** action (API:
+`POST /api/v1/system/self-test?include_browser=true`). It starts a real headless
+Chromium with the scrape engine's hardening flags and opens `about:blank`, so an
+operator learns whether browser-mode scrapes can run in this environment. A
+failure is reported as a warning, not a hard failure, because Fast Mode still
+works without a browser; the message names the usual causes (driver missing, too
+little memory, or a container `/dev/shm` that is too small). The check is opt-in
+so the lightweight self-test never spawns a browser unless asked.
+
 ## Responsible use
 
 Use conservative concurrency and comply with applicable laws, contractual
