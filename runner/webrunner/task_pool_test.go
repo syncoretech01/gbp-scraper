@@ -429,6 +429,10 @@ func TestConcurrentTaskPoolRunsEveryTaskOnceWithinItsBound(t *testing.T) {
 
 	service, dataFolder := newPoolTestService(t)
 	job := gridScrapeJob("22222222-2222-4222-8222-222222222222", 4)
+	// Fast mode keeps the full default fan-out, so this proves the pool
+	// mechanism genuinely overlaps four tasks. Browser-mode fan-out is capped
+	// to the memory budget and is covered by TestPlanTaskPoolCapsBrowserModeDefaultFanout.
+	job.Data.FastMode = true
 
 	if err := service.CreateWithState(context.Background(), &job, jobruntime.StateQueued); err != nil {
 		t.Fatalf("create job: %v", err)
