@@ -368,10 +368,19 @@ func TestPlanTaskPoolCapsBrowserModeDefaultFanout(t *testing.T) {
 		t.Fatalf("budget-one workers = %d, want 1", plan.Workers)
 	}
 
-	// An explicit TaskWorkers choice opts out of the cap entirely.
+	// An explicit TaskWorkers choice is honoured as the operator's intent, but
+	// never past the physical memory ceiling: with a budget of one, an explicit
+	// four is still lowered to one, because launching more single-process
+	// browsers than RAM holds is what OOM-killed the incident run regardless of
+	// who chose the number.
 	browser.Data.TaskWorkers = 4
-	if plan := planTaskPool(&browser, 8, 48, 1); plan.Workers != 4 {
-		t.Fatalf("explicit workers = %d, want the operator's 4 preserved", plan.Workers)
+	if plan := planTaskPool(&browser, 8, 48, 1); plan.Workers != 1 {
+		t.Fatalf("explicit workers over the memory budget = %d, want it lowered to 1", plan.Workers)
+	}
+
+	// With ample memory budget the explicit choice is preserved untouched.
+	if plan := planTaskPool(&browser, 8, 48, 8); plan.Workers != 4 {
+		t.Fatalf("explicit workers within budget = %d, want the operator's 4 preserved", plan.Workers)
 	}
 
 	// Fast mode passes a zero budget and keeps the full default fan-out.

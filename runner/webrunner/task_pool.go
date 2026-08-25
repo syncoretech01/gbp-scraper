@@ -128,6 +128,14 @@ func planTaskPool(job *web.Job, effectiveConcurrency, pendingTasks, browserWorke
 		if browserWorkerBudget > 0 && workers > browserWorkerBudget {
 			workers = browserWorkerBudget
 		}
+	} else if browserWorkerBudget > 0 && workers > browserWorkerBudget {
+		// An explicitly configured worker count is honoured as the operator's
+		// intent, but never past the physical memory ceiling: launching more
+		// single-process browsers than RAM can hold is what OOM-killed the
+		// incident run regardless of who chose the number. The budget only ever
+		// lowers an explicit value, never raises it, and Fast mode passes zero
+		// here so its higher fan-out is untouched.
+		workers = browserWorkerBudget
 	}
 
 	if workers > web.MaximumJobTaskWorkers {
