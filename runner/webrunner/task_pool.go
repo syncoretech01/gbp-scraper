@@ -611,7 +611,14 @@ func (w *webrunner) executeLeasedTask(
 		return true
 	}
 
-	failureKind := classifyTaskFailure(taskErr)
+	// classification carries both the coarse bucket scheduling acts on and the
+	// finer root cause (stream: harden/failure-classification). failureKind is
+	// the coarse value, unchanged from classifyTaskFailure, so every scheduling
+	// decision below behaves exactly as before; the fine kind and its
+	// sub-signal are surfaced on the worker event so an operator sees the real
+	// cause instead of a generic "browser-failure".
+	classification := classifyFailureKind(taskErr)
+	failureKind := classification.Coarse
 	if failureKind == "blocked" {
 		// Block evidence is measured here, where the attempt error is still
 		// available. It feeds the adaptive block rate without any extra
@@ -627,8 +634,11 @@ func (w *webrunner) executeLeasedTask(
 	w.recordProxyTaskOutcome(run, assignment, false, taskDuration, taskErr)
 	_ = w.svc.RecordJobWorkerEvent(
 		context.Background(), job.ID, failureKind, "warning",
-		fmt.Sprintf("Task attempt failed (%s); a retry gets a fresh browser context", failureKind),
-		map[string]any{"task_key": task.Key, "error": jobruntime.RedactString(taskErr.Error())},
+		fmt.Sprintf("Task attempt failed (%s: %s); a retry gets a fresh browser context", failureKind, classification.Fine),
+		classification.annotate(map[string]any{
+			"task_key": task.Key,
+			"error":    jobruntime.RedactString(taskErr.Error()),
+		}),
 	)
 
 	// A refusal is attributed to the exit it came through: the proxy is not

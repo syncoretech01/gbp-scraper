@@ -402,37 +402,17 @@ func (state *liveRunState) consumeRetryFlag(taskKey string) bool {
 	return true
 }
 
-// classifyTaskFailure maps an attempt error to the human-readable event type
-// the specification's log severities call for. Classification is heuristic
-// and only shapes reporting, never control flow beyond proxy attribution.
+// classifyTaskFailure maps an attempt error to the coarse event type the
+// specification's log severities call for. Classification is heuristic and only
+// shapes reporting, never control flow beyond proxy attribution.
+//
+// It now delegates to classifyFailureKind and returns only the coarse bucket,
+// so this value is byte-for-byte identical to the pre-refinement result the
+// adaptive controller, taskFailureBackoff and the web log-level map depend on.
+// Callers that also want the finer root cause call classifyFailureKind directly
+// and read the fine kind onto the worker event.
 func classifyTaskFailure(err error) string {
-	if err == nil {
-		return "task-failed"
-	}
-
-	message := strings.ToLower(err.Error())
-
-	switch {
-	// A refusal by the platform is checked first: it is the one class whose
-	// remedy is less parallelism rather than a retry, and adaptive
-	// performance measures its rate from exactly this classification.
-	case isBlockedFailure(message):
-		return "blocked"
-	case strings.Contains(message, "browser"), strings.Contains(message, "playwright"),
-		strings.Contains(message, "target closed"), strings.Contains(message, "driver"),
-		strings.Contains(message, "chromium"):
-		return "browser-failure"
-	case strings.Contains(message, "proxy"), strings.Contains(message, "socks"),
-		strings.Contains(message, "tunnel"), strings.Contains(message, "407"):
-		return "proxy-failure"
-	case strings.Contains(message, "timeout"), strings.Contains(message, "deadline"):
-		return "website-timeout"
-	case strings.Contains(message, "parse"), strings.Contains(message, "unmarshal"),
-		strings.Contains(message, "unexpected"):
-		return "parsing-failure"
-	default:
-		return "task-failed"
-	}
+	return classifyFailureKind(err).Coarse
 }
 
 // maximumTaskFailureBackoff caps every failure-class backoff.
