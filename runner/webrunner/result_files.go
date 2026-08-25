@@ -8,12 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"unicode"
 )
 
 type resultMergeSummary struct {
@@ -352,6 +350,20 @@ func sameCSVHeader(left, right []string) bool {
 	return true
 }
 
+// resultIdentityKeys derives the identity of one CSV row for merge dedup and
+// replacement. Only the authoritative Google identifiers (place_id, cid,
+// data_id) identify a distinct Maps listing; a row that carries none falls back
+// to a hash of its whole content so only byte-identical rows collapse.
+//
+// Weak attributes (phone, website domain, postal address) are deliberately not
+// identity here. Distinct listings routinely share them — franchise locations
+// share one website domain, tenants of one building share an address, and a
+// shared reception line spans several businesses — so folding rows on a weak
+// attribute silently discards distinct, already-committed businesses. The
+// authoritative SQLite entity resolution performs weak-signal deduplication
+// non-destructively (it records review candidates and honours keep-separate
+// rules) and is the correct place for it; the per-job CSV must preserve every
+// distinct listing it ever committed.
 func resultIdentityKeys(header, row []string) []string {
 	indexes := make(map[string]int, len(header))
 	for index, value := range header {
@@ -366,7 +378,7 @@ func resultIdentityKeys(header, row []string) []string {
 		return strings.TrimSpace(row[index])
 	}
 
-	keys := make([]string, 0, 8)
+	keys := make([]string, 0, 3)
 	appendKey := func(kind, normalized string) {
 		if normalized != "" {
 			keys = append(keys, kind+":"+normalized)
@@ -375,9 +387,6 @@ func resultIdentityKeys(header, row []string) []string {
 	appendKey("place", strings.ToLower(value("place_id")))
 	appendKey("cid", strings.ToLower(value("cid")))
 	appendKey("data", strings.ToLower(value("data_id")))
-	appendKey("phone", normalizeCSVPhone(value("phone")))
-	appendKey("domain", normalizeCSVDomain(value("website")))
-	appendKey("address", normalizeCSVText(value("address")))
 	if len(keys) == 0 {
 		hash := sha256.New()
 		for _, cell := range row {
@@ -392,52 +401,6 @@ func resultIdentityKeys(header, row []string) []string {
 
 func canonicalCSVHeader(value string) string {
 	return strings.ToLower(strings.TrimSpace(strings.TrimPrefix(value, "\ufeff")))
-}
-
-func normalizeCSVPhone(value string) string {
-	var normalized strings.Builder
-	for _, character := range value {
-		if unicode.IsDigit(character) {
-			normalized.WriteRune(character)
-		}
-	}
-	if normalized.Len() < 7 {
-		return ""
-	}
-
-	return normalized.String()
-}
-
-func normalizeCSVDomain(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	if !strings.Contains(value, "://") {
-		value = "https://" + value
-	}
-	parsed, err := url.Parse(value)
-	if err != nil || parsed.Hostname() == "" {
-		return ""
-	}
-
-	return strings.TrimPrefix(strings.ToLower(parsed.Hostname()), "www.")
-}
-
-func normalizeCSVText(value string) string {
-	var normalized strings.Builder
-	space := false
-	for _, character := range strings.ToLower(value) {
-		if unicode.IsLetter(character) || unicode.IsDigit(character) {
-			normalized.WriteRune(character)
-			space = false
-		} else if normalized.Len() > 0 && !space {
-			normalized.WriteByte(' ')
-			space = true
-		}
-	}
-
-	return strings.TrimSpace(normalized.String())
 }
 
 func identityIntersects(keys []string, set map[string]struct{}) bool {
