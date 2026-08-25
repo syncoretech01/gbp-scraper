@@ -353,6 +353,11 @@ func (s *Server) apiSystemSelfTest(w http.ResponseWriter, r *http.Request) {
 		renderLocalAPIError(w, http.StatusUnprocessableEntity, "invalid_self_test", err.Error())
 		return
 	}
+	includeBrowser, err := parseExplicitBrowserCheck(r.URL.Query().Get("include_browser"))
+	if err != nil {
+		renderLocalAPIError(w, http.StatusUnprocessableEntity, "invalid_self_test", err.Error())
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), systemSelfTestTimeout)
 	defer cancel()
 	startedAt := time.Now().UTC()
@@ -425,6 +430,20 @@ func (s *Server) apiSystemSelfTest(w http.ResponseWriter, r *http.Request) {
 	})
 
 	addCheck(browserRuntimeCheck(time.Now()))
+
+	if includeBrowser {
+		// The real launch pays a cold-start cost, so it gets its own longer
+		// deadline derived from the request rather than the lightweight
+		// self-test budget the cheap checks share.
+		browserCtx, cancelBrowser := context.WithTimeout(r.Context(), systemBrowserLaunchTimeout)
+		addCheck(browserLaunchCheck(browserCtx, s.browserProbe, time.Now()))
+		cancelBrowser()
+	} else {
+		addCheck(systemSelfTestCheck{
+			Name: "browser_launch", State: "skipped",
+			Message: "Browser launch check not requested; add include_browser=true to actually launch Chromium",
+		})
+	}
 
 	for _, target := range []struct {
 		name string
@@ -626,13 +645,20 @@ func newSystemCheck(name, state, message string, started time.Time) systemSelfTe
 }
 
 func parseExplicitNetworkCheck(value string) (bool, error) {
+	return parseExplicitBoolFlag(value, "include_network")
+}
+
+// parseExplicitBoolFlag parses an opt-in self-test query flag. An empty value
+// means "not requested" so a caller that omits the flag gets the offline-safe
+// default rather than an error.
+func parseExplicitBoolFlag(value, field string) (bool, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", "false", "0":
 		return false, nil
 	case "true", "1":
 		return true, nil
 	default:
-		return false, errors.New("include_network must be true or false")
+		return false, fmt.Errorf("%s must be true or false", field)
 	}
 }
 

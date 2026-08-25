@@ -57,7 +57,7 @@
     </section>
 
     <section class="card" aria-labelledby="self-test-title">
-        <div class="card-header"><div><h2 id="self-test-title">Local self-test</h2><p>Checks database reads/writes, output storage, memory, disk, worker heartbeat, the Playwright browser driver, proxy credentials, and optionally public network reachability. Driver and proxy results are advisory: only a real scrape proves a browser launch or end-to-end proxy access.</p></div><div class="table-actions"><button class="button" type="button" data-system-self-test="offline">Run offline checks</button><button class="button" type="button" data-system-self-test="network">Include internet and Maps</button></div></div>
+        <div class="card-header"><div><h2 id="self-test-title">Local self-test</h2><p>Checks database reads/writes, output storage, memory, disk, worker heartbeat, the Playwright browser driver, proxy credentials, and optionally public network reachability. "Launch a test browser" actually starts a headless Chromium with the scrape engine's hardening flags so you learn whether browser-mode scrapes can run here; it takes a few seconds. Proxy and network results stay advisory: only a real scrape proves end-to-end access.</p></div><div class="table-actions"><button class="button" type="button" data-system-self-test="offline">Run offline checks</button><button class="button" type="button" data-system-self-test="browser">Launch a test browser</button><button class="button" type="button" data-system-self-test="network">Include internet and Maps</button></div></div>
         <div class="card-body section-stack" data-system-test-results><p class="field-hint">Network checks run only when explicitly selected.</p></div>
     </section>
 

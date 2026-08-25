@@ -98,8 +98,11 @@ func TestSystemSelfTestIsOfflineByDefaultAndBoundsExplicitNetworkChecks(t *testi
 	if probe.reachCalls != 0 {
 		t.Fatalf("default self-test made %d network calls", probe.reachCalls)
 	}
+	// Three checks are skipped offline by default: the two network reachability
+	// probes and the opt-in browser launch, which only runs with
+	// include_browser=true so the lightweight self-test never spawns a browser.
 	if repository.writeChecks != 1 || !strings.Contains(recorder.Body.String(), `"network_requested":false`) ||
-		strings.Count(recorder.Body.String(), `"state":"skipped"`) != 2 {
+		strings.Count(recorder.Body.String(), `"state":"skipped"`) != 3 {
 		t.Fatalf("offline self-test response = %s; write checks = %d", recorder.Body.String(), repository.writeChecks)
 	}
 	leftovers, err := filepath.Glob(filepath.Join(service.dataFolder, ".system-self-test-*"))

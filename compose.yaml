@@ -15,6 +15,19 @@ services:
       - "127.0.0.1:8080:8080"
     volumes:
       - ./webdata:/gmapsdata
+    # Chromium keeps transport and compositor buffers in shared memory. The
+    # Docker default /dev/shm is only 64 MiB, which a handful of concurrent
+    # browsers exhaust, and an exhausted /dev/shm surfaces as a crashed renderer
+    # ("target closed") that the app classifies as a browser-failure. 1 GiB
+    # removes /dev/shm as a failure mode with generous head-room. It is a tmpfs
+    # cap, not a reservation: only bytes actually written cost RAM. See
+    # docs/local-workspace.md (browser runtime) for the per-browser memory
+    # budget the scheduler uses to bound concurrency.
+    shm_size: "1gb"
+    # No pids_limit / nofile ulimits are set on purpose: the runtime already
+    # reports Max open files = 1048576 and Max processes = unlimited, so neither
+    # is the constraint under concurrency. Memory is. Do not add limits without
+    # evidence they are being hit.
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8080/"]

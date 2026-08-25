@@ -31,6 +31,7 @@ type Server struct {
 	svc          *Service
 	csrfToken    string
 	systemProbe  localSystemProbe
+	browserProbe browserLaunchProbe
 	apiRates     apiRateState
 	apiRateLimit apiAtomicInt64
 	auth         authState
@@ -50,11 +51,12 @@ func New(svc *Service, addr string) (*Server, error) {
 	}
 
 	ans := Server{
-		svc:         svc,
-		tmpl:        make(map[string]*template.Template),
-		csrfToken:   csrfToken,
-		systemProbe: newDefaultLocalSystemProbe(),
-		hooks:       NewAutomationHooks(),
+		svc:          svc,
+		tmpl:         make(map[string]*template.Template),
+		csrfToken:    csrfToken,
+		systemProbe:  newDefaultLocalSystemProbe(),
+		browserProbe: defaultBrowserLaunchProbe,
+		hooks:        NewAutomationHooks(),
 		srv: &http.Server{
 			Addr:              addr,
 			ReadHeaderTimeout: 10 * time.Second,
