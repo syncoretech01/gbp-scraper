@@ -35,21 +35,79 @@ const (
 	// pending task is deferred by failure-class backoff. The pool must
 	// neither spin nor conclude the plan is drained in that window.
 	backedOffClaimWait = 2 * time.Second
+	// adaptiveRecoveryCooldown is how long the adaptive controller must wait
+	// after any reduction before it may recover a concurrency step. It is the
+	// hysteresis that stops the budget oscillating: a cascade collapses the
+	// budget fast, but the run then holds low for a settling window before it
+	// begins its slow, one-step-per-clean-window climb back. [harden/scheduler-adaptive]
+	adaptiveRecoveryCooldown = 30 * time.Second
 )
 
 // taskPoolPlan divides one job's resource budget between parallel tasks.
 //
-// Running tasks side by side must not multiply browser usage: the job's
-// configured concurrency and browser pool are shared out between workers, so a
-// pool of four workers each gets a quarter of the budget. Parallelism buys
-// resume granularity and latency, not extra capacity.
+// # The concurrency model, end to end
+//
+// A checkpointed job is a durable plan of tasks (one Maps query, or one grid
+// cell of a query). The pool runs that plan with a fixed set of task WORKERS.
+// The relationships that decide the real load on Google Maps are:
+//
+//   - Workers: how many tasks run side by side (taskPoolPlan.Workers). Fixed
+//     for the whole run — leases and browser shares stay predictable — and set
+//     once here at plan time. The adaptive controller never changes it.
+//   - Per-task worker concurrency (PerTaskConcurrency): the scrapemate
+//     Concurrency each worker's app runs at = effectiveConcurrency / Workers.
+//     This is the number of concurrent Maps page operations one worker drives.
+//   - Per-task browser pool (PerTaskBrowserPool): the Playwright browser pool
+//     size each worker's app is given. Zero means "let the engine derive it".
+//   - Pages per browser (job.Data.PagesBrowser): how many pages share one
+//     browser context inside a worker's app.
+//   - Adaptive concurrency: between tasks, effectiveConcurrency (and the
+//     per-task browser/page budgets) may shrink under measured pressure and
+//     recover cautiously. It changes what NEW tasks take; it cannot change the
+//     worker count.
+//
+// The load that reaches the platform is therefore:
+//
+//	simultaneous Maps operations = Workers * PerTaskConcurrency  (== effectiveConcurrency)
+//	simultaneous browsers        = Workers * browsersPerWorker
+//
+// where each worker runs its OWN scrapemate app and therefore its OWN browser
+// pool, and browsersPerWorker is what that app derives from its config —
+// PerTaskBrowserPool when set, else ceil(PerTaskConcurrency / PagesBrowser).
+// Because a browser pool never rounds below one browser, browsersPerWorker >= 1
+// always, so:
+//
+//	simultaneous browsers >= Workers   (always, for any concurrency budget)
+//
+// This is the crux of the incident. A default browser-mode grid job resolved to
+// effectiveConcurrency 4 and Workers 4 (defaultTaskWorkers), giving
+// PerTaskConcurrency 4/4 = 1 — the log line "Running 4 task(s) in parallel with
+// 1 worker concurrency each" — and therefore FOUR independent --single-process
+// Chromium browsers under Docker. The adaptive controller then lowered
+// effectiveConcurrency, but lowering concurrency cannot lower the browser count
+// below Workers, so all four browsers stayed alive and the cascade continued.
+// Bounding the browser total is only possible by bounding Workers, which is why
+// browserWorkerBudget is applied here rather than left to adaptation.
+//
+// Dividing the budget between workers does NOT divide browsers: eight
+// concurrency across one worker is one app with its own coherent pool, while
+// eight concurrency across four workers is four apps and at least four browsers.
+// Parallel tasks buy resume granularity and latency; in browser mode they also
+// multiply browser processes, so the default fan-out is capped for browser mode.
 type taskPoolPlan struct {
 	Workers            int
 	PerTaskConcurrency int
 	PerTaskBrowserPool int
 }
 
-func planTaskPool(job *web.Job, effectiveConcurrency, pendingTasks int) taskPoolPlan {
+// planTaskPool resolves the worker/concurrency/browser split for one run.
+//
+// browserWorkerBudget caps the DEFAULT worker count for browser-mode jobs to
+// what the host's measured memory can support (see browserModeWorkerBudget). It
+// applies only when the job leaves TaskWorkers unset: an explicit choice is
+// preserved exactly, and Fast mode passes zero so its pure-HTTP throughput is
+// never penalised for the browser problem.
+func planTaskPool(job *web.Job, effectiveConcurrency, pendingTasks, browserWorkerBudget int) taskPoolPlan {
 	if effectiveConcurrency < 1 {
 		effectiveConcurrency = 1
 	}
@@ -59,6 +117,16 @@ func planTaskPool(job *web.Job, effectiveConcurrency, pendingTasks int) taskPool
 		workers = defaultTaskWorkers
 		if effectiveConcurrency < workers {
 			workers = effectiveConcurrency
+		}
+
+		// Browser mode: every worker is a separate browser pool that never
+		// drops below one browser, so the default fan-out sets the floor on
+		// simultaneous browsers. Cap it to what the host can support instead of
+		// silently launching defaultTaskWorkers single-process Chromium
+		// browsers the way the incident run did. Fast mode passes zero here and
+		// keeps the full default fan-out.
+		if browserWorkerBudget > 0 && workers > browserWorkerBudget {
+			workers = browserWorkerBudget
 		}
 	}
 
@@ -118,6 +186,12 @@ type taskPoolRun struct {
 	// budget faster than ordinary failures and veto every recovery step.
 	windowBlocks atomic.Int64
 	blockBudget  atomic.Int64
+
+	// lastReductionAt is the wall-clock nanosecond of the most recent
+	// concurrency reduction. It gates recovery: no step is taken back until
+	// adaptiveRecoveryCooldown has elapsed since the last decrease, which is
+	// the hysteresis that keeps the budget from oscillating around a cascade.
+	lastReductionAt atomic.Int64
 
 	// browserBudget and pagesBudget are the per-task browser pool and
 	// pages-per-browser values new tasks take. They start at the plan's
@@ -181,6 +255,18 @@ func (run *taskPoolRun) currentStop() jobruntime.StopReason {
 	defer run.stopMu.Unlock()
 
 	return run.stopReason
+}
+
+// recoveryCooldownElapsed reports whether enough time has passed since the last
+// concurrency reduction for a recovery step to be allowed. A run that has never
+// reduced is free to recover immediately.
+func (run *taskPoolRun) recoveryCooldownElapsed() bool {
+	last := run.lastReductionAt.Load()
+	if last == 0 {
+		return true
+	}
+
+	return time.Since(time.Unix(0, last)) >= adaptiveRecoveryCooldown
 }
 
 // mergeTaskOutput folds one finished task's rows into the job CSV under the
@@ -961,12 +1047,18 @@ func (w *webrunner) adaptTaskPool(run *taskPoolRun, sample workerResourceSample)
 	allowedBrowsers := int(run.browserBudget.Load()) * int(max(1, run.workers.Load()))
 	headroom := recoveryHasHeadroom(sample, int(blocks), allowedBrowsers, ceiling)
 
+	// Recovery is edge-triggered on a window that is clean on EVERY adverse
+	// axis, has measured resource head-room, and lies past the cooldown that
+	// followed the last reduction. Any failure or block in the window — not
+	// only a block — vetoes taking capacity back, so the controller can never
+	// increase concurrency while a failure or block cascade is still active.
+	cleanWindow := failures == 0 && blocks == 0
+	mayRecover := cleanWindow && headroom && run.recoveryCooldownElapsed()
+
 	currentFailureBudget := int(run.failureBudget.Load())
 	failureBudget := decideFailureBudget(currentFailureBudget, desired, int(failures), int(successes))
 
-	// A clean failure window is not on its own a reason to take capacity
-	// back: CPU, RAM, browser count, and the block rate must all agree.
-	if failureBudget > currentFailureBudget && !headroom {
+	if failureBudget > currentFailureBudget && !mayRecover {
 		failureBudget = currentFailureBudget
 	}
 
@@ -975,7 +1067,7 @@ func (w *webrunner) adaptTaskPool(run *taskPoolRun, sample workerResourceSample)
 	currentBlockBudget := int(run.blockBudget.Load())
 	blockBudget := decideBlockBudget(currentBlockBudget, desired, int(blocks), attempts)
 
-	if blockBudget > currentBlockBudget && !headroom {
+	if blockBudget > currentBlockBudget && !mayRecover {
 		blockBudget = currentBlockBudget
 	}
 
@@ -987,6 +1079,13 @@ func (w *webrunner) adaptTaskPool(run *taskPoolRun, sample workerResourceSample)
 	previous := run.effectiveConcurrency.Load()
 	if next == previous {
 		return
+	}
+
+	// A reduction starts the recovery cooldown, so the run settles at the lower
+	// budget before it may climb again. This is the hysteresis that stops the
+	// budget oscillating window-to-window around a cascade.
+	if next < previous {
+		run.lastReductionAt.Store(time.Now().UnixNano())
 	}
 
 	run.effectiveConcurrency.Store(next)
@@ -1124,11 +1223,17 @@ func (w *webrunner) recordMemoryCeilingTransition(
 // decideFailureBudget is the pure adaptation rule, kept separate so it can be
 // tested exhaustively.
 //
-//   - A window with at least four attempts where half or more failed halves
-//     the budget (never below one).
-//   - A window with at least three attempts and zero failures recovers one
-//     step toward the desired concurrency.
-//   - Anything else (quiet or mixed windows) leaves the budget unchanged.
+//   - A window with at least adaptiveFailureBurst failed attempts that form a
+//     majority halves the budget (never below one). Keying the trigger on a
+//     small burst of failures rather than a large window means a
+//     browser-failure cascade collapses concurrency on the first window it
+//     appears, even when task-failure backoff keeps that window small.
+//   - A window with at least adaptiveRecoveryAttempts attempts and zero
+//     failures recovers one step toward the desired concurrency.
+//   - Anything else (quiet or mixed-but-tolerable windows) leaves it unchanged.
+//
+// Decay is always faster than recovery: a bad window halves, a clean one adds a
+// single step.
 func decideFailureBudget(current, desired, failures, successes int) int {
 	if current < 1 {
 		current = 1
@@ -1141,9 +1246,9 @@ func decideFailureBudget(current, desired, failures, successes int) int {
 	attempts := failures + successes
 
 	switch {
-	case attempts >= 4 && failures*2 >= attempts:
+	case failures >= adaptiveFailureBurst && failures*2 >= attempts:
 		return max(1, current/2)
-	case attempts >= 3 && failures == 0 && current < desired:
+	case attempts >= adaptiveRecoveryAttempts && failures == 0 && current < desired:
 		return current + 1
 	default:
 		return current

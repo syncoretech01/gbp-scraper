@@ -217,7 +217,9 @@ func TestTaskPoolPlanDividesTheBudgetInsteadOfMultiplyingIt(t *testing.T) {
 	job.Data.Concurrency = 8
 	job.Data.BrowserPool = 8
 
-	plan := planTaskPool(&job, 8, 32)
+	// A zero browser-worker budget is "no cap": an explicit TaskWorkers choice
+	// is always preserved, so this exercises the division math on its own.
+	plan := planTaskPool(&job, 8, 32, 0)
 
 	if plan.Workers != 4 {
 		t.Fatalf("workers = %d, want 4", plan.Workers)
@@ -234,22 +236,171 @@ func TestTaskPoolPlanDividesTheBudgetInsteadOfMultiplyingIt(t *testing.T) {
 	}
 
 	// A plan never spawns more workers than there is work for.
-	if narrow := planTaskPool(&job, 8, 2); narrow.Workers != 2 {
+	if narrow := planTaskPool(&job, 8, 2, 0); narrow.Workers != 2 {
 		t.Fatalf("workers for two pending tasks = %d, want 2", narrow.Workers)
 	}
 
 	// An unset value still yields a usable, bounded default.
 	job.Data.TaskWorkers = 0
 
-	if fallback := planTaskPool(&job, 8, 32); fallback.Workers < 1 || fallback.Workers > defaultTaskWorkers {
+	if fallback := planTaskPool(&job, 8, 32, 0); fallback.Workers < 1 || fallback.Workers > defaultTaskWorkers {
 		t.Fatalf("default workers = %d, want 1..%d", fallback.Workers, defaultTaskWorkers)
 	}
 
 	// The bound is enforced even if a job asks for more.
 	job.Data.TaskWorkers = web.MaximumJobTaskWorkers + 50
 
-	if capped := planTaskPool(&job, 64, 1000); capped.Workers != web.MaximumJobTaskWorkers {
+	if capped := planTaskPool(&job, 64, 1000, 0); capped.Workers != web.MaximumJobTaskWorkers {
 		t.Fatalf("capped workers = %d, want %d", capped.Workers, web.MaximumJobTaskWorkers)
+	}
+}
+
+// browsersPerWorker mirrors scrapemate's derivedBrowserPoolSize so a test can
+// compute the real number of simultaneous browsers a plan launches: a worker
+// with an explicit per-task pool uses it, otherwise the engine derives
+// ceil(concurrency / pagesPerBrowser), and a pool never rounds below one.
+func browsersPerWorker(plan taskPoolPlan, pagesPerBrowser int) int {
+	if plan.PerTaskBrowserPool > 0 {
+		return plan.PerTaskBrowserPool
+	}
+
+	if pagesPerBrowser < 1 {
+		pagesPerBrowser = 1
+	}
+
+	return (plan.PerTaskConcurrency + pagesPerBrowser - 1) / pagesPerBrowser
+}
+
+// TestPlanTaskPoolSimultaneousBrowsers proves the load model the incident
+// exposed: simultaneous Maps operations are Workers*PerTaskConcurrency, and
+// simultaneous browsers are Workers*browsersPerWorker. The fan-out multiplies
+// browsers because four independent apps cannot share a browser pool the way one
+// app can, so capping the default fan-out is what bounds the browser total.
+func TestPlanTaskPoolSimultaneousBrowsers(t *testing.T) {
+	t.Parallel()
+
+	// The incident's default browser-mode grid job — the wizard "balanced"
+	// preset: concurrency 4, browser pool 2, two pages per browser, the default
+	// fan-out, and no browser-worker cap. It resolves to the exact log line
+	// "Running 4 task(s) in parallel with 1 worker concurrency each": four
+	// independent single-process Chromium browsers, one page each.
+	incident := gridScrapeJob("incident", 0)
+	incident.Data.Concurrency = 4
+	incident.Data.BrowserPool = 2
+	incident.Data.PagesBrowser = 2
+
+	uncapped := planTaskPool(&incident, 4, 48, 0)
+	if uncapped.Workers != defaultTaskWorkers || uncapped.PerTaskConcurrency != 1 {
+		t.Fatalf("uncapped plan = %+v, want %d workers at 1 concurrency each",
+			uncapped, defaultTaskWorkers)
+	}
+
+	if ops := uncapped.Workers * uncapped.PerTaskConcurrency; ops != 4 {
+		t.Fatalf("simultaneous Maps operations = %d, want 4", ops)
+	}
+
+	if browsers := uncapped.Workers * browsersPerWorker(uncapped, incident.Data.PagesBrowser); browsers != 4 {
+		t.Fatalf("simultaneous browsers = %d, want the four the incident launched", browsers)
+	}
+
+	// Under a memory-derived cap of one or two browser workers, the same job's
+	// browser total drops to two: fewer, coherently pooled apps instead of four
+	// independent single-process browsers. Two workers pack two apps of one
+	// browser; one worker packs four pages into one app's pool of two.
+	for _, budget := range []int{1, 2} {
+		capped := planTaskPool(&incident, 4, 48, budget)
+		if capped.Workers > budget {
+			t.Fatalf("budget %d: workers = %d, want at most the budget", budget, capped.Workers)
+		}
+
+		if browsers := capped.Workers * browsersPerWorker(capped, incident.Data.PagesBrowser); browsers != 2 {
+			t.Fatalf("budget %d: simultaneous browsers = %d, want 2 (down from 4)", budget, browsers)
+		}
+	}
+
+	// The simultaneous browser count is never below the worker count, whatever
+	// the concurrency budget: this is why the cap has to act on workers, and why
+	// the adaptive controller — which only lowers concurrency, never the worker
+	// count — cannot on its own reduce a browser-failure cascade.
+	for _, workers := range []int{1, 2, 3, 4} {
+		job := gridScrapeJob("floor", workers)
+		job.Data.Concurrency = 1
+		job.Data.BrowserPool = 0
+		job.Data.PagesBrowser = 8
+
+		plan := planTaskPool(&job, 1, 48, 0)
+		if got := plan.Workers * browsersPerWorker(plan, job.Data.PagesBrowser); got < plan.Workers {
+			t.Fatalf("workers=%d: simultaneous browsers %d fell below the worker floor %d",
+				workers, got, plan.Workers)
+		}
+	}
+}
+
+// TestPlanTaskPoolCapsBrowserModeDefaultFanout proves the reliability fix: an
+// unset TaskWorkers in browser mode is bounded by the browser-worker budget,
+// an explicit choice is preserved, and Fast mode is never penalised.
+func TestPlanTaskPoolCapsBrowserModeDefaultFanout(t *testing.T) {
+	t.Parallel()
+
+	browser := gridScrapeJob("cap", 0)
+	browser.Data.Concurrency = 8
+	browser.Data.BrowserPool = 0
+
+	// Unset workers, browser mode, memory budget of two: the default fan-out of
+	// four is capped to two.
+	if plan := planTaskPool(&browser, 8, 48, 2); plan.Workers != 2 {
+		t.Fatalf("capped default workers = %d, want 2", plan.Workers)
+	}
+
+	// A tighter budget of one pins it to the single-app topology.
+	if plan := planTaskPool(&browser, 8, 48, 1); plan.Workers != 1 {
+		t.Fatalf("budget-one workers = %d, want 1", plan.Workers)
+	}
+
+	// An explicit TaskWorkers choice opts out of the cap entirely.
+	browser.Data.TaskWorkers = 4
+	if plan := planTaskPool(&browser, 8, 48, 1); plan.Workers != 4 {
+		t.Fatalf("explicit workers = %d, want the operator's 4 preserved", plan.Workers)
+	}
+
+	// Fast mode passes a zero budget and keeps the full default fan-out.
+	fast := gridScrapeJob("fast", 0)
+	fast.Data.FastMode = true
+	fast.Data.Concurrency = 8
+	if plan := planTaskPool(&fast, 8, 48, 0); plan.Workers != defaultTaskWorkers {
+		t.Fatalf("fast-mode workers = %d, want the full default %d", plan.Workers, defaultTaskWorkers)
+	}
+}
+
+// TestBrowserModeWorkerBudgetIsMemoryDerivedAndBounded proves the budget floors
+// at one, is capped, and falls back safely when memory is unknown.
+func TestBrowserModeWorkerBudgetIsMemoryDerivedAndBounded(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		available uint64
+		want      int
+	}{
+		{name: "unknown memory falls back to one", available: 0, want: safeBrowserWorkerFallback},
+		{name: "tight memory floors at one", available: 1 << 30, want: 1},
+		{name: "abundant memory is capped", available: 64 << 30, want: maxDefaultBrowserWorkers},
+		{name: "reservation-sized memory yields one", available: browserWorkerMemoryReservationBytes, want: 1},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := browserModeWorkerBudget(workerResourceSample{MemoryAvailableBytes: test.available})
+			if got != test.want {
+				t.Fatalf("browserModeWorkerBudget(%d) = %d, want %d", test.available, got, test.want)
+			}
+
+			if got < 1 || got > maxDefaultBrowserWorkers {
+				t.Fatalf("budget %d escaped the [1,%d] bound", got, maxDefaultBrowserWorkers)
+			}
+		})
 	}
 }
 
@@ -325,6 +476,67 @@ func TestConcurrentTaskPoolRunsEveryTaskOnceWithinItsBound(t *testing.T) {
 
 	if runtime.State != jobruntime.StateCompleted {
 		t.Fatalf("state = %s, want completed", runtime.State)
+	}
+}
+
+func TestBrowserModeGridJobCapsItsDefaultFanoutEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	service, dataFolder := newPoolTestService(t)
+
+	// A browser-mode grid job that leaves TaskWorkers unset — the shape of the
+	// incident run. On a host reporting plenty of memory the browser-worker
+	// budget is maxDefaultBrowserWorkers (2), so the default fan-out of four is
+	// capped to two and the job never launches more than two browser pools.
+	job := gridScrapeJob("99999999-9999-4999-8999-999999999999", 0)
+
+	if err := service.CreateWithState(context.Background(), &job, jobruntime.StateQueued); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	tracker := &poolTracker{}
+	barrier := newStartBarrier(maxDefaultBrowserWorkers, 5*time.Second)
+	worker := &webrunner{
+		svc: service,
+		cfg: &runner.Config{DataFolder: dataFolder, Concurrency: 8},
+		setupMate: func(_ context.Context, output io.Writer, _ *web.Job) (mateRunner, error) {
+			return &countingMate{output: output, tracker: tracker, onStart: func(ctx context.Context, _ string) error {
+				barrier.arrive(ctx)
+
+				return nil
+			}}, nil
+		},
+		sampleResources: healthyResources,
+	}
+
+	if err := worker.scrapeJob(context.Background(), &job); err != nil {
+		t.Fatalf("browser-mode grid scrape: %v", err)
+	}
+
+	execution, err := service.GetJobExecution(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("get execution: %v", err)
+	}
+
+	if execution.Tasks.Total < 4 {
+		t.Fatalf("expected a multi-task plan to exercise the cap, got %#v", execution.Tasks)
+	}
+
+	if execution.Tasks.Completed != execution.Tasks.Total {
+		t.Fatalf("tasks = %#v, want all completed", execution.Tasks)
+	}
+
+	// The default fan-out is bounded by the memory-derived browser budget: no
+	// more than two tasks — and therefore two browser pools — were ever in
+	// flight at once, down from the four the uncapped default would have run.
+	if peak := tracker.peak(); peak > maxDefaultBrowserWorkers {
+		t.Fatalf("peak concurrent browser-mode tasks = %d, want at most %d", peak, maxDefaultBrowserWorkers)
+	}
+
+	// Still genuinely parallel up to the cap: the two-way rendezvous only
+	// completes if two tasks ran together.
+	if peak := tracker.peak(); peak < maxDefaultBrowserWorkers {
+		t.Fatalf("peak concurrent browser-mode tasks = %d, want the cap to overlap %d", peak, maxDefaultBrowserWorkers)
 	}
 }
 

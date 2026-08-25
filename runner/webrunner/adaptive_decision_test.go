@@ -2,6 +2,7 @@ package webrunner
 
 import (
 	"testing"
+	"time"
 
 	"github.com/gosom/google-maps-scraper/runner"
 	"github.com/gosom/google-maps-scraper/web"
@@ -118,6 +119,103 @@ func TestAdaptTaskPoolRecoversWhenEveryMeasuredDimensionHasHeadroom(t *testing.T
 
 	if got := run.effectiveConcurrency.Load(); got != 5 {
 		t.Fatalf("effective concurrency = %d, want one recovered step to 5", got)
+	}
+}
+
+func TestAdaptTaskPoolCollapsesDecisivelyOnABrowserFailureBurst(t *testing.T) {
+	t.Parallel()
+
+	worker, run := newAdaptiveTestRun(t, 8, 4, 2)
+
+	// A small burst of browser-failures with no successes, exactly the shape a
+	// browser-failure cascade produces once task-failure backoff keeps each
+	// adaptation window small. The old rule waited for four attempts and would
+	// have left the budget at 8; the burst rule halves it on this one window.
+	run.windowFailures.Store(3)
+	run.windowSuccesses.Store(0)
+	run.windowBlocks.Store(0)
+
+	sample, err := healthyResources(t.Context(), "")
+	if err != nil {
+		t.Fatalf("sample resources: %v", err)
+	}
+
+	worker.adaptTaskPool(run, sample)
+
+	if got := run.effectiveConcurrency.Load(); got != 4 {
+		t.Fatalf("effective concurrency = %d, want a decisive halving to 4 on the burst", got)
+	}
+
+	if run.lastReductionAt.Load() == 0 {
+		t.Fatal("a reduction did not start the recovery cooldown")
+	}
+}
+
+func TestAdaptTaskPoolNeverIncreasesWhileAFailureIsPresent(t *testing.T) {
+	t.Parallel()
+
+	worker, run := newAdaptiveTestRun(t, 8, 4, 2)
+	run.effectiveConcurrency.Store(4)
+	// The failure budget still sits high because the failure has not yet formed
+	// a majority; the block budget is mid-recovery. Without the clean-window
+	// veto the block budget would climb and raise concurrency during a window
+	// that still contained a failure.
+	run.failureBudget.Store(8)
+	run.blockBudget.Store(4)
+	run.windowFailures.Store(1)
+	run.windowSuccesses.Store(5)
+	run.windowBlocks.Store(0)
+
+	sample, err := healthyResources(t.Context(), "")
+	if err != nil {
+		t.Fatalf("sample resources: %v", err)
+	}
+
+	worker.adaptTaskPool(run, sample)
+
+	if got := run.effectiveConcurrency.Load(); got != 4 {
+		t.Fatalf("effective concurrency = %d, want no increase while a failure was present", got)
+	}
+}
+
+func TestAdaptTaskPoolHoldsThroughTheRecoveryCooldownThenClimbsOneStep(t *testing.T) {
+	t.Parallel()
+
+	worker, run := newAdaptiveTestRun(t, 8, 4, 2)
+	run.effectiveConcurrency.Store(4)
+	run.failureBudget.Store(4)
+	run.blockBudget.Store(4)
+
+	sample, err := healthyResources(t.Context(), "")
+	if err != nil {
+		t.Fatalf("sample resources: %v", err)
+	}
+	sample.BrowserProcesses = 4
+
+	cleanWindow := func() {
+		run.windowFailures.Store(0)
+		run.windowSuccesses.Store(6)
+		run.windowBlocks.Store(0)
+	}
+
+	// A reduction just happened: even a perfectly clean window with full
+	// head-room must hold until the cooldown elapses.
+	run.lastReductionAt.Store(time.Now().UnixNano())
+	cleanWindow()
+	worker.adaptTaskPool(run, sample)
+
+	if got := run.effectiveConcurrency.Load(); got != 4 {
+		t.Fatalf("effective concurrency = %d, want the budget held during the cooldown", got)
+	}
+
+	// Once the cooldown has passed, the same clean window recovers exactly one
+	// step — recovery stays slower than the decisive decay.
+	run.lastReductionAt.Store(time.Now().Add(-2 * adaptiveRecoveryCooldown).UnixNano())
+	cleanWindow()
+	worker.adaptTaskPool(run, sample)
+
+	if got := run.effectiveConcurrency.Load(); got != 5 {
+		t.Fatalf("effective concurrency = %d, want one recovered step to 5 after the cooldown", got)
 	}
 }
 

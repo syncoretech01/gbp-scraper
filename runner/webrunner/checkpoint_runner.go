@@ -315,17 +315,33 @@ func (w *webrunner) scrapeJobCheckpointed(
 	}
 
 	effectiveConcurrency := desiredConcurrency
+	browserWorkerBudget := 0
 
-	if job.Data.Adaptive {
+	// A browser-mode job fans out one scrapemate app — and therefore one
+	// browser pool that never drops below a single browser — per task worker.
+	// Sample the host once here so the default fan-out is bounded by real
+	// memory even when the adaptive safeguards are off, and so a browser-mode
+	// job never launches more simultaneous browsers than the host can support.
+	// Fast mode needs no browser and keeps its full default fan-out.
+	if job.Data.Adaptive || !job.Data.FastMode {
 		resourceSample, _ := w.sampleWorkerResources(runCtx)
-		effectiveConcurrency = adaptiveWorkerConcurrency(
-			desiredConcurrency, resourceSample, job.Data.LowDiskBytes, job.Data.MemoryCeilingBytes,
-		)
+
+		if job.Data.Adaptive {
+			effectiveConcurrency = adaptiveWorkerConcurrency(
+				desiredConcurrency, resourceSample, job.Data.LowDiskBytes, job.Data.MemoryCeilingBytes,
+			)
+		}
+
+		if !job.Data.FastMode {
+			browserWorkerBudget = browserModeWorkerBudget(resourceSample)
+		}
 	}
 
 	// Tasks run side by side, but the browser budget is divided between them, so
-	// parallelism buys resume granularity rather than extra load.
-	plan := planTaskPool(job, effectiveConcurrency, len(pending))
+	// parallelism buys resume granularity rather than extra load. In browser
+	// mode the default worker count is additionally capped to the memory-derived
+	// browser budget, because each worker is a separate browser pool.
+	plan := planTaskPool(job, effectiveConcurrency, len(pending), browserWorkerBudget)
 
 	_ = w.svc.RecordJobWorkerEvent(
 		context.Background(), job.ID, "task-pool", "information",
