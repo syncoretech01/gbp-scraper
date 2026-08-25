@@ -50,6 +50,40 @@ const (
 	// operator-facing text of a worker event. Operators configure the memory
 	// ceiling in MB, so the evidence has to read back in the same unit.
 	bytesPerMebibyteShift = 20
+
+	// browserWorkerMemoryReservationBytes is the host memory one browser-mode
+	// task worker is budgeted. Each worker owns a SEPARATE scrapemate app and
+	// therefore a SEPARATE Playwright browser pool that never drops below a
+	// single --single-process Chromium, so the default fan-out multiplies
+	// browser processes one-for-one with workers. The reservation is
+	// deliberately generous — under-committing browsers costs throughput, but
+	// over-committing them is the exact failure the incident run showed (four
+	// independent single-process Chromium browsers cascading into
+	// browser-failure). The docker specialist's measured per-browser cost
+	// supersedes this estimate; keep the two reconciled. [harden/scheduler-adaptive]
+	browserWorkerMemoryReservationBytes uint64 = 3 << 30
+	// maxDefaultBrowserWorkers hard-caps the DEFAULT browser-mode fan-out. One
+	// worker is one scrapemate app managing its own browser pool with the
+	// engine's page/browser reuse limits — the engine-native, tested topology
+	// the controlled conc-1 test proved works. Two is the cautious upper bound
+	// a well-resourced host may take; the adaptive controller collapses it back
+	// to one on the first browser-failure or block burst. An operator who sets
+	// TaskWorkers explicitly opts out of this cap entirely.
+	maxDefaultBrowserWorkers = 2
+	// safeBrowserWorkerFallback is the browser-mode fan-out used when no memory
+	// measurement is available. It is the proven-safe single-app topology.
+	safeBrowserWorkerFallback = 1
+
+	// adaptiveFailureBurst is the smallest number of failed attempts in one
+	// adaptation window that, forming a majority, is decisive evidence to halve
+	// the failure budget. Two corroborating failures rule out a single
+	// transient blip while still collapsing a browser-failure cascade on the
+	// first window it appears, rather than waiting for a large window to fill.
+	// [harden/scheduler-adaptive]
+	adaptiveFailureBurst = 2
+	// adaptiveRecoveryAttempts is the smallest clean window that may recover a
+	// single failure-budget step. Recovery stays deliberately slower than decay.
+	adaptiveRecoveryAttempts = 3
 )
 
 // memoryCeilingExceeded reports whether the sampled memory use has reached an
@@ -274,6 +308,38 @@ func recoveryHasHeadroom(sample workerResourceSample, blocks, allowedBrowsers in
 	}
 
 	return true
+}
+
+// browserModeWorkerBudget derives how many browser-mode task workers the
+// measured host memory can safely run at once. It exists because the task pool
+// gives every worker its own scrapemate app and therefore its own browser pool
+// that never shrinks below one browser: the number of simultaneous browsers a
+// browser-mode job launches can never fall below its worker count, no matter
+// how the concurrency budget is divided or how far the adaptive controller
+// later lowers concurrency. Bounding the DEFAULT fan-out here is the only point
+// at which the browser total can be held to what the host can support.
+//
+// The result is floored at one (a browser job always runs), capped at
+// maxDefaultBrowserWorkers, and falls back to the single-app topology when no
+// memory reading is available. It is advisory: a job that sets TaskWorkers
+// explicitly keeps exactly the value it asked for, and Fast mode (pure HTTP, no
+// browser) never consults this budget at all.
+func browserModeWorkerBudget(sample workerResourceSample) int {
+	available := sample.MemoryAvailableBytes
+	if available == 0 {
+		return safeBrowserWorkerFallback
+	}
+
+	budget := int(available / browserWorkerMemoryReservationBytes)
+	if budget < 1 {
+		budget = 1
+	}
+
+	if budget > maxDefaultBrowserWorkers {
+		budget = maxDefaultBrowserWorkers
+	}
+
+	return budget
 }
 
 // adaptiveBrowserBudget reduces the per-task browser pool and pages-per-browser
