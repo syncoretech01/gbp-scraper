@@ -21,6 +21,17 @@ import (
 	"github.com/gosom/scrapemate"
 )
 
+const (
+	// reclaimPollBudget bounds how long the lease-expiry test waits for a
+	// one-second-granularity lease to lapse. It is a failure guard, not a
+	// timing assertion: a healthy reclaim path fires within ~1s (the time to
+	// cross the next full-second boundary), well inside this budget.
+	reclaimPollBudget = 5 * time.Second
+	// reclaimPollInterval spaces the reclaim polls. Small enough that the test
+	// returns promptly once the boundary passes, large enough not to spin.
+	reclaimPollInterval = 25 * time.Millisecond
+)
+
 // gridScrapeJob produces a job whose plan expands into several grid tasks, so a
 // pool has real parallel work to schedule.
 func gridScrapeJob(id string, workers int) web.Job {
@@ -543,17 +554,30 @@ func TestExpiredTaskLeaseIsReclaimedAndRerun(t *testing.T) {
 		}
 	}
 
-	// Lease deadlines are stored with one-second granularity, so wait past a
-	// full second boundary before expecting expiry.
-	time.Sleep(2100 * time.Millisecond)
+	// Lease deadlines are stored with one-second granularity, so the expiry
+	// only becomes visible once the wall clock crosses the next full second.
+	// Poll the real reclaim path instead of guessing a fixed sleep: this
+	// returns the moment the boundary passes and fails fast with a clear
+	// message if the lease never expires, rather than always paying a padded
+	// worst-case sleep.
+	var recovered int
 
-	recovered, err := service.ReclaimExpiredJobTasks(context.Background(), job.ID)
-	if err != nil {
-		t.Fatalf("reclaim: %v", err)
-	}
+	reclaimDeadline := time.Now().Add(reclaimPollBudget)
+	for {
+		recovered, err = service.ReclaimExpiredJobTasks(context.Background(), job.ID)
+		if err != nil {
+			t.Fatalf("reclaim: %v", err)
+		}
 
-	if recovered < 1 {
-		t.Fatalf("reclaimed %d lease(s), want at least 1", recovered)
+		if recovered >= 1 {
+			break
+		}
+
+		if time.Now().After(reclaimDeadline) {
+			t.Fatalf("lease never expired: reclaimed %d lease(s) within %s", recovered, reclaimPollBudget)
+		}
+
+		time.Sleep(reclaimPollInterval)
 	}
 
 	// The dead worker can no longer finish the task it lost.
