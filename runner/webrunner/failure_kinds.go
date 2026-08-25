@@ -37,6 +37,11 @@ const (
 	// FailureKindBrowserContextFailure is a browser that is alive but could not
 	// hand out a usable context or page (context/page creation failed).
 	FailureKindBrowserContextFailure = "browser-context-failure"
+	// FailureKindEngineShutdownTimeout is a scrape engine that never returned
+	// after its context was cancelled, because the upstream browser teardown
+	// blocks on a browser that has stopped answering. The task abandons the
+	// engine rather than waiting, keeping its rows and staying resumable.
+	FailureKindEngineShutdownTimeout = "engine-shutdown-timeout"
 	// FailureKindNavigationFailure is a page navigation that failed for a
 	// reason that is not a timeout and not a recognised network fault
 	// (net::ERR_ABORTED, net::ERR_FAILED, a detached frame).
@@ -152,7 +157,7 @@ func coarseForKind(fine string) string {
 	switch fine {
 	case FailureKindGoogleBlock, FailureKindRateLimit:
 		return coarseBlocked
-	case FailureKindBrowserCrash, FailureKindBrowserContextFailure:
+	case FailureKindBrowserCrash, FailureKindBrowserContextFailure, FailureKindEngineShutdownTimeout:
 		return coarseBrowserFailure
 	case FailureKindProxyConnect, FailureKindProxyAuth:
 		return coarseProxyFailure
@@ -176,6 +181,17 @@ func coarseForKind(fine string) string {
 func classifyFailureKind(err error) failureClassification {
 	if err == nil {
 		return failureClassification{Coarse: coarseTaskFailed, Fine: FailureKindUnknown}
+	}
+
+	// A wedged engine shutdown is recognised by identity, not by text: it is
+	// our own sentinel, and its coarse bucket stays browser-failure so every
+	// existing scheduling decision behaves exactly as before.
+	if errors.Is(err, errEngineShutdownTimeout) {
+		return failureClassification{
+			Coarse: coarseBrowserFailure,
+			Fine:   FailureKindEngineShutdownTimeout,
+			Signal: "browser-teardown-blocked",
+		}
 	}
 
 	message := strings.ToLower(err.Error())

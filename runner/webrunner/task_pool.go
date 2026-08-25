@@ -926,6 +926,41 @@ func leaseWasLost(leaseLost <-chan struct{}) bool {
 	}
 }
 
+// liveBrowserFootprint reports what the run is holding open right now: the
+// number of simultaneous Chromium browsers, and the number of simultaneous Maps
+// page operations.
+//
+// Each task worker runs its own scrapemate app and therefore its own browser
+// pool, so the browser total is workers x browsers-per-worker. The pool size
+// configured on the parent job is per-app and usually zero, so reporting it
+// made a four-browser run look like a one-browser run to the operator, and made
+// Fast mode — which launches no browser at all — claim one. The operator uses
+// this number to judge memory risk, so it has to be the real one.
+func (r *taskPoolRun) liveBrowserFootprint() (browsers, pages int64) {
+	// Fast mode is a pure-HTTP stealth fetcher: no browser, no page.
+	if r.job.Data.FastMode {
+		return 0, 0
+	}
+
+	workers := max(int64(1), r.workers.Load())
+	effective := max(int64(1), r.effectiveConcurrency.Load())
+
+	perWorker := r.browserBudget.Load()
+	if perWorker <= 0 {
+		// Unset means the engine derives the pool from that worker's
+		// concurrency and pages-per-browser, never rounding below one browser.
+		pagesPerBrowser := r.pagesBudget.Load()
+		if pagesPerBrowser <= 0 {
+			pagesPerBrowser = 1
+		}
+
+		perTask := max(int64(1), effective/workers)
+		perWorker = (perTask + pagesPerBrowser - 1) / pagesPerBrowser
+	}
+
+	return workers * max(int64(1), perWorker), effective
+}
+
 // superviseTaskPool owns all live progress reporting for the run. One reporter
 // avoids parallel workers overwriting each other's view of the same job.
 func (w *webrunner) superviseTaskPool(
@@ -951,14 +986,14 @@ func (w *webrunner) superviseTaskPool(
 		if err == nil {
 			snapshot := exiter.SnapshotOf(exitMonitor)
 			workers := run.workers.Load()
-			effective := run.effectiveConcurrency.Load()
+			browsers, pages := run.liveBrowserFootprint()
 
 			_ = w.svc.UpdateJobWorkerProgress(context.Background(), job.ID, web.JobWorkerProgress{
 				Stage:            jobruntime.StageSearchingMaps,
 				ActiveTasks:      run.activeTasks.Load(),
 				PlacesPerMinute:  jobruntime.RatePerMinute(int64(snapshot.PlacesCompleted), time.Since(startedAt)),
-				BrowserCount:     max(1, int64(job.Data.BrowserPool)),
-				ActivePages:      max(1, effective),
+				BrowserCount:     browsers,
+				ActivePages:      pages,
 				CPUPercent:       sample.CPUPercent,
 				MemoryBytes:      sample.MemoryUsedBytes,
 				DiskFreeBytes:    sample.DiskFreeBytes,

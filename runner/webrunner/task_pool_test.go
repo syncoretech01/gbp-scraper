@@ -1132,3 +1132,65 @@ func TestDecideFailureBudgetHalvesOnFailuresAndRecoversSlowly(t *testing.T) {
 		}
 	}
 }
+
+// TestLiveBrowserFootprintReportsRealBrowsers proves the operator-facing browser
+// count is the number of browsers actually open, not the per-app pool size
+// configured on the parent job. An acceptance run exposed the difference: a
+// two-worker browser job reported one browser, and Fast mode — which launches no
+// browser at all — reported one too.
+func TestLiveBrowserFootprintReportsRealBrowsers(t *testing.T) {
+	t.Parallel()
+
+	newRun := func(job *web.Job, plan taskPoolPlan) *taskPoolRun {
+		run := &taskPoolRun{job: job}
+		run.workers.Store(int64(plan.Workers))
+		run.effectiveConcurrency.Store(int64(plan.Workers * plan.PerTaskConcurrency))
+		run.browserBudget.Store(int64(plan.PerTaskBrowserPool))
+		run.pagesBudget.Store(int64(job.Data.PagesBrowser))
+
+		return run
+	}
+
+	// The incident shape: default fan-out, concurrency 4. The plan launches
+	// Workers*browsersPerWorker browsers; the report must say exactly that, and
+	// must not say job.Data.BrowserPool.
+	incident := gridScrapeJob("footprint", 0)
+	incident.Data.Concurrency = 4
+	incident.Data.BrowserPool = 2
+	incident.Data.PagesBrowser = 2
+
+	plan := planTaskPool(&incident, 4, 48, 0)
+	want := int64(plan.Workers * browsersPerWorker(plan, incident.Data.PagesBrowser))
+
+	browsers, pages := newRun(&incident, plan).liveBrowserFootprint()
+	if browsers != want {
+		t.Fatalf("reported browsers = %d, want the %d the plan actually launches", browsers, want)
+	}
+
+	if pages != int64(plan.Workers*plan.PerTaskConcurrency) {
+		t.Fatalf("reported pages = %d, want %d simultaneous Maps operations",
+			pages, plan.Workers*plan.PerTaskConcurrency)
+	}
+
+	// A worker with no explicit pool still holds at least one browser each, so
+	// the report can never fall below the worker count.
+	derived := gridScrapeJob("derived", 2)
+	derived.Data.BrowserPool = 0
+	derived.Data.PagesBrowser = 8
+
+	derivedPlan := planTaskPool(&derived, 2, 48, 0)
+
+	browsers, _ = newRun(&derived, derivedPlan).liveBrowserFootprint()
+	if browsers < int64(derivedPlan.Workers) {
+		t.Fatalf("reported browsers %d fell below the worker floor %d", browsers, derivedPlan.Workers)
+	}
+
+	// Fast mode is pure HTTP: zero browsers and zero pages, never one.
+	fast := gridScrapeJob("fast", 2)
+	fast.Data.FastMode = true
+
+	browsers, pages = newRun(&fast, planTaskPool(&fast, 4, 48, 0)).liveBrowserFootprint()
+	if browsers != 0 || pages != 0 {
+		t.Fatalf("Fast mode reported %d browser(s) and %d page(s), want 0 and 0", browsers, pages)
+	}
+}

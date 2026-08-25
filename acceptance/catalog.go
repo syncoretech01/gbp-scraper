@@ -30,6 +30,10 @@ type Workload struct {
 	// Zoom and Depth mirror the wizard controls.
 	Zoom  int
 	Depth int
+	// RadiusMetres is the search radius around the centre. It is only used
+	// when no grid is set; Fast mode requires it, because Fast mode refuses
+	// grid coverage and has no other way to bound the area.
+	RadiusMetres int
 	// RuntimeSeconds is the per-job runtime cap.
 	RuntimeSeconds int64
 }
@@ -119,6 +123,7 @@ func browserJob(name string, workload Workload, concurrency int) JobRequest {
 		Email:          false,
 		Lat:            workload.Lat,
 		Lon:            workload.Lon,
+		Radius:         workload.RadiusMetres,
 		RuntimeSeconds: workload.RuntimeSeconds,
 		Concurrency:    concurrency,
 		GridBBox:       workload.GridBBox,

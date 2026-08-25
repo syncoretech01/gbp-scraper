@@ -418,6 +418,58 @@ func (w *webrunner) scrapeJobCheckpointed(
 	return nil
 }
 
+// engineShutdownGrace bounds how long the scrape engine may take to return
+// after this task's context has already been cancelled.
+//
+// The upstream browser teardown takes neither a context nor a timeout:
+// scrapemate's jsFetch.Close closes the Playwright browser context, and
+// playwright-go's protocolCallback.waitResult blocks on a channel until the
+// browser answers. A browser that has died or stopped answering never answers,
+// so the call never returns. A controlled acceptance run caught exactly this:
+// fifteen of sixteen tasks finished, the sixteenth parked a worker inside that
+// teardown for twenty-one minutes, the in-memory active-task count stayed at
+// one, and the job sailed past its runtime deadline without ever reaching a
+// terminal state.
+//
+// scrapemate is a read-only dependency this repo does not fork, and a goroutine
+// cannot be killed from outside — but nothing forces us to keep waiting on one.
+// After the grace period the task gives up on the engine, keeps the rows the
+// engine already wrote, and hands itself back to the pool. The wedged goroutine
+// and its file handle leak; the job stays alive and finishes.
+const engineShutdownGrace = 90 * time.Second
+
+// errEngineShutdownTimeout marks a task abandoned because the scrape engine did
+// not return after cancellation. It is a task-level outcome, not a job failure:
+// the rows already written are kept and the task stays resumable.
+var errEngineShutdownTimeout = errors.New("scrape engine did not shut down within the grace period")
+
+// awaitEngine runs fn in its own goroutine and waits for it. It waits without a
+// bound while ctx is live — a task legitimately in progress is never cut short
+// — and once ctx is done it waits at most grace longer. It reports fn's error
+// and whether fn actually returned.
+func awaitEngine(ctx context.Context, grace time.Duration, fn func() error) (error, bool) {
+	// Buffered so a late goroutine can finish and exit instead of leaking on
+	// the send.
+	done := make(chan error, 1)
+	go func() { done <- fn() }()
+
+	select {
+	case err := <-done:
+		return err, true
+	case <-ctx.Done():
+	}
+
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+
+	select {
+	case err := <-done:
+		return err, true
+	case <-timer.C:
+		return nil, false
+	}
+}
+
 // runCheckpointTask executes exactly one seed into its own temporary CSV. Live
 // progress reporting belongs to the pool supervisor, so the task itself only
 // runs the scraper and hands back a file to merge.
@@ -438,8 +490,14 @@ func (w *webrunner) runCheckpointTask(
 	}
 	runPath := outfile.Name()
 	keepRun := false
+	engineWedged := false
 	defer func() {
-		_ = outfile.Close()
+		// A wedged engine goroutine may still hold this writer, so closing the
+		// file under it would be a use-after-close. The handle is deliberately
+		// leaked together with the goroutine that owns it.
+		if !engineWedged {
+			_ = outfile.Close()
+		}
 		if !keepRun {
 			_ = os.Remove(runPath)
 		}
@@ -468,12 +526,29 @@ func (w *webrunner) runCheckpointTask(
 
 	go taskMonitor.Run(taskCtx)
 
-	runErr := mate.Start(taskCtx, seedWithExitMonitor(seed, taskMonitor))
+	runErr, returned := awaitEngine(taskCtx, engineShutdownGrace, func() error {
+		return mate.Start(taskCtx, seedWithExitMonitor(seed, taskMonitor))
+	})
 	// Only this task's own counters can say whether its seed finished; the
 	// run-level snapshot also moves for every other task running in parallel.
 	after := taskMonitor.ownSnapshot()
 
-	if closeErr := mate.Close(); closeErr != nil {
+	if !returned {
+		// The engine did not come back within the grace period after its
+		// context was cancelled. Keep whatever it already wrote and hand the
+		// task back to the pool: waiting longer is what wedged the job.
+		engineWedged = true
+		keepRun = true
+
+		return runPath, errEngineShutdownTimeout
+	}
+
+	if closeErr, closeReturned := awaitEngine(taskCtx, engineShutdownGrace, mate.Close); !closeReturned {
+		engineWedged = true
+		keepRun = true
+
+		return runPath, errors.Join(runErr, errEngineShutdownTimeout)
+	} else if closeErr != nil {
 		runErr = errors.Join(runErr, fmt.Errorf("close checkpoint worker: %w", closeErr))
 	}
 	closed = true

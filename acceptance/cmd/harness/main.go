@@ -50,6 +50,12 @@ type options struct {
 	runtimeSeconds   int
 	marketConc       int
 	escalationLadder string
+	lat              string
+	lon              string
+	fastMode         bool
+	enrichment       bool
+	noGrid           bool
+	radiusMetres     int
 }
 
 func run(args []string, stdout io.Writer) error {
@@ -68,6 +74,19 @@ func run(args []string, stdout io.Writer) error {
 		flagSet.Usage()
 
 		return err
+	}
+
+	// Mode overrides are applied after resolution so the SAME workload can be
+	// run browser-vs-Fast and enrichment-off-vs-on, which is the only way those
+	// comparisons are apples to apples.
+	for i := range experiments {
+		if opts.fastMode {
+			experiments[i].Job.FastMode = true
+		}
+
+		if opts.enrichment {
+			experiments[i].Job.Email = true
+		}
 	}
 
 	if opts.list {
@@ -122,9 +141,15 @@ func parseFlags(args []string) (options, *flag.FlagSet, error) {
 	flagSet.StringVar(&opts.queries, "queries", "", "override workload queries (newline or '||' separated)")
 	flagSet.StringVar(&opts.gridBBox, "grid-bbox", "", "override grid bounding box minLat,minLon,maxLat,maxLon")
 	flagSet.Float64Var(&opts.gridCellKM, "grid-cell-km", 0, "override grid cell size in km")
+	flagSet.BoolVar(&opts.noGrid, "no-grid", false, "drop grid coverage entirely (required for Fast mode, which rejects a grid)")
+	flagSet.IntVar(&opts.radiusMetres, "radius", 0, "search radius in metres around the centre (used when no grid is set)")
 	flagSet.IntVar(&opts.runtimeSeconds, "runtime", 0, "override per-job runtime limit in seconds (default 3600)")
 	flagSet.IntVar(&opts.marketConc, "market-concurrency", 0, "browser concurrency for the market experiments (default 1)")
 	flagSet.StringVar(&opts.escalationLadder, "escalation", "", "override A..E concurrency ladder, e.g. A=1,B=2,C=4,D=8,E=16")
+	flagSet.StringVar(&opts.lat, "lat", "", "override workload latitude")
+	flagSet.StringVar(&opts.lon, "lon", "", "override workload longitude")
+	flagSet.BoolVar(&opts.fastMode, "fast", false, "run the resolved experiments in Fast mode (pure HTTP, no browser)")
+	flagSet.BoolVar(&opts.enrichment, "email", false, "enable local website/email enrichment for the resolved experiments")
 
 	if err := flagSet.Parse(args); err != nil {
 		return options{}, flagSet, err
@@ -149,8 +174,23 @@ func buildCatalogOptions(opts options) (acceptance.CatalogOptions, error) {
 	if opts.gridCellKM > 0 {
 		catalogOptions.Workload.GridCellKM = opts.gridCellKM
 	}
+	// The product refuses grid coverage in Fast mode, so a fair Fast-vs-browser
+	// comparison has to drop the grid on BOTH arms rather than on one of them.
+	if opts.noGrid {
+		catalogOptions.Workload.GridBBox = ""
+		catalogOptions.Workload.GridCellKM = 0
+	}
+	if opts.radiusMetres > 0 {
+		catalogOptions.Workload.RadiusMetres = opts.radiusMetres
+	}
 	if opts.runtimeSeconds > 0 {
 		catalogOptions.Workload.RuntimeSeconds = int64(opts.runtimeSeconds)
+	}
+	if strings.TrimSpace(opts.lat) != "" {
+		catalogOptions.Workload.Lat = strings.TrimSpace(opts.lat)
+	}
+	if strings.TrimSpace(opts.lon) != "" {
+		catalogOptions.Workload.Lon = strings.TrimSpace(opts.lon)
 	}
 
 	if strings.TrimSpace(opts.escalationLadder) != "" {
