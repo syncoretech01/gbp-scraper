@@ -12,6 +12,11 @@
     const shapeLabel = explorer.querySelector("[data-map-shape-label]");
     const centreLabel = explorer.querySelector("[data-map-centre-label]");
     const coverageMeta = explorer.querySelector("[data-map-coverage-meta]");
+    const placeInput = explorer.querySelector("[data-map-place]");
+    const modeKicker = explorer.querySelector("[data-map-mode-kicker]");
+    const modeTitle = explorer.querySelector("[data-map-mode-title]");
+    const railToggle = explorer.querySelector("[data-map-rail-toggle]");
+    const tallyNodes = Array.from(explorer.querySelectorAll("[data-map-tally]"));
     const areaSelect = explorer.querySelector("[data-map-area-select]");
     const areaName = explorer.querySelector("[data-map-area-name]");
     const latitudeInput = explorer.querySelector("[data-map-latitude]");
@@ -71,15 +76,30 @@
     const mutedHeatFill = "#d9dee7";
     const mutedHeatStroke = "#aab3c2";
 
-    // Grid cells are an OVERLAY, never a replacement basemap: every fill stays
-    // translucent so streets, water, and labels read through, and the state
-    // colour is carried mainly by the stroke. These are the only opacity values
-    // used for cell fills.
-    const FILL_BASE = 0.2;
-    const FILL_SELECTED = 0.42;
-    const FILL_MUTED = 0.08;
-    const FILL_RAMP_STEP = 0.08;
-    const FILL_RAMP_FLOOR = 0.14;
+    // Search areas are an OVERLAY, never a replacement basemap.
+    //
+    // Before a scrape has recorded anything there is no state to colour, so a
+    // waiting area is drawn as an OUTLINE with NO fill: fifty adjacent squares
+    // at even 20% grey add up to a solid wash that flattens every street under
+    // the city, which is the exact failure this replaces. Areas that carry real
+    // evidence get a light fill plus a heavier, fully opaque stroke, so state
+    // reads from the border first and the basemap always shows through.
+    const FILL_NONE = 0;
+    const FILL_BASE = 0.14;
+    const FILL_SELECTED = 0.28;
+    const FILL_MUTED = 0.05;
+    const FILL_RAMP_STEP = 0.06;
+    const FILL_RAMP_FLOOR = 0.1;
+
+    const STROKE_PLAIN = 1.2;
+    const STROKE_EVIDENCE = 2;
+    const STROKE_SELECTED = 3;
+
+    // The basemap is OpenStreetMap and is never themed, so the lattice drawn
+    // over it keeps ONE dark-neutral face in both themes — the same reasoning
+    // that keeps the Leaflet control chrome light in app.css. --cell-waiting is
+    // a mid grey chosen to sit on a panel, not on street cartography.
+    const PLANNING_STROKE = "#3d4759";
 
     // Cell colours resolve from the --cell-* design tokens so the map, the
     // legend swatches, and both themes stay in step. The literals are only a
@@ -119,15 +139,22 @@
         markEmptyEstimates();
     }
 
-    // Server-side estimates arrive as a sentence ("not configured") whenever a
-    // job has not defined them. Rendered at headline weight that reads as a
-    // broken number, so anything non-numeric is flagged for the muted empty
-    // treatment the design system already defines for stat values.
+    // Absence is not a status. A count the server could not work out is drawn
+    // as an em dash at the same headline size, never as an engineering sentence
+    // ("not configured"), and never as a truncated one. The template already
+    // substitutes the dash; this is the belt-and-braces pass so no future
+    // server string can reach the strip either.
+    const EM_DASH = "—";
+
     function markEmptyEstimates() {
         explorer.querySelectorAll(".coverage-stat strong").forEach((node) => {
             const text = node.textContent.trim().replace(/,/g, "");
-            if (text !== "" && Number.isFinite(Number(text))) node.removeAttribute("data-empty");
-            else node.dataset.empty = "true";
+            if (text !== "" && Number.isFinite(Number(text))) {
+                node.removeAttribute("data-empty");
+                return;
+            }
+            if (text !== EM_DASH) node.textContent = EM_DASH;
+            node.dataset.empty = "true";
         });
     }
 
@@ -200,16 +227,19 @@
         const restoreButton = explorer.querySelector('[data-action="restore-cells"]');
         if (removeButton) {
             removeButton.disabled = selectedCells.size === 0;
-            removeButton.textContent = selectedCells.size > 0 ? "Remove selected (" + selectedCells.size + ")" : "Remove selected";
+            removeButton.textContent = selectedCells.size > 0 ? "Exclude selected (" + selectedCells.size + ")" : "Exclude selected";
         }
         if (restoreButton) {
             restoreButton.disabled = removedCells.size === 0;
-            restoreButton.textContent = removedCells.size > 0 ? "Restore removed (" + removedCells.size + ")" : "Restore removed";
+            restoreButton.textContent = removedCells.size > 0 ? "Restore excluded (" + removedCells.size + ")" : "Restore excluded";
         }
         const retryButton = explorer.querySelector('[data-action="retry-cells"]');
         const keywordButton = explorer.querySelector('[data-action="keyword-cells"]');
         const groupButton = explorer.querySelector('[data-action="group-cells"]');
-        if (retryButton) retryButton.disabled = selectedCells.size === 0 || !(jobSelect && jobSelect.value);
+        if (retryButton) {
+            retryButton.disabled = selectedCells.size === 0 || !(jobSelect && jobSelect.value);
+            retryButton.textContent = selectedCells.size > 0 ? "Re-run selected (" + selectedCells.size + ")" : "Re-run selected";
+        }
         if (keywordButton) keywordButton.disabled = selectedCells.size === 0 || !(jobSelect && jobSelect.value);
         if (groupButton) groupButton.disabled = selectedCells.size === 0 || !(jobSelect && jobSelect.value) || !(keywordGroupSelect && keywordGroupSelect.value);
     }
@@ -225,7 +255,70 @@
         setCounter(cellCounters, "0");
         setCounter(markerCounters, "0");
         updateSelectionActions();
+        updateCoverageTally();
         updateHeatLegend();
+    }
+
+    // --- Gaps ----------------------------------------------------------------
+    // A "gap" is an area a scrape did not really cover: it failed, was blocked,
+    // stopped early, or finished with zero results. Nothing new is invented
+    // here — these are the same areas the existing per-cell re-run endpoint
+    // already accepts; the map just picks them out so the operator does not
+    // have to hunt for them square by square.
+
+    function isGapCell(cell) {
+        if (!cell) return false;
+        if (cell.empty) return true;
+        if (cellFailureCount(cell) > 0) return true;
+        const state = String(cell.state || "").toLowerCase();
+        return state === "failed" || state === "blocked" || state === "partial";
+    }
+
+    function coverageTally() {
+        const cells = lastPreview && Array.isArray(lastPreview.cells) ? lastPreview.cells : [];
+        const tally = { completed: 0, running: 0, waiting: 0, gap: 0 };
+        cells.forEach((cell) => {
+            if (!cell || removedCells.has(cell.id)) return;
+            if (isGapCell(cell)) {
+                tally.gap++;
+                return;
+            }
+            const state = String(cell.state || "waiting").toLowerCase();
+            if (state === "running" || state === "starting") tally.running++;
+            else if (state === "completed") tally.completed++;
+            else tally.waiting++;
+        });
+        return tally;
+    }
+
+    function updateCoverageTally() {
+        const gapsButton = explorer.querySelector('[data-action="select-gaps"]');
+        const tallyList = explorer.querySelector("[data-map-coverage-tally]");
+        const evidence = coverageEvidenceAvailable();
+        const tally = coverageTally();
+        tallyNodes.forEach((node) => {
+            node.textContent = evidence ? String(tally[node.dataset.mapTally] || 0) : EM_DASH;
+        });
+        // The gaps tile only raises its voice when there is something to act on.
+        if (tallyList) tallyList.dataset.gaps = evidence && tally.gap > 0 ? "true" : "false";
+        if (gapsButton) {
+            gapsButton.disabled = !evidence || tally.gap === 0;
+            gapsButton.textContent = evidence && tally.gap > 0 ? "Select " + tally.gap + " gaps" : "Select gaps";
+        }
+    }
+
+    function selectGapCells() {
+        const cells = lastPreview && Array.isArray(lastPreview.cells) ? lastPreview.cells : [];
+        const gaps = cells.filter((cell) => cell && !removedCells.has(cell.id) && isGapCell(cell));
+        if (!gaps.length) {
+            showStatus("No gaps here: nothing failed, was blocked, stopped early, or finished with zero results.", "success");
+            return;
+        }
+        selectedCells = new Set(gaps.map((cell) => cell.id));
+        restyleGridCells();
+        updateSelectionActions();
+        showStatus(gaps.length + (gaps.length === 1 ? " area is a gap and is now selected. " : " areas are gaps and are now selected. ") +
+            "Use “Re-run selected” to queue them again.", "warning");
     }
 
     function layerShape(layer) {
@@ -309,7 +402,26 @@
         if (!centre) return;
         if (latitudeInput) latitudeInput.value = centre.lat.toFixed(7).replace(/0+$/, "").replace(/\.$/, "");
         if (longitudeInput) longitudeInput.value = centre.lng.toFixed(7).replace(/0+$/, "").replace(/\.$/, "");
-        if (centreLabel) centreLabel.textContent = centre.lat.toFixed(4) + ", " + centre.lng.toFixed(4);
+        updateAreaMeta();
+    }
+
+    function coordinateText() {
+        const latitude = latitudeInput ? Number(latitudeInput.value) : NaN;
+        const longitude = longitudeInput ? Number(longitudeInput.value) : NaN;
+        if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return EM_DASH;
+        return latitude.toFixed(4) + ", " + longitude.toFixed(4);
+    }
+
+    // Raw degrees are an engineering readout, not a place. The rail summary
+    // shows whatever the operator named the area; the exact coordinates stay
+    // one disclosure away in the inputs directly below it (and in the title
+    // attribute, so they are still copyable without opening anything).
+    function updateAreaMeta() {
+        if (!centreLabel) return;
+        const label = placeInput ? placeInput.value.trim() : "";
+        const coordinates = coordinateText();
+        centreLabel.textContent = label || coordinates;
+        centreLabel.title = label ? label + " · " + coordinates : coordinates;
     }
 
     function fitArea() {
@@ -372,7 +484,7 @@
             geometry: { type: "Point", coordinates: [longitude, latitude] }
         }, true);
         setAreaState("");
-        showStatus("Coordinate circle applied. Preview the grid or save it as a reusable area.", "success");
+        showStatus("Area set from those coordinates. Preview the areas to search, or save it for reuse.", "success");
     }
 
     // --- Per-cell evidence ---------------------------------------------------
@@ -410,7 +522,7 @@
         confidenceOption.disabled = !available;
         if (!available && heatmapSelect && heatmapSelect.value === "confidence") heatmapSelect.value = "coverage";
         if (coverageMeta) {
-            coverageMeta.textContent = available ? "confidence" : (coverageEvidenceAvailable() ? "tasks" : "evidence");
+            coverageMeta.textContent = available ? "confidence" : (coverageEvidenceAvailable() ? "live" : EM_DASH);
         }
     }
 
@@ -459,20 +571,32 @@
         return value;
     }
 
+    // An area only has a state worth colouring once a job has touched it.
+    // Everything else is "not started", which the map says with an outline.
+    function cellHasEvidence(cell) {
+        if (!cell) return false;
+        if (Number(cell.task_count || 0) > 0 || Number(cell.result_count || 0) > 0) return true;
+        const state = String(cell.state || "").toLowerCase();
+        return state !== "" && state !== "waiting";
+    }
+
     function cellStyle(cell, selected) {
         const state = stateColours[cell.state] ? cell.state : "waiting";
         const overlay = activeOverlay();
-        let strokeColour = stateColours[state];
+        const evidence = cellHasEvidence(cell);
+        let strokeColour = evidence ? stateColours[state] : PLANNING_STROKE;
         let fillColour = stateColours[state];
-        let fillOpacity = selected ? FILL_SELECTED : FILL_BASE;
+        let fillOpacity = selected ? FILL_SELECTED : (evidence ? FILL_BASE : FILL_NONE);
+        let weight = selected ? STROKE_SELECTED : (evidence ? STROKE_EVIDENCE : STROKE_PLAIN);
 
         if (overlay !== "coverage") {
             const value = overlayValue(overlay, cell);
+            weight = selected ? STROKE_SELECTED : STROKE_EVIDENCE;
             if (overlay === "empty") {
                 const isEmpty = Boolean(cell.empty);
                 fillColour = isEmpty ? emptyHeatFill : mutedHeatFill;
                 strokeColour = isEmpty ? emptyHeatStroke : mutedHeatStroke;
-                fillOpacity = selected ? FILL_SELECTED : (isEmpty ? 0.4 : FILL_MUTED);
+                fillOpacity = selected ? FILL_SELECTED : (isEmpty ? 0.34 : FILL_MUTED);
             } else if (value > 0) {
                 const ramp = overlayRamps[overlay] || densityHeatRamp;
                 const step = heatStep(value, overlayMaximum(overlay));
@@ -483,13 +607,14 @@
                 fillColour = mutedHeatFill;
                 strokeColour = mutedHeatStroke;
                 fillOpacity = selected ? FILL_SELECTED : FILL_MUTED;
+                weight = selected ? STROKE_SELECTED : STROKE_PLAIN;
             }
         }
 
         const style = {
             color: selected ? "#101828" : strokeColour,
-            weight: selected ? 2.5 : 1,
-            opacity: selected ? 1 : 0.85,
+            weight: weight,
+            opacity: 1,
             dashArray: selected ? "5 3" : null,
             fillColor: fillColour,
             fillOpacity: fillOpacity
@@ -570,7 +695,7 @@
     function setCoverageEmphasis(kind, button) {
         const next = !coverageEmphasis[kind];
         if (next && !coverageEvidenceAvailable()) {
-            showStatus("No durable coverage evidence is loaded yet. Choose a source job and refresh coverage, then enable heat shading.", "warning");
+            showStatus("No coverage has been recorded yet. Choose a scrape and refresh coverage, then turn highlighting on.", "warning");
             return;
         }
         coverageEmphasis[kind] = next;
@@ -794,15 +919,26 @@
     // The cell tooltip is the coverage explorer's inspection surface: it states
     // the lifecycle, the durable task evidence, and — when the backend supplies
     // them — the confidence score and reason codes behind that state.
+    const cellStateWords = {
+        waiting: "not started",
+        running: "searching",
+        completed: "searched",
+        partial: "stopped early",
+        failed: "failed",
+        blocked: "blocked",
+        paused: "paused"
+    };
+
     function cellTooltip(cell) {
-        const parts = ["Cell " + cell.number, cell.state || "waiting"];
-        if (Number(cell.task_count || 0)) parts.push((cell.completed_tasks || 0) + "/" + cell.task_count + " tasks");
-        if (Number(cell.result_count || 0)) parts.push(cell.result_count + " results");
+        const state = String(cell.state || "waiting").toLowerCase();
+        const parts = ["Area " + cell.number, cellStateWords[state] || state];
+        if (Number(cell.task_count || 0)) parts.push((cell.completed_tasks || 0) + "/" + cell.task_count + " searches done");
+        if (Number(cell.result_count || 0)) parts.push(cell.result_count + " businesses found");
         if (Number(cell.duplicate_count || 0)) parts.push(cell.duplicate_count + " duplicates");
         if (Number(cell.duplicates || 0)) parts.push(cell.duplicates + " duplicate rows skipped or replaced");
-        if (cell.empty) parts.push("empty");
+        if (cell.empty) parts.push("finished with nothing");
         if (Number(cell.failed_tasks || 0) || Number(cell.blocked_tasks || 0)) {
-            parts.push((Number(cell.failed_tasks || 0) + Number(cell.blocked_tasks || 0)) + " failed/blocked");
+            parts.push((Number(cell.failed_tasks || 0) + Number(cell.blocked_tasks || 0)) + " searches failed or blocked");
         }
         const confidence = cellConfidence(cell);
         if (confidence !== null) parts.push(Math.round(confidence * 100) + "% confidence");
@@ -838,6 +974,7 @@
         });
         setCounter(cellCounters, String(visibleCount));
         updateSelectionActions();
+        updateCoverageTally();
         updateHeatLegend();
     }
 
@@ -856,7 +993,7 @@
         const feature = featureFromLayers();
         const cellSize = validNumber(cellSizeInput, 0.05, 100, "Grid cell size");
         explorer.setAttribute("aria-busy", "true");
-        showStatus("Calculating the deterministic grid…");
+        showStatus("Working out the areas to search…");
         try {
             const payload = await requestJSON(gridEndpoint, {
                 method: "POST",
@@ -866,7 +1003,8 @@
             renderPreview(payload.data || {});
             setMode(explorer.dataset.mode || "planning", false);
             const total = payload.data && payload.data.cells ? payload.data.cells.length : 0;
-            showStatus(total + " deterministic cells calculated; " + removedCells.size + " excluded.", "success");
+            showStatus(total + (total === 1 ? " area to search" : " areas to search") +
+                (removedCells.size ? ", " + removedCells.size + " excluded." : ". Each one is searched separately."), "success");
         } finally {
             explorer.removeAttribute("aria-busy");
         }
@@ -881,12 +1019,12 @@
 
     async function loadCoverage(silent) {
         if (!jobSelect || !jobSelect.value) {
-            if (!silent) throw new Error("Choose a source job before loading live coverage.");
+            if (!silent) throw new Error("Choose which scrape to show coverage for first.");
             return;
         }
         const request = mapGeometryRequest();
         request.job_id = jobSelect.value;
-        if (!silent) showStatus("Loading durable cell coverage…");
+        if (!silent) showStatus("Reading what that scrape recorded, area by area…");
         const payload = await requestJSON(coverageEndpoint, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -894,8 +1032,13 @@
         });
         renderPreviewPreservingSelection(payload.data || {});
         setMode("live", false);
-        const summary = payload.data && payload.data.summary ? payload.data.summary : {};
-        showStatus("Coverage: " + (summary.completed_cells || 0) + " completed, " + (summary.running_cells || 0) + " running, " + (summary.failed_cells || 0) + " failed, " + (summary.empty_cells || 0) + " empty.", "success");
+        if (!coverageEvidenceAvailable()) {
+            showStatus("This scrape has no per-area record here. Fast mode searches without walking a map grid, and a job run over a different area has nothing to report for this one.", "warning");
+            return;
+        }
+        const tally = coverageTally();
+        showStatus(tally.completed + " areas searched, " + tally.running + " in progress, " + tally.waiting + " not started, " +
+            tally.gap + (tally.gap === 1 ? " gap." : " gaps."), tally.gap > 0 ? "warning" : "success");
     }
 
     function selectedCellRequest(action) {
@@ -912,7 +1055,7 @@
 
     async function queueSelectedCells(action) {
         const request = selectedCellRequest(action);
-        if (action === "retry" && !window.confirm("Queue a new compatible job for the selected failed or empty cells?")) return;
+        if (action === "retry" && !window.confirm("Queue a new scrape for the " + selectedCells.size + " selected areas?")) return;
         const payload = await requestJSON(rescrapeEndpoint, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -958,13 +1101,13 @@
         selectedCells.forEach((id) => removedCells.add(id));
         selectedCells = new Set();
         if (lastPreview) renderPreview(lastPreview);
-        showStatus(removedCells.size + " cells are excluded. Update or save the area to persist this selection.", "success");
+        showStatus(removedCells.size + " areas are excluded from the search. Save or update the area to keep that choice.", "success");
     }
 
     function restoreRemovedCells() {
         removedCells = new Set();
         if (lastPreview) renderPreview(lastPreview);
-        showStatus("All deterministic grid cells restored.", "success");
+        showStatus("Every area is back in the search.", "success");
     }
 
     function combineGroups(left, right) {
@@ -1123,7 +1266,7 @@
             setCounter(markerCounters, String(plotted));
             setMode("results", false);
             const total = payload.meta && Number.isFinite(Number(payload.meta.total)) ? Number(payload.meta.total) : results.length;
-            showStatus("Showing " + plotted + " mapped businesses from " + total + " spatial matches (up to 250 per view).", "success");
+            showStatus("Showing " + plotted + " businesses on the map, out of " + total + " inside this area (up to 250 at a time).", "success");
         } finally {
             explorer.removeAttribute("aria-busy");
         }
@@ -1226,17 +1369,34 @@
         showStatus("Imported " + areas.length + " saved area" + (areas.length === 1 ? "." : "s."), "success");
     }
 
-    const modeHints = {
-        planning: "Draw or load an area, then preview the deterministic grid.",
-        live: "Pick the source job to shade each cell by its durable task evidence.",
-        results: "Committed businesses inside the area, filtered by the current Results URL."
+    // Each mode answers one question, and the rail says which one out loud so
+    // the three views are not just three sets of controls.
+    const modeCopy = {
+        planning: {
+            kicker: "Planning",
+            title: "How big is this search?",
+            hint: "Draw or load an area, then preview the areas to search. Larger areas finish sooner; smaller ones find more businesses."
+        },
+        live: {
+            kicker: "Coverage",
+            title: "What did the scrape actually cover?",
+            hint: "Pick a scrape to shade every area by what it recorded, then select the gaps and run them again."
+        },
+        results: {
+            kicker: "Results",
+            title: "Where are the businesses?",
+            hint: "Every business already collected inside this area, using the same filters as the Results page."
+        }
     };
 
     function setMode(mode, load) {
         const normalized = mode === "results" || mode === "live" ? mode : "planning";
         explorer.dataset.mode = normalized;
         explorer.querySelectorAll('input[name="mode"]').forEach((input) => { input.checked = input.value === normalized; });
-        if (modeHint) modeHint.textContent = modeHints[normalized];
+        const copy = modeCopy[normalized];
+        if (modeKicker) modeKicker.textContent = copy.kicker;
+        if (modeTitle) modeTitle.textContent = copy.title;
+        if (modeHint) modeHint.textContent = copy.hint;
         if (normalized === "results") {
             if (map.hasLayer(gridLayers)) map.removeLayer(gridLayers);
             syncResultLayerVisibility();
@@ -1263,6 +1423,19 @@
         liveRefreshTimer = window.setInterval(function () {
             if (!document.hidden) loadCoverage(true).catch(showError);
         }, 5000);
+    }
+
+    // Collapsing the rail hands the map every pixel of the card. The control
+    // that brings it back floats on the map itself, so the map is never a dead
+    // end — and Leaflet is told to re-measure once the column has changed.
+    function toggleRail() {
+        const collapsed = explorer.dataset.rail === "collapsed";
+        explorer.dataset.rail = collapsed ? "expanded" : "collapsed";
+        if (railToggle) {
+            railToggle.setAttribute("aria-expanded", collapsed ? "true" : "false");
+            railToggle.textContent = collapsed ? "Hide panel" : "Show panel";
+        }
+        scheduleInvalidate();
     }
 
     function startDrawing(shape) {
@@ -1362,14 +1535,14 @@
             removedCells = new Set();
             setAreaState("");
             clearDerivedLayers();
-            showStatus("Area geometry edited. Preview the grid again.", "success");
+            showStatus("Area changed. Preview the areas to search again.", "success");
         });
         map.on(window.L.Draw.Event.DELETED, function () {
             removedCells = new Set();
             setAreaState("");
             clearDerivedLayers();
             updateShapeLabel();
-            showStatus("Area geometry removed. Draw or load another area.");
+            showStatus("Area removed. Draw or load another one.");
         });
 
         observeStageSize();
@@ -1404,6 +1577,8 @@
             "remove-cells": removeSelectedCells,
             "restore-cells": restoreRemovedCells,
             "load-coverage": function () { return loadCoverage(false); },
+            "select-gaps": selectGapCells,
+            "toggle-rail": toggleRail,
             "retry-cells": function () { return queueSelectedCells("retry"); },
             "keyword-cells": function () { return queueSelectedCells("keyword"); },
             "group-cells": function () { return queueSelectedCells("template"); },
@@ -1451,6 +1626,8 @@
     explorer.querySelectorAll("[data-rail-section]").forEach((section) => {
         section.addEventListener("toggle", scheduleInvalidate);
     });
+
+    if (placeInput) placeInput.addEventListener("input", updateAreaMeta);
 
     if (queryInput) queryInput.addEventListener("keydown", function (event) {
         if (event.key === "Enter") {

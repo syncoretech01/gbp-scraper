@@ -1,5 +1,6 @@
 /*
- * app-monitor.js — the live operations console and the benchmark report.
+ * app-monitor.js — the live operations console, the benchmark report, and the
+ * two presentation fixes the jobs queue needs.
  *
  * Both pages are read-only surfaces over endpoints that already exist. Nothing
  * here fetches a library, injects a stylesheet, or registers an inline handler:
@@ -16,6 +17,31 @@
     "use strict";
 
     const SVG_NS = "http://www.w3.org/2000/svg";
+
+    /* The words this product says out loud for a lifecycle value. "partial" is
+     * the one that matters: printed raw it reads as damaged data, when what it
+     * actually means is that the run stopped at a limit and kept everything it
+     * had collected. The server renders the same words; this map exists so a
+     * live state change does not regress the page to the database value. */
+    const STATE_WORDS = {
+        completed: "Finished",
+        partial: "Stopped early",
+        failed: "Failed",
+        cancelled: "Cancelled",
+        canceled: "Cancelled",
+        cancelling: "Stopping",
+        running: "Running",
+        starting: "Starting",
+        paused: "Paused",
+        queued: "Queued",
+        draft: "Not started"
+    };
+
+    function stateWord(state) {
+        const key = String(state == null ? "" : state).toLowerCase();
+
+        return STATE_WORDS[key] || state;
+    }
 
     function number(value) {
         const parsed = Number(value);
@@ -148,22 +174,24 @@
         const announce = monitor.querySelector("[data-monitor-announcement]");
 
         /* The worker reports "not reported by worker" (and friends) for context
-         * it never observed. Printed at value weight those read as data, so
-         * every such value is dropped to the design system's inline empty
-         * treatment instead — the same rule the benchmark report follows. */
+         * it never observed. Those phrases are engineering status, not data:
+         * on a run that finished perfectly they read as breakage. Every one of
+         * them is rewritten to the design system's inline absence — an em dash
+         * at reduced weight — which is the same rule the benchmark report
+         * follows. The metric itself is never removed, only its non-answer. */
         const EMPTY_VALUES = [
             "not reported by worker", "not reported", "not reported yet", "not recorded",
             "not measured", "not available", "not started", "not created yet", "no data",
-            "none", "unknown", "n/a", "-", "–", "—", ""
+            "no saved area", "not enough data", "none", "unknown", "n/a", "-", "–", "—", ""
         ];
 
         function markEmpty(node) {
             const text = node.textContent.trim();
             const empty = EMPTY_VALUES.indexOf(text.toLowerCase()) >= 0;
             node.classList.toggle("empty-inline", empty);
-            // A field the server left blank would otherwise read as a missing
-            // row rather than a missing value.
-            if (empty && text === "") node.textContent = "—";
+            // Only a leaf is rewritten: a value that wraps its own markup (a
+            // percentage span inside a bold, say) would lose that markup.
+            if (empty && text !== "—" && node.children.length === 0) node.textContent = "—";
         }
 
         // A live update only ever replaces a value it actually carries. The
@@ -240,9 +268,30 @@
             return words.charAt(0).toUpperCase() + words.slice(1);
         }
 
+        // The outcome banner at the top of the page was rendered for the state
+        // the page loaded in. When the stream says the run has since stopped,
+        // the banner is stale: say so and offer a refresh rather than reloading
+        // under an operator who may be typing in the notes field.
+        const renderedState = String(monitor.querySelector("[data-outcome]")
+            ? monitor.querySelector("[data-outcome]").dataset.outcome : "").toLowerCase();
+        const refreshNotice = monitor.querySelector("[data-outcome-refresh]");
+        const refreshButton = monitor.querySelector("[data-outcome-refresh-action]");
+        if (refreshButton) {
+            refreshButton.addEventListener("click", () => { window.location.reload(); });
+        }
+
+        function noteOutcomeChanged(state) {
+            if (!refreshNotice || !state) return;
+            const next = String(state).toLowerCase();
+            if (next === renderedState || TERMINAL_STATES.indexOf(next) < 0) return;
+            const title = refreshNotice.querySelector("[data-outcome-refresh-title]");
+            if (title) title.textContent = "This run has stopped: " + stateWord(next).toLowerCase() + ".";
+            refreshNotice.hidden = false;
+        }
+
         function render(snapshot) {
             if (!snapshot) return;
-            put("state", snapshot.state);
+            put("state", stateWord(snapshot.state));
             put("stage", humanStage(snapshot.stage));
             const counters = snapshot.counters || {};
             const results = snapshot.results || {};
@@ -271,17 +320,27 @@
             }
             put("current-query", worker.current_query);
             put("current-cell", worker.current_cell);
-            put("cpu", worker.cpu_percent);
+            // The unit belongs to the value, not to the markup around it: an
+            // unreported reading has to be able to become a bare em dash.
+            put("cpu", worker.cpu_percent == null ? null : worker.cpu_percent + "%");
             put("disk-free", worker.disk_free_bytes);
             put("worker-concurrency", worker.effective_workers == null ? null : worker.effective_workers + " / " + worker.desired_workers);
+            // Failed searches are only worth colouring when there are some.
+            monitor.querySelectorAll("[data-failed-readout]").forEach((readout) => {
+                const value = readout.querySelector('[data-progress-field="tasks-failed"]');
+                if (!value) return;
+                if (number(value.textContent) > 0) readout.dataset.emphasis = "danger";
+                else readout.removeAttribute("data-emphasis");
+            });
             // The state pill lives in the status header and in the top bar, so
             // every copy is restyled together.
             if (snapshot.state) {
                 const state = String(snapshot.state).toLowerCase().replace(/[^a-z0-9-]/g, "");
                 document.querySelectorAll('[data-progress-field="state"]').forEach((pill) => {
                     if (pill.classList.contains("status")) pill.className = "status status-" + (state || "queued");
-                    pill.textContent = snapshot.state;
+                    pill.textContent = stateWord(snapshot.state);
                 });
+                noteOutcomeChanged(snapshot.state);
             }
 
             let percent = null;
@@ -308,7 +367,7 @@
             syncCurrentLine();
 
             if (announce && snapshot.state) {
-                announce.textContent = "Job " + snapshot.state +
+                announce.textContent = "Job " + stateWord(snapshot.state) +
                     (percent == null ? "" : ", " + Math.round(percent) + "% complete") +
                     (snapshot.stage ? ", stage " + humanStage(snapshot.stage) : "") + ".";
             }
@@ -480,12 +539,12 @@
             const failed = number(totals.tasks_failed);
             const skipped = number(totals.tasks_skipped);
             const tiles = [
-                totalTile(done + " / " + number(totals.tasks_total), "queries finished"),
+                totalTile(done + " / " + number(totals.tasks_total), "searches finished"),
                 totalTile(number(totals.rows_added), "rows added"),
                 totalTile(number(totals.rows_replaced), "rows replaced"),
                 totalTile(number(totals.duplicates_skipped), "duplicates skipped"),
-                totalTile(failed, "queries failed", failed > 0 ? "danger" : ""),
-                totalTile(skipped, "queries skipped", skipped > 0 ? "warning" : ""),
+                totalTile(failed, "searches failed", failed > 0 ? "danger" : ""),
+                totalTile(skipped, "searches skipped", skipped > 0 ? "warning" : ""),
                 totalTile(number(totals.expansions_added), "expansions added")
             ];
             // Refinements and truncation are newer fields, and both are zero on
@@ -505,7 +564,7 @@
             target.replaceChildren();
             if (!saturation || saturation.enabled !== true) {
                 target.appendChild(element("span", null,
-                    "Automatic stop is off for this job; every generated query will run."));
+                    "Automatic stop is off for this job; every generated search will run."));
 
                 return;
             }
@@ -514,11 +573,12 @@
                 Number.isFinite(ratio) ? (ratio * 100).toFixed(1) + "% new" : "no samples yet"));
             target.appendChild(element("span", null,
                 "over the last " + number(saturation.window_samples || saturation.window) +
-                " of " + number(saturation.window) + " queries; stops below " +
+                " of " + number(saturation.window) + " searches; stops below " +
                 (number(saturation.min_new_ratio) * 100).toFixed(1) + "% new."));
             if (saturation.stopped === true) {
-                const badge = element("span", "badge badge-warning",
-                    saturation.reason === "empty-area" ? "stopped: empty area" : "stopped on saturation");
+                const badge = element("span", "badge badge-warning", saturation.reason === "empty-area"
+                    ? "stopped early: nothing left to find here"
+                    : "stopped early: the area was already covered");
                 target.appendChild(badge);
             }
         }
@@ -938,6 +998,48 @@
         })();
     }
 
+    /* ====================================================================
+     * JOBS QUEUE
+     *
+     * One presentational repair. The queue's configuration column prints the
+     * server's location summary, and for a job configured from the map that
+     * summary is a pair of decimal degrees — a value no operator recognises as
+     * a place. JobData already stores a location label, so the durable fix is
+     * for that summary to use it; until it does, the queue names the shape of
+     * the area instead of its coordinates and keeps the exact original string
+     * in the cell's tooltip. A summary that is already a name is left alone.
+     * ================================================================== */
+    function initJobsList() {
+        const page = document.querySelector("[data-jobs-page]");
+        if (!page) return;
+
+        const COORD = "-?\\d{1,3}(?:\\.\\d+)?";
+        const PAIR = COORD + "\\s*,\\s*" + COORD;
+        const RULES = [
+            { match: new RegExp("^Maps search near\\s*" + PAIR + "$", "i"), text: "One map area" },
+            {
+                match: new RegExp("^Fast Mode within\\s+(.+?)\\s+of\\s+" + PAIR + "$", "i"),
+                text: "Fast mode · $1 around one map point"
+            },
+            { match: /^Grid\s+\S+\s+\((.+?)\s*km cells\)$/i, text: "Map area · $1 km squares" },
+            { match: /^No geographic constraint recorded$/i, text: "No area limit" }
+        ];
+
+        page.querySelectorAll("[data-location-summary]").forEach((cell) => {
+            const original = cell.textContent.trim();
+            for (let i = 0; i < RULES.length; i += 1) {
+                if (!RULES[i].match.test(original)) continue;
+                const rewritten = original.replace(RULES[i].match, RULES[i].text);
+                if (rewritten === original) return;
+                cell.textContent = rewritten;
+                cell.title = original;
+
+                return;
+            }
+        });
+    }
+
     initConsole();
     initBenchmark();
+    initJobsList();
 })();

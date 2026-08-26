@@ -19,6 +19,9 @@
      [data-system-diagnostics]   pages/system.html
      [data-export-workspace]     pages/exports.html
      [data-settings-workspace]   pages/settings.html
+     [data-proxies-workspace]    pages/proxies.html
+     [data-schedules-workspace]  pages/schedules.html
+     [data-saved-workspace]      pages/saved_searches.html
      [data-onboarding]           pages/onboarding.html
    =========================================================================== */
 
@@ -66,6 +69,9 @@
 [data-api-workspace] .field-help,
 [data-export-workspace] .field-help,
 [data-settings-workspace] .field-help,
+[data-proxies-workspace] .field-help,
+[data-schedules-workspace] .field-help,
+[data-saved-workspace] .field-help,
 [data-system-diagnostics] .field-help {
     display: block;
     margin: 0;
@@ -240,4 +246,511 @@
 
 [data-settings-workspace] .ai-console[aria-busy="true"] .ai-output {
     opacity: .6;
+}
+
+/* ===========================================================================
+   Phase 3 operations pass — Settings sectioning and the shared page furniture
+   used by System, Proxies, Exports, Schedules, Saved searches, and Local API.
+
+   Nothing here redefines an app.css component: every rule is scoped to one of
+   the page wrappers listed at the top of this file and only adds layout, a
+   disclosure skin, and a few page-local affordances. All colour, spacing, and
+   radius values come from app.css tokens, so both themes stay correct.
+   =========================================================================== */
+
+/* ---------------------------------------------------------------------------
+   Settings: a sticky section rail beside the panels.
+   Settings used to be one uninterrupted 5,000px scroll with no way to reach a
+   specific control. It is now eight anchored sections with a rail that also
+   carries the save button for the defaults form, so an operator never has to
+   scroll back to the top to commit a change.
+   --------------------------------------------------------------------------- */
+.settings-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 13.5rem) minmax(0, 1fr);
+    gap: var(--space-5);
+    align-items: start;
+    min-width: 0;
+}
+
+.settings-rail {
+    position: sticky;
+    top: var(--space-4);
+    z-index: 5;
+    min-width: 0;
+}
+
+.settings-nav {
+    display: grid;
+    gap: var(--space-3);
+    padding: var(--space-3);
+}
+
+.settings-nav-title {
+    margin: 0;
+    padding-inline: var(--space-2);
+    color: var(--text-muted);
+    font-size: var(--text-2xs);
+    font-weight: var(--weight-bold);
+    letter-spacing: var(--tracking-caps);
+    text-transform: uppercase;
+}
+
+.settings-nav-list {
+    display: grid;
+    gap: 1px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.settings-nav-list a {
+    display: block;
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+    text-decoration: none;
+    transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+
+.settings-nav-list a:hover {
+    background: var(--surface-hover);
+    color: var(--text);
+}
+
+.settings-nav-list a[aria-current="true"] {
+    background: var(--primary-soft);
+    color: var(--primary);
+    font-weight: var(--weight-semibold);
+}
+
+.settings-nav-save {
+    display: grid;
+    gap: var(--space-2);
+    padding-top: var(--space-3);
+    border-top: 1px solid var(--border);
+}
+
+.settings-nav-save .button {
+    width: 100%;
+}
+
+.settings-panels {
+    min-width: 0;
+}
+
+.settings-section {
+    scroll-margin-top: var(--space-4);
+}
+
+/* Long absolute paths and version strings sit in card headers on these pages;
+   they must wrap instead of pushing the header wider than the card. */
+[data-settings-workspace] .card-header code,
+[data-system-diagnostics] .card-header code {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+/* ---------------------------------------------------------------------------
+   Grouped form blocks.
+   A fieldset marks one decision inside a card; consecutive groups are divided
+   so a twenty-field card reads as four short questions instead of one wall.
+   --------------------------------------------------------------------------- */
+[data-settings-workspace] .settings-group > legend,
+[data-export-workspace] .export-group > legend,
+[data-schedules-workspace] .schedule-group > legend {
+    margin-bottom: var(--space-3);
+    padding: 0;
+    color: var(--text);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-semibold);
+    letter-spacing: var(--tracking-tight);
+}
+
+[data-settings-workspace] .settings-group + .settings-group,
+[data-settings-workspace] .settings-group + .settings-advanced,
+[data-export-workspace] .export-group + .export-group,
+[data-schedules-workspace] .schedule-group + .schedule-group {
+    margin-top: var(--space-2);
+    padding-top: var(--space-5);
+    border-top: 1px solid var(--border-subtle);
+}
+
+.settings-group-note {
+    margin: 0 0 var(--space-3);
+    max-width: 78ch;
+}
+
+[data-settings-workspace] .grid-span-2,
+[data-schedules-workspace] .grid-span-2 {
+    grid-column: span 2;
+}
+
+/* ---------------------------------------------------------------------------
+   Advanced disclosures. One skin for every "there is more here" block on these
+   pages, so an operator learns the affordance once.
+   --------------------------------------------------------------------------- */
+.settings-advanced,
+[data-export-workspace] .export-disclosure,
+[data-schedules-workspace] .schedule-disclosure {
+    min-width: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface-muted);
+}
+
+.settings-advanced > summary,
+[data-export-workspace] .export-disclosure > summary,
+[data-schedules-workspace] .schedule-disclosure > summary {
+    padding: var(--space-3) var(--space-4);
+    border-radius: var(--radius-md);
+    color: var(--text);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-semibold);
+    cursor: pointer;
+}
+
+.settings-advanced > summary:focus-visible,
+[data-export-workspace] .export-disclosure > summary:focus-visible,
+[data-schedules-workspace] .schedule-disclosure > summary:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: -2px;
+}
+
+.settings-advanced[open] > summary,
+[data-export-workspace] .export-disclosure[open] > summary,
+[data-schedules-workspace] .schedule-disclosure[open] > summary {
+    border-bottom: 1px solid var(--border);
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
+}
+
+.settings-advanced-body,
+[data-export-workspace] .export-disclosure > .section-stack,
+[data-export-workspace] .export-disclosure > .grid,
+[data-schedules-workspace] .schedule-disclosure > .grid {
+    padding: var(--space-4);
+}
+
+/* ---------------------------------------------------------------------------
+   System health.
+   --------------------------------------------------------------------------- */
+.system-path {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.system-actions {
+    display: grid;
+    gap: var(--space-2);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.system-action {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    min-width: 0;
+    padding: var(--space-3);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--surface-muted);
+}
+
+.system-action > div {
+    flex: 1 1 13rem;
+    min-width: 0;
+}
+
+.system-action strong {
+    display: block;
+    font-size: var(--text-sm);
+}
+
+.system-action p {
+    margin: .15rem 0 0;
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    line-height: 1.45;
+}
+
+.system-action > form {
+    flex: 0 0 auto;
+}
+
+.system-action-wide {
+    align-items: flex-end;
+}
+
+.system-cleanup-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: var(--space-2);
+    min-width: 0;
+}
+
+.system-cleanup-form .field {
+    flex: 1 1 8rem;
+    min-width: 7rem;
+}
+
+.system-inline-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    margin-top: var(--space-4);
+    padding-top: var(--space-4);
+    border-top: 1px solid var(--border);
+}
+
+.system-backup-bar {
+    border-bottom: 1px solid var(--border);
+}
+
+.system-backup-bar .toolbar-group {
+    align-items: end;
+}
+
+.system-backup-bar .input {
+    width: auto;
+    min-width: 12rem;
+    max-width: 18rem;
+}
+
+[data-system-diagnostics] .section-header p {
+    margin: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   Local API: the two small forms in the keys card are single rows, not grids,
+   so the submit button stays on the same baseline as its inputs.
+   --------------------------------------------------------------------------- */
+.api-key-form,
+.api-rate-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: var(--space-3);
+    min-width: 0;
+}
+
+.api-key-form .field,
+.api-rate-form .field {
+    flex: 1 1 12rem;
+    max-width: 22rem;
+}
+
+.api-rate-form {
+    padding-top: var(--space-4);
+    border-top: 1px solid var(--border-subtle);
+}
+
+[data-api-workspace] .table-actions .input-sm {
+    width: auto;
+    min-width: 12rem;
+}
+
+/* ---------------------------------------------------------------------------
+   Schedules: the per-row editor lives in a details inside a full-width cell.
+   --------------------------------------------------------------------------- */
+[data-schedules-workspace] .schedule-detail-row > td {
+    padding-block: var(--space-2);
+    background: var(--surface-muted);
+}
+
+[data-schedules-workspace] .schedule-detail-row summary {
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    cursor: pointer;
+}
+
+[data-schedules-workspace] .schedule-detail {
+    padding-top: var(--space-3);
+}
+
+/* ---------------------------------------------------------------------------
+   Saved searches: template cards keep two visible actions and fold the rest
+   into the shared .action-menu, which had no styling for anchor items.
+   --------------------------------------------------------------------------- */
+[data-saved-workspace] .saved-grid {
+    align-items: start;
+}
+
+[data-saved-workspace] .action-menu > div a {
+    display: block;
+    padding: .48rem .55rem;
+    border-radius: .35rem;
+    color: var(--text);
+    font-size: var(--text-sm);
+    text-decoration: none;
+}
+
+[data-saved-workspace] .action-menu > div a:hover {
+    background: var(--surface-hover);
+}
+
+[data-saved-workspace] .action-menu .inline-form {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--space-2);
+    padding: .3rem .55rem;
+}
+
+[data-saved-workspace] .action-menu .danger-text {
+    color: var(--danger);
+}
+
+[data-saved-workspace] .saved-item .key-value dd {
+    overflow-wrap: anywhere;
+}
+
+/* ---------------------------------------------------------------------------
+   Proxies: the masked URL column must never widen the table beyond its scroll
+   container, and the health note is a disclosure rather than a wall.
+   --------------------------------------------------------------------------- */
+[data-proxies-workspace] .data-table code {
+    overflow-wrap: anywhere;
+}
+
+[data-proxies-workspace] .disclosure > summary {
+    font-size: var(--text-sm);
+}
+
+/* ---------------------------------------------------------------------------
+   Responsive.
+   Between 1200px and 1440px the rail stays visible and the four-column form
+   grids drop to three, which keeps every input readable without losing the
+   section navigation. Below 1200px the rail becomes a sticky horizontal bar.
+   --------------------------------------------------------------------------- */
+@media (min-width: 75.0625rem) and (max-width: 90rem) {
+    .settings-layout .grid-4 {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 75rem) {
+    .settings-layout {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .settings-rail {
+        top: 0;
+    }
+
+    .settings-nav {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        overflow-x: auto;
+        overscroll-behavior-x: contain;
+    }
+
+    .settings-nav-title {
+        display: none;
+    }
+
+    .settings-nav-list {
+        display: flex;
+        flex: 1 1 auto;
+        gap: var(--space-1);
+    }
+
+    .settings-nav-list a {
+        white-space: nowrap;
+    }
+
+    .settings-nav-save {
+        flex: 0 0 auto;
+        padding-top: 0;
+        border-top: 0;
+    }
+
+    .settings-nav-save .field-hint {
+        display: none;
+    }
+}
+
+@media (max-width: 56rem) {
+    .system-action {
+        align-items: flex-start;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   Field alignment inside these forms.
+   app.css builds .field as a grid of label / control / hint. When several
+   fields share a grid row, the row stretches every field to the tallest one
+   and the default `align-content: stretch` then spreads the spare height
+   between the rows — so a field whose neighbour has a two-line hint renders
+   its input several pixels lower than the one beside it. Pinning the content
+   to the top keeps every control in a row on the same baseline. This adds a
+   property to a component inside one scope; it does not restyle it.
+   --------------------------------------------------------------------------- */
+[data-settings-workspace] .field,
+[data-export-workspace] .field,
+[data-schedules-workspace] .field,
+[data-proxies-workspace] .field,
+[data-api-workspace] .field,
+[data-system-diagnostics] .field {
+    align-content: start;
+}
+
+/* A metric tile can hold an absolute path. Without an explicit zero minimum
+   the auto-fit track grows to the path's min-content width and the whole
+   metrics grid scrolls the shell sideways. */
+[data-system-diagnostics] .metric {
+    min-width: 0;
+}
+
+[data-system-diagnostics] .metric .metric-detail {
+    display: block;
+    min-width: 0;
+    max-width: 100%;
+}
+
+/* Versions and Safe maintenance have very different natural heights; letting
+   the shorter card end where its content ends beats a column of empty card. */
+[data-system-diagnostics] > .grid-2 {
+    align-items: start;
+}
+
+.settings-group-note {
+    max-width: 104ch;
+}
+
+/* The directory-usage list packs a label, its path, a size, and the retention
+   rule into one tile. Every part needs its own line: without this the size and
+   the retention sentence render as one run-together string ("7.1 MiBNever
+   deleted by retention or cleanup"). */
+[data-settings-workspace] .directory-usage dt code,
+[data-system-diagnostics] .directory-usage dt code {
+    display: block;
+    margin-top: .1rem;
+}
+
+[data-settings-workspace] .directory-usage small,
+[data-system-diagnostics] .directory-usage small {
+    display: block;
+    margin-top: .2rem;
+}
+
+/* The rename control lives inside the overflow menu, where a two-column
+   inline-form squeezes the text field to a few characters. Stack it. */
+[data-saved-workspace] .action-menu > div {
+    min-width: 15rem;
+}
+
+[data-saved-workspace] .action-menu .inline-form {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-1);
+    padding: .3rem .55rem .5rem;
 }

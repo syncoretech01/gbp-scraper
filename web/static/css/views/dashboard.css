@@ -35,80 +35,98 @@
    --------------------------------------------------------------------------- */
 .dashboard { gap: var(--space-5); }
 
+/* Absence, printed. The template's dash-value helper emits this instead of an
+   engineering status string such as "not recorded". */
+.dashboard .dash-none { color: var(--text-faint); }
+
 /* ---------------------------------------------------------------------------
-   1. KPI strip
-   Six .stat tiles across on a wide desktop, then 3 and 2. Explicit column
-   counts rather than auto-fit so the strip never leaves a single orphan tile
-   on its own row.
+   0. First run.
+   A workspace with no jobs, no backlog, and no records has nothing to measure,
+   so the page teaches the loop (create → run → monitor → results → export)
+   instead of drawing six tiles that all read zero.
    --------------------------------------------------------------------------- */
-.dashboard .dash-kpis { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: var(--space-3); }
-.dashboard .dash-kpis .stat { gap: 0; }
+.dashboard .dash-firstrun-body { display: grid; gap: var(--space-6) var(--space-7); grid-template-columns: minmax(0, 22rem) minmax(0, 1fr); align-items: start; padding: var(--space-6); }
+.dashboard .dash-firstrun-intro { display: grid; align-content: start; gap: var(--space-3); min-width: 0; }
+.dashboard .dash-firstrun-intro h2 { margin: 0; max-width: 18ch; }
+.dashboard .dash-firstrun-lead { margin: 0; max-width: 44ch; color: var(--text-muted); font-size: var(--text-sm); line-height: var(--leading); }
+.dashboard .dash-firstrun-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); }
+
+/* Two columns of numbered steps: the loop is short enough to be read in one
+   glance, which is the entire point of showing it. */
+.dashboard .dash-steps { display: grid; gap: var(--space-3) var(--space-5); grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; padding: 0; list-style: none; }
+.dashboard .dash-step { display: flex; gap: var(--space-3); min-width: 0; }
+.dashboard .dash-step-index {
+    display: grid;
+    width: 1.75rem;
+    height: 1.75rem;
+    flex: 0 0 auto;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--primary-soft);
+    color: var(--primary);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-bold);
+    font-variant-numeric: tabular-nums;
+}
+.dashboard .dash-step-copy { display: grid; gap: var(--space-1); min-width: 0; }
+.dashboard .dash-step-copy strong { color: var(--text); font-size: var(--text-sm); font-weight: var(--weight-semibold); }
+.dashboard .dash-step-copy p { margin: 0; color: var(--text-muted); font-size: var(--text-xs); line-height: var(--leading-snug); }
+.dashboard .dash-step-copy em { color: var(--text); font-style: normal; font-weight: var(--weight-semibold); }
+.dashboard .dash-step-copy a { font-size: var(--text-xs); font-weight: var(--weight-semibold); }
+.dashboard .dash-firstrun-footer p { margin: 0; }
+.dashboard .dash-prospect-hint .card-body { display: grid; gap: var(--space-1); padding: var(--space-4) var(--space-5); }
+.dashboard .dash-prospect-hint h2 { margin: 0; }
+.dashboard .dash-prospect-hint p { max-width: 80ch; margin: 0; }
+
+@media (max-width: 82rem) {
+    .dashboard .dash-firstrun-body { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Five steps in two columns leaves the last cell empty; letting an odd final
+   step run the full width closes the hole instead of advertising it. */
+.dashboard .dash-step:last-child:nth-child(odd) { grid-column: 1 / -1; }
+
+@media (max-width: 52rem) {
+    .dashboard .dash-steps { grid-template-columns: minmax(0, 1fr); }
+    .dashboard .dash-step:last-child:nth-child(odd) { grid-column: auto; }
+}
+
+/* ---------------------------------------------------------------------------
+   1. KPI strip.
+   Four tiles an operator acts on, plus collection speed when the workspace has
+   actually measured it. Every tile is a link to the list it counts: a number
+   nobody can open is a decoration.
+   --------------------------------------------------------------------------- */
+/* Exactly four tiles, so auto-fit can never strand a fifth on a row of its own
+   — the failure the old seven-tile strip made every time it was wide enough
+   for six. Anything that is not one of these four is a System health fact. */
+.dashboard .dash-kpis { grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: var(--space-3); }
+.dashboard .dash-kpi {
+    gap: 0;
+    color: inherit;
+    text-decoration: none;
+    transition: border-color var(--transition-fast), background-color var(--transition-fast);
+}
+.dashboard .dash-kpi:hover { border-color: var(--primary-border); background: var(--surface-hover); }
+.dashboard .dash-kpi:hover .stat-label span { color: var(--primary); }
 .dashboard .dash-kpis .stat-label { margin-bottom: var(--space-1); text-transform: uppercase; font-size: var(--text-2xs); font-weight: var(--weight-bold); letter-spacing: var(--tracking-caps); color: var(--text-faint); }
 .dashboard .dash-kpis .stat-meta { margin-top: var(--space-1); font-size: var(--text-2xs); line-height: var(--leading-snug); }
 
-@media (max-width: 82rem) {
-    .dashboard .dash-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}
-
-@media (max-width: 44rem) {
-    .dashboard .dash-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-
 /* ---------------------------------------------------------------------------
-   2. Command row — "Running now" beside "Needs attention".
-   The two cards must end level; a card that stops short of its neighbour is
-   the dead space this page was rebuilt to remove.
-   --------------------------------------------------------------------------- */
-.dashboard .dash-command { align-items: stretch; }
-.dashboard .dash-command-main { display: grid; align-content: start; gap: var(--space-4); min-width: 0; }
-.dashboard .dash-command > .card,
-.dashboard .dash-command-main > .card { display: flex; flex-direction: column; }
-.dashboard .dash-command > .card > .card-body { flex: 1 1 auto; display: flex; flex-direction: column; padding: 0; }
-.dashboard .dash-command-main > .card > .card-body { padding: 0; }
-.dashboard .dash-command .table-wrap { border: 0; border-radius: 0; }
-
-/* Contact-field meters sit two-up so a wide column does not stretch four
-   bars across the full width of the card. */
-.dashboard .dash-availability { display: grid; gap: var(--space-4) var(--space-6); grid-template-columns: repeat(2, minmax(0, 1fr)); padding: var(--space-4) var(--space-5) !important; }
-.dashboard .dash-availability .metric-label { margin: 0 0 var(--space-1); }
-/* The heading of the reachability group spans both meter columns so the two
-   groups never read as one eight-row list. */
-.dashboard .dash-availability > .t-overline { grid-column: 1 / -1; margin: 0; }
-/* A percentage without its count is a ratio with no denominator, so the
-   evidence sits directly under the bar it explains. */
-.dashboard .dash-availability-count { margin: var(--space-1) 0 0; color: var(--text-muted); }
-.dashboard .dash-availability-footer { justify-content: space-between; }
-.dashboard .dash-availability-footer p { margin: 0; }
-
-/* Live progress cell: bar over its printed value, never the bar alone. */
-.dashboard .dash-progress-col { width: 12rem; }
-.dashboard .dash-progress { display: grid; gap: var(--space-1); min-width: 0; }
-.dashboard .dash-progress small { color: var(--text-muted); font-size: var(--text-2xs); }
-
-.dashboard .dash-job-link { color: var(--text); font-weight: var(--weight-semibold); text-decoration: none; }
-.dashboard .dash-job-link:hover { color: var(--primary); text-decoration: underline; }
-.dashboard .cell-subtitle { display: block; color: var(--text-muted); font-size: var(--text-2xs); line-height: var(--leading-snug); }
-.dashboard .dash-timestamp { color: var(--text-muted); font-size: var(--text-2xs); white-space: nowrap; }
-
-/* Compact idle panel. Deliberately quieter than the full .empty-state: this
-   is a normal operating condition, not a missing feature. */
-.dashboard .dash-idle { display: flex; flex: 1 1 auto; align-items: center; gap: var(--space-4); padding: var(--space-5); }
-.dashboard .dash-idle > div { min-width: 0; flex: 1 1 auto; }
-.dashboard .dash-idle-icon { display: grid; width: 2.25rem; height: 2.25rem; flex: 0 0 auto; place-items: center; border-radius: 50%; background: var(--surface-muted); color: var(--text-faint); }
-.dashboard .dash-idle-title { margin: 0 0 var(--space-1); color: var(--text); font-size: var(--text-sm); font-weight: var(--weight-semibold); }
-.dashboard .dash-idle p { margin: 0; }
-.dashboard .dash-idle-clear .dash-idle-icon { background: var(--state-success-bg); color: var(--state-success-fg); }
-
-/* ---------------------------------------------------------------------------
-   Attention list — the next-best-action queue.
-   One row per backlog: the count leads, the label says what it is, the detail
-   says why it matters, and the whole row is the link to the filtered view.
+   2. Needs attention — promoted to the widest band on the page.
+   One card per backlog: the count leads, the label says what it is, the detail
+   says why it matters, and the whole card is the link to the filtered view.
    data-tone selects a semantic state pair from app.css; colour is only ever
-   reinforcement, because every row also prints its number and its name.
+   reinforcement, because every card also prints its number and its name.
    --------------------------------------------------------------------------- */
-.dashboard .dash-attention { display: grid; margin: 0; padding: 0; list-style: none; }
-.dashboard .dash-attention-item { --tone-fg: var(--state-neutral-fg); --tone-bg: var(--state-neutral-bg); border-bottom: 1px solid var(--border-subtle); }
-.dashboard .dash-attention-item:last-child { border-bottom: 0; }
+.dashboard .dash-attention-card .card-title { display: flex; align-items: center; gap: var(--space-2); }
+.dashboard .dash-attention-card > .card-body { padding: var(--space-4) var(--space-5); }
+
+/* Three columns, because the server caps the queue at six rows: six items then
+   fill two complete rows instead of leaving a ragged tail, and each card still
+   has room for two lines of explanation. */
+.dashboard .dash-attention { display: grid; gap: var(--space-3); grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; padding: 0; list-style: none; }
+.dashboard .dash-attention-item { --tone-fg: var(--state-neutral-fg); --tone-bg: var(--state-neutral-bg); min-width: 0; }
 .dashboard .dash-attention-item[data-tone="danger"] { --tone-fg: var(--state-danger-fg); --tone-bg: var(--state-danger-bg); }
 .dashboard .dash-attention-item[data-tone="warning"] { --tone-fg: var(--state-warning-fg); --tone-bg: var(--state-warning-bg); }
 .dashboard .dash-attention-item[data-tone="info"] { --tone-fg: var(--state-info-fg); --tone-bg: var(--state-info-bg); }
@@ -116,16 +134,20 @@
 
 .dashboard .dash-attention-link {
     display: flex;
+    height: 100%;
     align-items: center;
     gap: var(--space-3);
     min-width: 0;
     padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--border);
     border-left: 3px solid var(--tone-fg);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
     color: inherit;
     text-decoration: none;
-    transition: background-color var(--transition-fast);
+    transition: background-color var(--transition-fast), border-color var(--transition-fast);
 }
-.dashboard .dash-attention-link:hover { background: var(--surface-hover); }
+.dashboard .dash-attention-link:hover { border-color: var(--border-strong); border-left-color: var(--tone-fg); background: var(--surface-hover); }
 .dashboard .dash-attention-count {
     display: grid;
     min-width: 2.75rem;
@@ -149,31 +171,86 @@
 .dashboard .dash-attention-chevron { display: inline-flex; transform: rotate(-90deg); }
 .dashboard .dash-attention-chevron .icon { width: .85rem; height: .85rem; }
 
-@media (max-width: 68rem) {
-    .dashboard .dash-attention-action span:not(.dash-attention-chevron) { display: none; }
-}
-
 /* ---------------------------------------------------------------------------
-   3. Recent campaigns — the yield table and its summary footer.
+   3. Running now / 4. Continue working.
+   Both are tables inside flush cards, so the table owns the card edge and the
+   rows keep the same rhythm either side of the terminal boundary.
    --------------------------------------------------------------------------- */
-/* The campaign name is bounded so a long name cannot wrap to three lines and
-   triple the row height; the full name is one click away on the monitor. */
-.dashboard .dash-campaign-col { min-width: 13rem; max-width: 18rem; }
+.dashboard .dash-running > .card-body,
+.dashboard .dash-continue > .card-body { padding: 0; }
+.dashboard .dash-running .table-wrap,
+.dashboard .dash-continue .table-wrap { border: 0; border-radius: 0; }
+
+/* Each card keeps its natural height (the .split-pane default). Stretching them
+   to match would open a blank panel under whichever card is shorter, and the
+   coverage card grows when its reachability disclosure is opened. */
+.dashboard .dash-continue-row { align-items: start; }
+
+/* Wide enough that a three-word campaign name stays on two lines instead of
+   stacking one word per line and tripling the row height. The selector carries
+   the table and the element because app.css sets min-width on
+   `.data-table th:first-child`, which would otherwise out-specify this. */
+.dashboard .data-table th.dash-job-col,
+.dashboard .data-table td.dash-job-col { min-width: 11rem; }
+/* Live progress cell: bar over its printed value, never the bar alone. */
+.dashboard .dash-progress-col { width: 12rem; }
+.dashboard .dash-progress { display: grid; gap: var(--space-1); min-width: 0; }
+/* The caption belongs to the bar above it, so it starts where the bar starts;
+   .data-table .num would otherwise right-align a short "38%" away from it. */
+.dashboard .dash-progress small { color: var(--text-muted); font-size: var(--text-2xs); text-align: left; }
+
+.dashboard .dash-job-link { color: var(--text); font-weight: var(--weight-semibold); text-decoration: none; }
+.dashboard .dash-job-link:hover { color: var(--primary); text-decoration: underline; }
+.dashboard .cell-subtitle { display: block; color: var(--text-muted); font-size: var(--text-2xs); line-height: var(--leading-snug); }
+.dashboard .dash-timestamp { color: var(--text-muted); font-size: var(--text-2xs); white-space: nowrap; }
+
+/* Compact idle panel. Deliberately quieter than the full .empty-state: this
+   is a normal operating condition, not a missing feature. */
+.dashboard .dash-idle { display: flex; flex: 1 1 auto; align-items: center; gap: var(--space-4); padding: var(--space-4) var(--space-5); }
+.dashboard .dash-idle > div { min-width: 0; flex: 1 1 auto; }
+.dashboard .dash-idle-icon { display: grid; width: 2.25rem; height: 2.25rem; flex: 0 0 auto; place-items: center; border-radius: 50%; background: var(--surface-muted); color: var(--text-faint); }
+.dashboard .dash-idle-title { margin: 0 0 var(--space-1); color: var(--text); font-size: var(--text-sm); font-weight: var(--weight-semibold); }
+.dashboard .dash-idle p { margin: 0; }
+.dashboard .dash-idle-clear .dash-idle-icon { background: var(--state-success-bg); color: var(--state-success-fg); }
+
+/* The run name is bounded so a long name cannot wrap to three lines and triple
+   the row height; the full name is one click away on the monitor. */
+.dashboard .data-table th.dash-campaign-col,
+.dashboard .data-table td.dash-campaign-col { min-width: 13rem; max-width: 18rem; }
 .dashboard .dash-campaign-col .dash-job-link,
 .dashboard .dash-campaign-col .cell-subtitle { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Continue is the reason this table exists, so its buttons never wrap into a
+   column narrower than the widest pair of them. */
+.dashboard .dash-continue-actions-col { min-width: 15rem; }
 
-.dashboard .dash-yield-footer { display: grid; gap: var(--space-3); align-items: start; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); }
+.dashboard .dash-yield-footer { display: grid; gap: var(--space-3) var(--space-5); align-items: start; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); }
 .dashboard .dash-yield-meters { display: grid; gap: var(--space-2); min-width: 0; }
 .dashboard .dash-yield-meters .metric-label { margin: 0 0 var(--space-1); font-size: var(--text-2xs); }
 .dashboard .dash-yield-note { margin: 0; min-width: 0; }
 .dashboard .dash-yield-note a { font-weight: var(--weight-semibold); }
 
-@media (max-width: 68rem) {
-    .dashboard .dash-yield-footer { grid-template-columns: minmax(0, 1fr); }
-}
+/* ---------------------------------------------------------------------------
+   Contact coverage — the one quality signal the attention queue cannot state,
+   because a backlog is a count and this is a ratio. It sits in a narrow aside
+   and its meters stack, so it informs without dominating.
+   --------------------------------------------------------------------------- */
+.dashboard .dash-availability { display: grid; gap: var(--space-4); grid-template-columns: minmax(0, 1fr); }
+.dashboard .dash-availability .metric-label { margin: 0 0 var(--space-1); }
+/* A percentage without its count is a ratio with no denominator, so the
+   evidence sits directly under the bar it explains. */
+.dashboard .dash-availability-count { margin: var(--space-1) 0 0; color: var(--text-muted); }
+
+.dashboard .dash-reach { border-top: 1px solid var(--border); }
+.dashboard .dash-reach-summary { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-5); cursor: pointer; list-style: none; }
+.dashboard .dash-reach-summary::-webkit-details-marker { display: none; }
+.dashboard .dash-reach-summary::after { content: "\25BE"; margin-left: auto; color: var(--text-faint); font-size: var(--text-xs); transition: transform var(--transition-fast); }
+.dashboard .dash-reach[open] > .dash-reach-summary::after { transform: rotate(180deg); }
+.dashboard .dash-reach-summary:hover { background: var(--surface-muted); }
+.dashboard .dash-reach-summary:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.dashboard .dash-reach > .card-body { padding-top: 0; }
 
 /* ---------------------------------------------------------------------------
-   4. Prospect pipeline — two stacks of clickable distribution bars.
+   5. Prospect pipeline — two stacks of clickable distribution bars.
    --------------------------------------------------------------------------- */
 .dashboard .dash-pipeline { display: grid; gap: var(--space-6); grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .dashboard .dash-pipeline-column { display: grid; align-content: start; gap: var(--space-3); min-width: 0; }
@@ -195,9 +272,7 @@
 }
 
 /* ---------------------------------------------------------------------------
-   5. Activity row and 6. breakdown grid.
-   The 30-day table is capped in height and scrolls inside its own box so a
-   long history cannot push the rest of the page below the fold.
+   6. Collection trend and 7. breakdown grid.
    --------------------------------------------------------------------------- */
 .dashboard .dash-date { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .dashboard .dash-spark-col { width: 6rem; }
@@ -206,15 +281,19 @@
 
 /* 30-day column chart. Heights arrive as a per-column custom property, so the
    picture needs no script and no chart library. The accessible copy of the
-   same numbers is the .sr-only table beside it in the markup. */
-/* The plot area is framed by four gridlines and a baseline so a workspace with
+   same numbers is the .sr-only table beside it in the markup.
+   The plot area is framed by four gridlines and a baseline so a workspace with
    only a day or two of history reads as "one column so far" rather than as a
-   chart that failed to draw. */
+   chart that failed to draw.
+   No overflow container here: the columns are flex: 1 1 0 and can never exceed
+   the box, while the absolutely positioned day labels sit below the baseline —
+   a scroll container would clip them and grow a scrollbar around nothing. */
 .dashboard .dash-chart {
     display: flex;
     align-items: flex-end;
     gap: var(--space-1);
     height: 9rem;
+    min-width: 0;
     padding: var(--space-2) 0 0;
     border-bottom: 1px solid var(--border-strong);
     background-image: repeating-linear-gradient(to top, transparent 0, transparent calc(25% - 1px), var(--border-subtle) calc(25% - 1px), var(--border-subtle) 25%);
@@ -244,6 +323,22 @@
 }
 
 /* ---------------------------------------------------------------------------
+   8. System health strip.
+   Database size, free disk, and proxy health used to hold prime KPI tiles
+   while reading "not recorded". They are real facts, just not the first thing
+   an operator acts on, so they read as one quiet definition list and each
+   fact is omitted upstream when the server has no value for it.
+   --------------------------------------------------------------------------- */
+.dashboard .dash-system-body { display: grid; gap: var(--space-3); padding: var(--space-4) var(--space-5); }
+.dashboard .dash-system-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.dashboard .dash-system-head h2 { margin: 0; }
+.dashboard .dash-system-facts { display: grid; gap: var(--space-3) var(--space-6); grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); margin: 0; }
+.dashboard .dash-fact { display: grid; gap: .1rem; min-width: 0; }
+.dashboard .dash-fact dt { color: var(--text-faint); font-size: var(--text-2xs); font-weight: var(--weight-bold); letter-spacing: var(--tracking-caps); text-transform: uppercase; }
+.dashboard .dash-fact dd { margin: 0; color: var(--text); font-size: var(--text-sm); font-weight: var(--weight-semibold); font-variant-numeric: tabular-nums; }
+.dashboard .dash-fact-unit { color: var(--text-muted); font-weight: var(--weight-regular); }
+
+/* ---------------------------------------------------------------------------
    Operational telemetry — collapsed by default. It is diagnostic detail, not
    a daily answer, so it must not compete with the command centre above it.
    --------------------------------------------------------------------------- */
@@ -255,6 +350,34 @@
 .dashboard .dash-ops[open] > .dash-ops-summary::after { transform: rotate(180deg); }
 .dashboard .dash-ops-summary:hover { background: var(--surface-muted); }
 .dashboard .dash-ops-summary:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+/* Five narrow columns inside a quarter-width panel: letting a two-word heading
+   wrap is what keeps these diagnostic tables from needing a scrollbar. */
+.dashboard .dash-ops .data-table th { white-space: normal; }
+
+/* Below a wide desktop the aside stops earning its column, and the yield
+   summary drops to a single stack. */
+@media (max-width: 88rem) {
+    .dashboard .dash-continue-row { grid-template-columns: minmax(0, 1fr); }
+    .dashboard .data-table th.dash-campaign-col,
+    .dashboard .data-table td.dash-campaign-col { min-width: 11rem; max-width: 12rem; }
+    /* Benchmark is the one continue action with a second home — every job's own
+       monitor page links to it — so it yields the width first. */
+    .dashboard .dash-benchmark-link { display: none; }
+    /* Tightening the gutters keeps every column on screen instead of pushing
+       the continue actions past the card edge. */
+    .dashboard .data-table th,
+    .dashboard .data-table td { padding-inline: var(--space-3); }
+}
+
+@media (max-width: 100rem) {
+    .dashboard .dash-attention { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 68rem) {
+    .dashboard .dash-attention { grid-template-columns: minmax(0, 1fr); }
+    .dashboard .dash-yield-footer { grid-template-columns: minmax(0, 1fr); }
+    .dashboard .dash-attention-action span:not(.dash-attention-chevron) { display: none; }
+}
 
 
 /* ===========================================================================
@@ -319,18 +442,4 @@
 
 @media (max-width: 68rem) {
     .jobs-view .jobs-next-grid { grid-template-columns: minmax(0, 1fr); }
-}
-
-/* The command row stops being two columns before its table starts wrapping
-   job names onto three lines. At the same width the campaign table drops its
-   third action: Results is reachable from the job's own monitor page, while
-   the yield numbers beside it have no second home. */
-@media (max-width: 88rem) {
-    .dashboard .dash-command { grid-template-columns: minmax(0, 1fr); }
-    .dashboard .dash-results-link { display: none; }
-    .dashboard .dash-campaign-col { min-width: 11rem; max-width: 12rem; }
-    /* Tightening the gutters keeps every campaign column on screen instead of
-       pushing the actions past the card edge. */
-    .dashboard .data-table th,
-    .dashboard .data-table td { padding-inline: var(--space-3); }
 }

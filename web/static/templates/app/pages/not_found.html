@@ -1,0 +1,17 @@
+{{define "app/page/not-found"}}{{template "app/layout" .}}{{end}}
+
+{{define "app/page-actions"}}<div class="page-actions"><a class="button" href="/app/jobs">Jobs</a><a class="button button-primary" href="/app/dashboard">Go to dashboard</a></div>{{end}}
+
+{{define "app/content"}}
+<div class="section-stack">
+    <section class="card empty-state">
+        <p class="empty-state-title">That page does not exist</p>
+        <p class="empty-state-body">The address <code>{{.Page.Path}}</code> is not part of this workspace. It may have been mistyped, or it may be a link to something that has since been deleted.</p>
+        <div class="empty-state-actions">
+            <a class="button button-primary" href="/app/dashboard">Go to dashboard</a>
+            <a class="button" href="/app/results">Open results</a>
+            <a class="button" href="/app/scrapes/new">Start a scrape</a>
+        </div>
+    </section>
+</div>
+{{end}}

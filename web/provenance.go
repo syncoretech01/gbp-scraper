@@ -59,12 +59,12 @@ var provenanceMethodLabels = map[string]string{
 
 // ProvenanceSourceTypeLabel renders a stored source type for display.
 func ProvenanceSourceTypeLabel(value string) string {
-	return provenanceLabel(value, provenanceSourceTypeLabels, "Not recorded")
+	return provenanceLabel(value, provenanceSourceTypeLabels, "—")
 }
 
 // ProvenanceMethodLabel renders a stored extraction method for display.
 func ProvenanceMethodLabel(value string) string {
-	return provenanceLabel(value, provenanceMethodLabels, "not recorded")
+	return provenanceLabel(value, provenanceMethodLabels, "—")
 }
 
 // provenanceLabel looks a token up, falling back to a humanised form of the

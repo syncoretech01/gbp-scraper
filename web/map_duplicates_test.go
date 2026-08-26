@@ -161,7 +161,7 @@ func TestMapDuplicateHeatToggleServedWithTextLegend(t *testing.T) {
 	body := recorder.Body.String()
 	for _, expected := range []string{
 		`data-action="toggle-duplicate-heat"`,
-		">Duplicate-heavy cells<",
+		">Highlight duplicates<",
 		`aria-pressed="false"`,
 		"deeper purple means more duplicate rows",
 	} {

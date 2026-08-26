@@ -1,0 +1,231 @@
+/* ===========================================================================
+   New scrape wizard  (/app/scrapes/new)
+   ---------------------------------------------------------------------------
+   Scope: every rule is prefixed body[data-active-nav="new-scrape"], like the
+   other view stylesheets. This file owns only the components the Phase 3
+   rework introduced:
+
+     .run-mode            the Fast / Thorough chooser that opens step 1
+     .location-primary    place name first, coordinates behind a disclosure
+     .cost-summary        what this configuration costs, where it is chosen
+     .tuning-group        grouped engine values inside "Advanced tuning"
+     .link-button         a real <button> that reads as inline text
+
+   The step rail, panels, disclosures, presets, estimate tiles and pre-flight
+   rows are already defined in views/discovery.css and app.css; nothing here
+   redefines them. Colour comes from tokens only, so both themes follow.
+   =========================================================================== */
+
+/* --- Search mode: Fast or Thorough --------------------------------------- */
+
+body[data-active-nav="new-scrape"] .run-mode {
+    display: grid;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-muted);
+}
+
+body[data-active-nav="new-scrape"] .run-mode > legend {
+    margin-bottom: 0;
+    padding: 0 var(--space-2);
+    color: var(--text);
+    font-size: var(--text-md);
+    font-weight: var(--weight-bold);
+}
+
+body[data-active-nav="new-scrape"] .run-mode > .field-hint { margin: 0; }
+
+body[data-active-nav="new-scrape"] .run-mode-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+    gap: var(--space-3);
+}
+
+body[data-active-nav="new-scrape"] .run-mode-card {
+    position: relative;
+    display: block;
+    padding: var(--space-4) var(--space-4) var(--space-4) var(--space-8);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    cursor: pointer;
+    transition: border-color var(--transition-fast), background-color var(--transition-fast);
+}
+
+body[data-active-nav="new-scrape"] .run-mode-card:hover { border-color: var(--border-strong); background: var(--surface-hover); }
+
+body[data-active-nav="new-scrape"] .run-mode-card:has(input:checked) {
+    border-color: var(--primary);
+    background: var(--primary-soft);
+}
+
+body[data-active-nav="new-scrape"] .run-mode-card:has(input:focus-visible) {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+body[data-active-nav="new-scrape"] .run-mode-card input {
+    position: absolute;
+    top: var(--space-5);
+    left: var(--space-4);
+    width: .95rem;
+    height: .95rem;
+    margin: 0;
+    accent-color: var(--primary);
+}
+
+body[data-active-nav="new-scrape"] .run-mode-body { display: grid; gap: var(--space-2); min-width: 0; }
+
+body[data-active-nav="new-scrape"] .run-mode-title {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    color: var(--text);
+    font-size: var(--text-md);
+    font-weight: var(--weight-bold);
+}
+
+body[data-active-nav="new-scrape"] .run-mode-tag {
+    padding: 0 var(--space-2);
+    border-radius: var(--radius-pill);
+    background: var(--state-info-bg);
+    color: var(--state-info-fg);
+    font-size: var(--text-2xs);
+    font-weight: var(--weight-bold);
+    letter-spacing: var(--tracking-caps);
+    text-transform: uppercase;
+}
+
+body[data-active-nav="new-scrape"] .run-mode-tag-fast { background: var(--state-success-bg); color: var(--state-success-fg); }
+
+body[data-active-nav="new-scrape"] .run-mode-lede { color: var(--text-muted); font-size: var(--text-sm); }
+
+body[data-active-nav="new-scrape"] .run-mode-points { display: grid; gap: var(--space-1); }
+
+/* Each consequence is marked with a glyph as well as a colour, so the trade
+   still reads without colour perception. */
+body[data-active-nav="new-scrape"] .run-mode-point {
+    display: grid;
+    grid-template-columns: 1rem minmax(0, 1fr);
+    gap: var(--space-2);
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+}
+
+body[data-active-nav="new-scrape"] .run-mode-point::before {
+    font-weight: var(--weight-bold);
+    text-align: center;
+}
+
+body[data-active-nav="new-scrape"] .run-mode-point-yes::before { content: "+"; color: var(--success); }
+body[data-active-nav="new-scrape"] .run-mode-point-no::before { content: "\2212"; color: var(--text-faint); }
+
+/* --- Step 6 echo of the mode chosen on step 1 ---------------------------- */
+
+body[data-active-nav="new-scrape"] .run-mode-echo-field { align-content: start; }
+
+body[data-active-nav="new-scrape"] .run-mode-echo {
+    margin: 0;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--surface-muted);
+    color: var(--text);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-semibold);
+}
+
+body[data-active-nav="new-scrape"] .link-button {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--primary);
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+body[data-active-nav="new-scrape"] .link-button:hover { color: var(--primary-hover); }
+body[data-active-nav="new-scrape"] .link-button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: var(--radius-xs); }
+
+/* --- Location step ------------------------------------------------------- */
+
+/* The place name leads and is given the room a sentence needs; the numbers
+   beside it stay compact. */
+body[data-active-nav="new-scrape"] .location-primary { align-items: start; }
+body[data-active-nav="new-scrape"] .location-primary > .field:first-child { grid-column: span 2; }
+body[data-active-nav="new-scrape"] .location-primary .field-hint { margin: 0; }
+body[data-active-nav="new-scrape"] .location-primary > .field[hidden] { display: none; }
+
+body[data-active-nav="new-scrape"] [data-precise-coordinates] .form-grid-4 { align-items: start; }
+body[data-active-nav="new-scrape"] [data-precise-coordinates] .field { align-content: start; }
+
+body[data-active-nav="new-scrape"] [data-precise-coordinates] .disclosure-tag {
+    background: var(--surface-muted);
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0;
+    text-transform: none;
+}
+
+/* --- Cost of this configuration ------------------------------------------ */
+
+body[data-active-nav="new-scrape"] .cost-summary {
+    display: grid;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    border: 1px solid var(--primary-border);
+    border-radius: var(--radius);
+    background: var(--surface-muted);
+}
+
+body[data-active-nav="new-scrape"] .cost-sentence {
+    margin: 0;
+    color: var(--text);
+    font-size: var(--text-md);
+    line-height: var(--leading-snug);
+}
+
+body[data-active-nav="new-scrape"] .cost-warning { align-items: center; }
+body[data-active-nav="new-scrape"] .cost-warning[hidden] { display: none; }
+body[data-active-nav="new-scrape"] .cost-warning > div { min-width: 0; }
+body[data-active-nav="new-scrape"] .cost-warning .button { flex: 0 0 auto; margin-left: auto; }
+
+/* --- Advanced tuning ----------------------------------------------------- */
+
+body[data-active-nav="new-scrape"] .tuning-group {
+    display: grid;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+    background: var(--surface-muted);
+}
+
+body[data-active-nav="new-scrape"] .tuning-group > legend {
+    margin-bottom: 0;
+    padding: 0 var(--space-2);
+    color: var(--text);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-bold);
+}
+
+body[data-active-nav="new-scrape"] .tuning-group > .field-hint { max-width: 90ch; margin: 0; }
+body[data-active-nav="new-scrape"] .tuning-group .field-hint strong { color: var(--text); font-weight: var(--weight-semibold); }
+
+/* Without this the grid stretches each .field to the tallest cell in its row
+   and the shorter fields push their input halfway down the column. */
+body[data-active-nav="new-scrape"] .tuning-group .form-grid-4,
+body[data-active-nav="new-scrape"] .tuning-group .check-grid { align-items: start; }
+body[data-active-nav="new-scrape"] .tuning-group .field { align-content: start; }
+
+body[data-active-nav="new-scrape"] [data-advanced-tuning] > .card-body { gap: var(--space-4); }
+
+@media (max-width: 60rem) {
+    body[data-active-nav="new-scrape"] .location-primary > .field:first-child { grid-column: auto; }
+    body[data-active-nav="new-scrape"] .cost-warning { align-items: flex-start; flex-wrap: wrap; }
+    body[data-active-nav="new-scrape"] .cost-warning .button { margin-left: 0; }
+}

@@ -1,56 +1,96 @@
 {{define "app/page/settings"}}{{template "app/layout" .}}{{end}}
 
-{{define "app/head"}}<script defer src="/static/js/app-prospects.js"></script><script defer src="/static/js/app-ai.js"></script>{{end}}
+{{define "app/head"}}<script defer src="/static/js/app-prospects.js"></script><script defer src="/static/js/app-ai.js"></script><script defer src="/static/js/app-system.js"></script>{{end}}
 
-{{define "app/page-actions"}}<div class="page-actions"><a class="button" href="/app/scrapes/new">Preview in New Scrape</a></div>{{end}}
+{{define "app/page-actions"}}<div class="page-actions"><a class="button" href="/app/scrapes/new">Preview in New Scrape</a><button class="button button-primary" type="submit" form="settings-defaults-form">Save defaults</button></div>{{end}}
 
 {{define "app/content"}}
-<div class="section-stack" data-settings-workspace data-csrf-token="{{.CSRFToken}}">
+<div class="settings-layout" data-settings-workspace data-csrf-token="{{.CSRFToken}}">
+    <aside class="settings-rail">
+        <nav class="card settings-nav" data-settings-nav aria-labelledby="settings-nav-title">
+            <p class="settings-nav-title" id="settings-nav-title">On this page</p>
+            <ol class="settings-nav-list">
+                <li><a href="#settings-scrape" data-settings-nav-link>Scrape defaults</a></li>
+                <li><a href="#settings-storage" data-settings-nav-link>Storage &amp; retention</a></li>
+                <li><a href="#settings-appearance" data-settings-nav-link>Appearance</a></li>
+                <li><a href="#settings-ai" data-settings-nav-link>Local AI</a></li>
+                <li><a href="#settings-privacy" data-settings-nav-link>Privacy &amp; access</a></li>
+                <li><a href="#settings-quality" data-settings-nav-link>Quality scoring</a></li>
+                <li><a href="#settings-prospecting" data-settings-nav-link>Prospecting</a></li>
+                <li><a href="#settings-integrations" data-settings-nav-link>Future integrations</a></li>
+            </ol>
+            <div class="settings-nav-save">
+                <button class="button button-primary" type="submit" form="settings-defaults-form">Save defaults</button>
+                <p class="field-hint">Saves the first four sections. Privacy, scoring, and prospecting each save on their own.</p>
+            </div>
+        </nav>
+    </aside>
+
+    <div class="settings-panels section-stack">
     {{if .Page.Notice}}<div class="notice notice-success" role="status"><div><strong>{{.Page.Notice}}</strong></div></div>{{end}}
-    <form class="section-stack" action="/api/v1/settings" method="post">
+    <form class="section-stack" id="settings-defaults-form" action="/api/v1/settings" method="post">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-        <section class="card"><div class="card-header"><div><h2>New scrape defaults</h2><p>These values are loaded into new jobs; each job keeps its own immutable configuration snapshot.</p></div></div><div class="card-body grid grid-4">
-            <div class="field"><label for="setting-language">Maps language</label><input class="input" id="setting-language" name="language" value="{{.Page.Defaults.Language}}" minlength="2" maxlength="2" required></div>
-            <div class="field"><label for="setting-zoom">Zoom</label><input class="input" id="setting-zoom" name="zoom" type="number" min="1" max="21" value="{{.Page.Defaults.Zoom}}" required></div>
-            <div class="field"><label for="setting-depth">Depth</label><input class="input" id="setting-depth" name="depth" type="number" min="1" max="100" value="{{.Page.Defaults.Depth}}" required></div>
-            <div class="field"><label for="setting-runtime">Maximum runtime</label><input class="input" id="setting-runtime" name="max_runtime" value="{{.Page.Defaults.MaxTime}}" pattern="[0-9]+(s|m|h)" required></div>
-            <div class="field"><label for="setting-concurrency">Concurrency</label><input class="input" id="setting-concurrency" name="concurrency" type="number" min="1" max="64" value="{{.Page.Defaults.Concurrency}}" required></div>
-            <div class="field"><label for="setting-task-workers">Parallel tasks</label><input class="input" id="setting-task-workers" name="task_workers" type="number" min="1" max="16" value="{{.Page.Defaults.TaskWorkers}}" required><span class="field-hint">Queries or grid cells run side by side, sharing the concurrency and browser budget above.</span></div>
-            <div class="field"><label for="setting-browser-pool">Browser pool</label><input class="input" id="setting-browser-pool" name="browser_pool_size" type="number" min="1" max="32" value="{{.Page.Defaults.BrowserPool}}" required></div>
-            <div class="field"><label for="setting-pages">Pages per browser</label><input class="input" id="setting-pages" name="pages_per_browser" type="number" min="1" max="16" value="{{.Page.Defaults.PagesBrowser}}" required></div>
-            <div class="field"><label for="setting-radius">Coverage extent (metres)</label><input class="input" id="setting-radius" name="radius" type="number" min="100" max="100000" value="{{.Page.Defaults.Radius}}" required></div>
-            <div class="field"><label for="setting-grid">Grid-cell size (km)</label><input class="input" id="setting-grid" name="grid_cell_km" type="number" min="0.1" max="50" step="0.1" value="{{.Page.Defaults.GridCellKM}}" required></div>
-            <div class="field"><label for="setting-max-records">Maximum records</label><input class="input" id="setting-max-records" name="max_records" type="number" min="0" max="10000000" value="{{.Page.Defaults.MaxRecords}}" required><span class="field-hint">0 keeps all records.</span></div>
-            <div class="field"><label for="setting-retries">Retries per request</label><input class="input" id="setting-retries" name="retry_count" type="number" min="0" max="20" value="{{.Page.Defaults.RetryCount}}" required></div>
-            <div class="field"><label for="setting-retry-delay">Maximum retry delay</label><input class="input" id="setting-retry-delay" name="retry_delay" value="{{.Page.Defaults.RetryDelay}}" pattern="[0-9]+(ms|s|m)" required></div>
-            <div class="field"><label for="setting-page-timeout">Page timeout</label><input class="input" id="setting-page-timeout" name="page_timeout" value="{{.Page.Defaults.PageTimeout}}" pattern="[0-9]+(ms|s|m)" required></div>
-            <div class="field"><label for="setting-random-min">Random delay minimum</label><input class="input" id="setting-random-min" name="random_delay_min" value="{{.Page.Defaults.RandomMin}}" pattern="[0-9]+(ms|s|m)" required></div>
-            <div class="field"><label for="setting-random-max">Random delay maximum</label><input class="input" id="setting-random-max" name="random_delay_max" value="{{.Page.Defaults.RandomMax}}" pattern="[0-9]+(ms|s|m)" required></div>
-            <div class="field"><label for="setting-low-disk">Pause below free disk (MB)</label><input class="input" id="setting-low-disk" name="low_disk_mb" type="number" min="128" max="1048576" value="{{.Page.Defaults.LowDiskMB}}" required></div>
-            <div class="field"><label for="setting-location-label">Default location label</label><input class="input" id="setting-location-label" name="location_label" maxlength="120" value="{{.Page.Defaults.LocationLabel}}" placeholder="San Francisco, California, United States"><span class="field-hint">Leave empty to keep the built-in example location.</span></div>
-            <div class="field"><label for="setting-latitude">Default centre latitude</label><input class="input" id="setting-latitude" name="latitude" type="number" min="-90" max="90" step="0.000001" value="{{.Page.Defaults.Lat}}"></div>
-            <div class="field"><label for="setting-longitude">Default centre longitude</label><input class="input" id="setting-longitude" name="longitude" type="number" min="-180" max="180" step="0.000001" value="{{.Page.Defaults.Lon}}"></div>
-            {{if .Page.ProxyPools}}<div class="field"><label for="setting-default-proxy-pool">Default proxy pool</label><select class="select" id="setting-default-proxy-pool" name="default_proxy_pool"><option value="">Direct connection</option>{{range .Page.ProxyPools}}<option value="{{.ID}}" {{if eq $.Page.Defaults.ProxyPoolID .ID}}selected{{end}}>{{.Name}} ({{.HealthyCount}} healthy/testable)</option>{{end}}</select><span class="field-hint">Preselected in the wizard while the pool stays enabled.</span></div>{{end}}
-            <label class="check-row"><input name="email" type="checkbox" value="on" {{if .Page.Defaults.Email}}checked{{end}}><span>Enable website email extraction by default</span></label>
-            <label class="check-row"><input name="extra_reviews" type="checkbox" value="on" {{if .Page.Defaults.ExtraReviews}}checked{{end}}><span>Collect extra reviews by default</span></label>
-            <label class="check-row"><input name="adaptive_performance" type="checkbox" value="on" {{if .Page.Defaults.Adaptive}}checked{{end}}><span>Enable adaptive resource safeguards</span></label>
-            <label class="check-row"><input name="load_images" type="checkbox" value="on" {{if .Page.Defaults.LoadImages}}checked{{end}}><span>Load page images (uses more bandwidth/RAM)</span></label>
-            <label class="check-row"><input name="headfull" type="checkbox" value="on" {{if .Page.Defaults.Headfull}}checked{{end}}><span>Run visible browser when supported</span></label>
+        <section class="card settings-section" id="settings-scrape" aria-labelledby="settings-scrape-title"><div class="card-header"><div><h2 id="settings-scrape-title">Scrape defaults</h2><p>Loaded into every new job. Each job then keeps its own immutable snapshot, so editing these never changes a job that already ran.</p></div></div><div class="card-body section-stack">
+            <fieldset class="fieldset settings-group"><legend>What each search collects</legend><div class="grid grid-4">
+                <div class="field"><label for="setting-language">Maps language</label><input class="input" id="setting-language" name="language" value="{{.Page.Defaults.Language}}" minlength="2" maxlength="2" required><span class="field-hint">Two-letter code, for example <code>en</code>.</span></div>
+                <div class="field"><label for="setting-depth">Result depth per search</label><input class="input" id="setting-depth" name="depth" type="number" min="1" max="100" value="{{.Page.Defaults.Depth}}" required><span class="field-hint">How far down each Maps result list is walked.</span></div>
+                <div class="field"><label for="setting-max-records">Record cap per job</label><input class="input" id="setting-max-records" name="max_records" type="number" min="0" max="10000000" value="{{.Page.Defaults.MaxRecords}}" required><span class="field-hint">0 keeps all records.</span></div>
+                <div class="field"><label for="setting-runtime">Stop after</label><input class="input" id="setting-runtime" name="max_runtime" value="{{.Page.Defaults.MaxTime}}" pattern="[0-9]+(s|m|h)" required><span class="field-hint">A job that hits this limit is stopped early and keeps every result it committed.</span></div>
+                <label class="check-row"><input name="email" type="checkbox" value="on" {{if .Page.Defaults.Email}}checked{{end}}><span>Extract emails from websites<small>Crawls each business website locally for contact addresses.</small></span></label>
+                <label class="check-row"><input name="extra_reviews" type="checkbox" value="on" {{if .Page.Defaults.ExtraReviews}}checked{{end}}><span>Collect extra reviews<small>Slower; adds review text beyond the summary counts.</small></span></label>
+            </div></fieldset>
+
+            <fieldset class="fieldset settings-group"><legend>Default location and coverage</legend><div class="grid grid-4">
+                <div class="field grid-span-2"><label for="setting-location-label">Default location label</label><input class="input" id="setting-location-label" name="location_label" maxlength="120" value="{{.Page.Defaults.LocationLabel}}" placeholder="San Francisco, California, United States"><span class="field-hint">Leave empty to keep the built-in example location.</span></div>
+                <div class="field"><label for="setting-latitude">Default centre latitude</label><input class="input" id="setting-latitude" name="latitude" type="number" min="-90" max="90" step="0.000001" value="{{.Page.Defaults.Lat}}"></div>
+                <div class="field"><label for="setting-longitude">Default centre longitude</label><input class="input" id="setting-longitude" name="longitude" type="number" min="-180" max="180" step="0.000001" value="{{.Page.Defaults.Lon}}"></div>
+                <div class="field"><label for="setting-radius">Search radius (metres)</label><input class="input" id="setting-radius" name="radius" type="number" min="100" max="100000" value="{{.Page.Defaults.Radius}}" required><span class="field-hint">How far from the centre Thorough mode covers.</span></div>
+                <div class="field"><label for="setting-grid">Area size (km per side)</label><input class="input" id="setting-grid" name="grid_cell_km" type="number" min="0.1" max="50" step="0.1" value="{{.Page.Defaults.GridCellKM}}" required><span class="field-hint">Smaller areas find more listings and multiply the searches to run.</span></div>
+                {{if .Page.ProxyPools}}<div class="field grid-span-2"><label for="setting-default-proxy-pool">Default proxy pool</label><select class="select" id="setting-default-proxy-pool" name="default_proxy_pool"><option value="">Direct connection</option>{{range .Page.ProxyPools}}<option value="{{.ID}}" {{if eq $.Page.Defaults.ProxyPoolID .ID}}selected{{end}}>{{.Name}} ({{.HealthyCount}} healthy/testable)</option>{{end}}</select><span class="field-hint">Preselected in the wizard while the pool stays enabled. Manage pools on <a href="/app/proxies">Proxies</a>.</span></div>{{end}}
+            </div></fieldset>
+
+            <fieldset class="fieldset settings-group"><legend>Speed and parallelism</legend>
+                <p class="field-help settings-group-note">These four combine. Thorough mode opens up to <strong>searches at once &times; browsers per search</strong> browsers simultaneously, and each browser holds up to <strong>tabs per browser</strong> pages. Raise them together only if this machine has the memory for it &mdash; the adaptive safeguard below collapses them again under pressure.</p>
+                <div class="grid grid-4">
+                <div class="field"><label for="setting-task-workers">Searches at once</label><input class="input" id="setting-task-workers" name="task_workers" type="number" min="1" max="16" value="{{.Page.Defaults.TaskWorkers}}" required><span class="field-hint">Queries or map areas running side by side.</span></div>
+                <div class="field"><label for="setting-browser-pool">Browsers per search</label><input class="input" id="setting-browser-pool" name="browser_pool_size" type="number" min="1" max="32" value="{{.Page.Defaults.BrowserPool}}" required></div>
+                <div class="field"><label for="setting-pages">Tabs per browser</label><input class="input" id="setting-pages" name="pages_per_browser" type="number" min="1" max="16" value="{{.Page.Defaults.PagesBrowser}}" required></div>
+                <div class="field"><label for="setting-concurrency">Concurrency inside one search</label><input class="input" id="setting-concurrency" name="concurrency" type="number" min="1" max="64" value="{{.Page.Defaults.Concurrency}}" required><span class="field-hint">Place-detail fetches in flight per search.</span></div>
+                <label class="check-row"><input name="adaptive_performance" type="checkbox" value="on" {{if .Page.Defaults.Adaptive}}checked{{end}}><span>Adaptive resource safeguards<small>Reduces fan-out automatically when memory or disk gets tight.</small></span></label>
+                <label class="check-row"><input name="load_images" type="checkbox" value="on" {{if .Page.Defaults.LoadImages}}checked{{end}}><span>Load page images<small>Uses noticeably more bandwidth and RAM.</small></span></label>
+                <label class="check-row"><input name="headfull" type="checkbox" value="on" {{if .Page.Defaults.Headfull}}checked{{end}}><span>Run a visible browser<small>Only where this machine has a display.</small></span></label>
+                </div>
+            </fieldset>
+
+            <details class="settings-advanced"><summary>Advanced engine defaults</summary><div class="settings-advanced-body"><p class="field-help">Timing and retry behaviour of the scrape engine. The shipped values are tuned for a single local machine; change them only to work around a specific problem.</p><div class="grid grid-4">
+                <div class="field"><label for="setting-zoom">Maps zoom level</label><input class="input" id="setting-zoom" name="zoom" type="number" min="1" max="21" value="{{.Page.Defaults.Zoom}}" required><span class="field-hint">Derived per area in Thorough mode; this is the fallback.</span></div>
+                <div class="field"><label for="setting-retries">Retries per request</label><input class="input" id="setting-retries" name="retry_count" type="number" min="0" max="20" value="{{.Page.Defaults.RetryCount}}" required></div>
+                <div class="field"><label for="setting-retry-delay">Maximum retry delay</label><input class="input" id="setting-retry-delay" name="retry_delay" value="{{.Page.Defaults.RetryDelay}}" pattern="[0-9]+(ms|s|m)" required></div>
+                <div class="field"><label for="setting-page-timeout">Page timeout</label><input class="input" id="setting-page-timeout" name="page_timeout" value="{{.Page.Defaults.PageTimeout}}" pattern="[0-9]+(ms|s|m)" required></div>
+                <div class="field"><label for="setting-random-min">Random delay minimum</label><input class="input" id="setting-random-min" name="random_delay_min" value="{{.Page.Defaults.RandomMin}}" pattern="[0-9]+(ms|s|m)" required></div>
+                <div class="field"><label for="setting-random-max">Random delay maximum</label><input class="input" id="setting-random-max" name="random_delay_max" value="{{.Page.Defaults.RandomMax}}" pattern="[0-9]+(ms|s|m)" required></div>
+                <div class="field"><label for="setting-low-disk">Pause below free disk (MB)</label><input class="input" id="setting-low-disk" name="low_disk_mb" type="number" min="128" max="1048576" value="{{.Page.Defaults.LowDiskMB}}" required><span class="field-hint">Running jobs pause instead of filling the disk.</span></div>
+            </div></div></details>
         </div></section>
 
-        <section class="card"><div class="card-header"><div><h2>Storage and retention</h2><p>All configured paths are contained beneath the mounted data directory. Saving creates missing directories with private permissions.</p></div><code>{{.Page.DataFolder}}</code></div><div class="card-body grid grid-4">
-            <div class="field"><label for="setting-exports-directory">Exports directory</label><input class="input" id="setting-exports-directory" name="exports_directory" value="{{.Page.Storage.ExportsDirectory}}" required></div>
-            <div class="field"><label for="setting-screenshots-directory">Screenshots directory</label><input class="input" id="setting-screenshots-directory" name="screenshots_directory" value="{{.Page.Storage.ScreenshotsDirectory}}" required></div>
-            <div class="field"><label for="setting-logs-directory">Logs directory</label><input class="input" id="setting-logs-directory" name="logs_directory" value="{{.Page.Storage.LogsDirectory}}" required></div>
-            <div class="field"><label for="setting-backups-directory">Backups directory</label><input class="input" id="setting-backups-directory" name="backups_directory" value="{{.Page.Storage.BackupsDirectory}}" required></div>
-            <div class="field"><label for="setting-temp-directory">Temporary directory</label><input class="input" id="setting-temp-directory" name="temporary_directory" value="{{.Page.Storage.TemporaryDirectory}}" required></div>
-            <div class="field"><label for="setting-max-storage">Maximum managed storage (GB)</label><input class="input" id="setting-max-storage" name="maximum_storage_gb" type="number" min="0" max="100000" value="{{.Page.Storage.MaximumStorageGB}}"><span class="field-hint">0 means no application cap; low-disk safeguards still apply.</span></div>
-            <div class="field"><label for="setting-cleanup-days">Automatic cleanup age (days)</label><input class="input" id="setting-cleanup-days" name="automatic_cleanup_days" type="number" min="0" max="3650" value="{{.Page.Storage.AutomaticCleanupDays}}"><span class="field-hint">0 disables age-based cleanup.</span></div>
-            <div class="field"><label for="setting-backup-count">Backups to retain</label><input class="input" id="setting-backup-count" name="backup_count" type="number" min="1" max="1000" value="{{.Page.Storage.BackupCount}}"></div>
-            <div class="field"><label for="setting-version-retention">Business history retention (days)</label><input class="input" id="setting-version-retention" name="version_retention_days" type="number" min="0" max="36500" value="{{.Page.Storage.VersionRetentionDays}}"><span class="field-hint">0 retains version history indefinitely.</span></div>
-        </div><div class="card-body section-stack"><h3 class="section-header">Current directory usage</h3><dl class="directory-usage">{{range .Page.Directories}}<div><dt>{{.Label}} <code>{{.Path}}</code></dt><dd>{{.Size}}<small>{{.Retention}}</small></dd></div>{{end}}</dl><p class="field-help">The database directory is <code>{{.Page.DataFolder}}</code>; it is fixed by the <code>-data-folder</code> start-up flag so a running workspace can never be pointed at a different database. Every path above is relative to it and is created with private permissions when you save.</p></div></section>
+        <section class="card settings-section" id="settings-storage" aria-labelledby="settings-storage-title"><div class="card-header"><div><h2 id="settings-storage-title">Storage and retention</h2><p>Every path is contained beneath the mounted data directory. Saving creates missing directories with private permissions.</p></div><code>{{.Page.DataFolder}}</code></div><div class="card-body section-stack">
+            <fieldset class="fieldset settings-group"><legend>Directories</legend><div class="grid grid-4">
+                <div class="field"><label for="setting-exports-directory">Exports</label><input class="input" id="setting-exports-directory" name="exports_directory" value="{{.Page.Storage.ExportsDirectory}}" required></div>
+                <div class="field"><label for="setting-screenshots-directory">Screenshots</label><input class="input" id="setting-screenshots-directory" name="screenshots_directory" value="{{.Page.Storage.ScreenshotsDirectory}}" required></div>
+                <div class="field"><label for="setting-logs-directory">Logs</label><input class="input" id="setting-logs-directory" name="logs_directory" value="{{.Page.Storage.LogsDirectory}}" required></div>
+                <div class="field"><label for="setting-backups-directory">Backups</label><input class="input" id="setting-backups-directory" name="backups_directory" value="{{.Page.Storage.BackupsDirectory}}" required></div>
+                <div class="field"><label for="setting-temp-directory">Temporary files</label><input class="input" id="setting-temp-directory" name="temporary_directory" value="{{.Page.Storage.TemporaryDirectory}}" required></div>
+            </div></fieldset>
+            <fieldset class="fieldset settings-group"><legend>Limits and cleanup</legend><div class="grid grid-4">
+                <div class="field"><label for="setting-max-storage">Maximum managed storage (GB)</label><input class="input" id="setting-max-storage" name="maximum_storage_gb" type="number" min="0" max="100000" value="{{.Page.Storage.MaximumStorageGB}}"><span class="field-hint">0 means no application cap; low-disk safeguards still apply.</span></div>
+                <div class="field"><label for="setting-cleanup-days">Automatic cleanup age (days)</label><input class="input" id="setting-cleanup-days" name="automatic_cleanup_days" type="number" min="0" max="3650" value="{{.Page.Storage.AutomaticCleanupDays}}"><span class="field-hint">0 disables age-based cleanup.</span></div>
+                <div class="field"><label for="setting-backup-count">Backups to retain</label><input class="input" id="setting-backup-count" name="backup_count" type="number" min="1" max="1000" value="{{.Page.Storage.BackupCount}}"></div>
+                <div class="field"><label for="setting-version-retention">Business history retention (days)</label><input class="input" id="setting-version-retention" name="version_retention_days" type="number" min="0" max="36500" value="{{.Page.Storage.VersionRetentionDays}}"><span class="field-hint">0 retains version history indefinitely.</span></div>
+            </div></fieldset>
+            <div class="settings-group"><h3 class="section-header">Current directory usage</h3><dl class="directory-usage">{{range .Page.Directories}}<div><dt>{{.Label}} <code>{{.Path}}</code></dt><dd>{{.Size}}<small>{{.Retention}}</small></dd></div>{{end}}</dl><p class="field-help">The database lives in <code>{{.Page.DataFolder}}</code>, fixed by the <code>-data-folder</code> start-up flag so a running workspace can never be pointed at a different database. Results, the database, and pre-migration copies are never cleanup targets.</p></div>
+        </div></section>
 
-        <section class="card"><div class="card-header"><div><h2>Appearance and privacy</h2><p>Preferences are stored locally in SQLite. Per-browser theme and sidebar toggles can temporarily override their defaults.</p></div></div><div class="card-body section-stack"><div class="grid grid-4">
+        <section class="card settings-section" id="settings-appearance" aria-labelledby="settings-appearance-title"><div class="card-header"><div><h2 id="settings-appearance-title">Appearance</h2><p>Stored locally in SQLite. The theme and sidebar toggles in the top bar can override these per browser.</p></div></div><div class="card-body section-stack"><div class="grid grid-4">
             <div class="field"><label for="setting-theme">Theme</label><select class="select" id="setting-theme" name="theme"><option value="system" {{if eq .Page.Theme "system"}}selected{{end}}>System</option><option value="light" {{if eq .Page.Theme "light"}}selected{{end}}>Light</option><option value="dark" {{if eq .Page.Theme "dark"}}selected{{end}}>Dark</option></select></div>
             <div class="field"><label for="setting-sidebar">Sidebar default</label><select class="select" id="setting-sidebar" name="sidebar_default"><option value="expanded" {{if eq .Page.Preferences.SidebarDefault "expanded"}}selected{{end}}>Expanded</option><option value="collapsed" {{if eq .Page.Preferences.SidebarDefault "collapsed"}}selected{{end}}>Collapsed</option></select></div>
             <div class="field"><label for="setting-date-format">Date and time</label><select class="select" id="setting-date-format" name="date_time_format"><option value="local" {{if eq .Page.Preferences.DateTimeFormat "local"}}selected{{end}}>Local format</option><option value="iso" {{if eq .Page.Preferences.DateTimeFormat "iso"}}selected{{end}}>ISO 8601</option><option value="us" {{if eq .Page.Preferences.DateTimeFormat "us"}}selected{{end}}>Month/day/year</option><option value="eu" {{if eq .Page.Preferences.DateTimeFormat "eu"}}selected{{end}}>Day/month/year</option></select></div>
@@ -60,16 +100,16 @@
             <label class="check-row"><input name="compact_tables" type="checkbox" value="on" {{if .Page.Preferences.CompactTables}}checked{{end}}><span>Compact tables</span></label>
             <label class="check-row"><input name="reduced_motion" type="checkbox" value="on" {{if .Page.Preferences.ReducedMotion}}checked{{end}}><span>Reduce motion</span></label>
             <label class="check-row"><input name="high_contrast" type="checkbox" value="on" {{if .Page.Preferences.HighContrast}}checked{{end}}><span>Higher contrast borders</span></label>
-        </div><div class="grid grid-2"><div class="notice {{if .Page.Privacy.TelemetryDisabled}}notice-success{{else}}notice-warning{{end}}"><div><strong>Telemetry {{if .Page.Privacy.TelemetryDisabled}}disabled{{else}}not disabled in this process{{end}}</strong><p>{{.Page.Privacy.TelemetrySource}}. The provided Docker Compose configuration sets it for you.</p></div></div><div class="notice notice-info"><div><strong>Secrets are redacted</strong><p>Runtime logs, local API job responses, integration errors, and exports mask proxy credentials and token-like fields.</p></div></div><div class="notice notice-info"><div><strong>Encrypted at rest</strong><ul>{{range .Page.Privacy.EncryptedSecrets}}<li>{{.}}</li>{{end}}</ul></div></div><div class="notice notice-info"><div><strong>Browser profiles</strong><p>Reusable Chromium profiles currently hold {{.Page.Privacy.BrowserProfiles}} of cookies and site data. Clear them from <a href="/app/system">System</a>.</p></div></div></div></div></section>
+        </div></div></section>
 
-        <section class="card"><div class="card-header"><div><h2>Optional local AI</h2><p>Connect to an Ollama server running on this machine or private network. It is disabled by default and never calls a hosted model.</p></div><a class="button button-small" href="/api/v1/ai/status" target="_blank" rel="noopener">Check status</a></div><div class="card-body grid grid-4">
-            <label class="check-row"><input name="ai_enabled" type="checkbox" value="on" {{if .Page.LocalAI.Enabled}}checked{{end}}><span>Enable local AI assistance<small>Model downloads and inference remain under your control.</small></span></label>
-            <div class="field"><label for="setting-ai-endpoint">Ollama endpoint</label><input class="input" id="setting-ai-endpoint" name="ai_endpoint" type="url" value="{{.Page.LocalAI.Endpoint}}" required><span class="field-hint">Only private or loopback HTTP(S) destinations are accepted and revalidated when connecting.</span></div>
+        <section class="card settings-section" id="settings-ai" aria-labelledby="settings-ai-title"><div class="card-header"><div><h2 id="settings-ai-title">Optional local AI</h2><p>Connects to an Ollama server on this machine or private network. Off by default, and it never calls a hosted model.</p></div><a class="button button-small" href="/api/v1/ai/status" target="_blank" rel="noopener">Check status</a></div><div class="card-body grid grid-4">
+            <label class="check-row"><input name="ai_enabled" type="checkbox" value="on" {{if .Page.LocalAI.Enabled}}checked{{end}}><span>Enable local AI assistance<small>Model downloads and inference stay under your control.</small></span></label>
+            <div class="field"><label for="setting-ai-endpoint">Ollama endpoint</label><input class="input" id="setting-ai-endpoint" name="ai_endpoint" type="url" value="{{.Page.LocalAI.Endpoint}}" required><span class="field-hint">Only private or loopback HTTP(S) destinations are accepted, revalidated on connect.</span></div>
             <div class="field"><label for="setting-ai-model">Installed model</label><input class="input" id="setting-ai-model" name="ai_model" maxlength="128" value="{{.Page.LocalAI.Model}}" placeholder="qwen2.5:3b"></div>
             <div class="field"><label for="setting-ai-timeout">Task timeout (seconds)</label><input class="input" id="setting-ai-timeout" name="ai_timeout_seconds" type="number" min="5" max="300" value="{{.Page.LocalAI.TimeoutSeconds}}" required></div>
         </div></section>
 
-        <div class="form-actions"><button class="button button-primary" type="submit">Save settings</button></div>
+        <div class="form-actions"><button class="button button-primary" type="submit">Save defaults</button></div>
     </form>
 
     <section class="card ai-console" aria-labelledby="ai-console-title" data-ai-console data-csrf-token="{{.CSRFToken}}" data-ai-enabled="{{.Page.LocalAI.Enabled}}" hidden>
@@ -93,36 +133,47 @@
         </div>
     </section>
 
-    <form class="card section-stack" action="/api/v1/security/password" method="post">
-        <div class="card-header"><div><h2>Local access password</h2><p>Optional. When set, every page requires a sign-in and API requests require an API key. Sessions live in memory, so restarting the application signs everyone out.</p></div></div>
+    <section class="card settings-section" id="settings-privacy" aria-labelledby="settings-privacy-title">
+        <div class="card-header"><div><h2 id="settings-privacy-title">Privacy</h2><p>What this workspace stores, what it masks, and what never leaves the machine.</p></div></div>
+        <div class="card-body grid grid-2">
+            <div class="notice {{if .Page.Privacy.TelemetryDisabled}}notice-success{{else}}notice-warning{{end}}"><div><strong>Telemetry {{if .Page.Privacy.TelemetryDisabled}}disabled{{else}}not disabled in this process{{end}}</strong><p>{{.Page.Privacy.TelemetrySource}}. The provided Docker Compose configuration sets it for you.</p></div></div>
+            <div class="notice notice-info"><div><strong>Secrets are redacted</strong><p>Runtime logs, local API job responses, integration errors, and exports mask proxy credentials and token-like fields.</p></div></div>
+            <div class="notice notice-info"><div><strong>Encrypted at rest</strong><ul>{{range .Page.Privacy.EncryptedSecrets}}<li>{{.}}</li>{{end}}</ul></div></div>
+            <div class="notice notice-info"><div><strong>Browser profiles</strong><p>Reusable Chromium profiles currently hold {{.Page.Privacy.BrowserProfiles}} of cookies and site data. Clear them from <a href="/app/system">System health</a>.</p></div></div>
+        </div>
+    </section>
+
+    <form class="card settings-section" action="/api/v1/security/password" method="post">
+        <div class="card-header"><div><h2>Local access password</h2><p>Optional. When set, every page requires a sign-in and API requests require an API key. Sessions live in memory, so restarting the application signs everyone out.</p></div>{{if .AuthEnabled}}<span class="badge badge-success">Password set</span>{{else}}<span class="badge badge-outline">Loopback trust</span>{{end}}</div>
         <div class="card-body">
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-            <div class="form-grid form-grid-3">
+            <div class="grid grid-3">
                 {{if .AuthEnabled}}<div class="field"><label for="security-current">Current password</label><input class="input" id="security-current" name="current_password" type="password" autocomplete="current-password"></div>{{end}}
                 <div class="field"><label for="security-new">New password</label><input class="input" id="security-new" name="new_password" type="password" minlength="8" maxlength="128" autocomplete="new-password"><span class="field-hint">8 to 128 characters. Changing it signs out every session.</span></div>
                 <div class="field"><label for="security-timeout">Session timeout (minutes)</label><input class="input" id="security-timeout" name="session_minutes" type="number" min="15" max="10080" placeholder="720"></div>
             </div>
         </div>
         <div class="card-footer form-actions">
-            <button class="button button-primary" type="submit">{{if .AuthEnabled}}Change password{{else}}Set password{{end}}</button>
             {{if .AuthEnabled}}<button class="button button-danger" type="submit" name="action" value="remove" data-confirm="Remove the local password? The workspace returns to loopback trust.">Remove password</button>{{end}}
+            <button class="button button-primary" type="submit">{{if .AuthEnabled}}Change password{{else}}Set password{{end}}</button>
         </div>
     </form>
 
-    <form class="card section-stack" action="/api/v1/quality/rules" method="post">
+    <form class="card settings-section" id="settings-quality" action="/api/v1/quality/rules" method="post" aria-labelledby="settings-quality-title">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-        <div class="card-header"><div><h2>Business quality scoring</h2><p>Edit the local, explainable score model. Saving creates an immutable rules version; existing scores retain their historical version until recalculated.</p></div><code>{{.Page.Quality.Version}}</code></div>
+        <div class="card-header"><div><h2 id="settings-quality-title">Business quality scoring</h2><p>The local, explainable score behind every SIGNAL and TIER in Results. Saving creates an immutable rules version; existing scores keep their historical version until recalculated.</p></div><code>{{.Page.Quality.Version}}</code></div>
         <div class="card-body section-stack">
-            <div class="grid grid-4">
+            <fieldset class="fieldset settings-group"><legend>Targets</legend><div class="grid grid-4">
                 <div class="field"><label for="quality-name">Rule-set name</label><input class="input" id="quality-name" name="name" maxlength="120" value="{{.Page.Quality.Name}}" required></div>
                 <div class="field"><label for="quality-rating-threshold">Rating target</label><input class="input" id="quality-rating-threshold" name="rating_threshold" type="number" min="0.1" max="5" step="0.1" value="{{.Page.Quality.RatingThreshold}}" required></div>
                 <div class="field"><label for="quality-review-threshold">Review-count target</label><input class="input" id="quality-review-threshold" name="review_count_threshold" type="number" min="1" max="10000000" value="{{.Page.Quality.ReviewCountThreshold}}" required></div>
                 <div class="field"><label for="quality-freshness">Freshness target (days)</label><input class="input" id="quality-freshness" name="freshness_days" type="number" min="1" max="3650" value="{{.Page.Quality.FreshnessDays}}" required></div>
                 <div class="field"><label for="quality-response">Website response target (ms)</label><input class="input" id="quality-response" name="response_time_ms" type="number" min="100" max="120000" value="{{.Page.Quality.ResponseTimeMS}}" required></div>
                 <label class="check-row"><input name="exclude_closed" type="checkbox" value="on" {{if .Page.Quality.ExcludeClosed}}checked{{end}}><span>Force closed businesses to score 0</span></label>
-            </div>
-            <h3>Component weights</h3>
-            <div class="grid grid-4">
+            </div></fieldset>
+            <fieldset class="fieldset settings-group"><legend>Component weights</legend>
+                <p class="field-help settings-group-note">Each factor contributes its weight when the business satisfies it. The result drawer shows the same breakdown per business.</p>
+                <div class="grid grid-4">
                 <div class="field"><label for="quality-open">Open listing</label><input class="input" id="quality-open" name="open_weight" type="number" min="0" max="100" step="0.1" value="{{.Page.Quality.OpenWeight}}" required></div>
                 <div class="field"><label for="quality-website">Active website</label><input class="input" id="quality-website" name="active_website_weight" type="number" min="0" max="100" step="0.1" value="{{.Page.Quality.ActiveWebsiteWeight}}" required></div>
                 <div class="field"><label for="quality-https">HTTPS</label><input class="input" id="quality-https" name="https_weight" type="number" min="0" max="100" step="0.1" value="{{.Page.Quality.HTTPSWeight}}" required></div>
@@ -135,41 +186,43 @@
                 <div class="field"><label for="quality-fresh">Data freshness</label><input class="input" id="quality-fresh" name="freshness_weight" type="number" min="0" max="100" step="0.1" value="{{.Page.Quality.FreshnessWeight}}" required></div>
                 <div class="field"><label for="quality-site-audit">Website quality</label><input class="input" id="quality-site-audit" name="website_quality_weight" type="number" min="0" max="100" step="0.1" value="{{.Page.Quality.WebsiteQualityWeight}}" required></div>
                 <div class="field"><label for="quality-speed">Website response</label><input class="input" id="quality-speed" name="response_time_weight" type="number" min="0" max="100" step="0.1" value="{{.Page.Quality.ResponseTimeWeight}}" required></div>
-            </div>
+                </div>
+            </fieldset>
         </div>
         <div class="card-footer form-actions"><button class="button button-primary" type="submit">Save scoring rules</button></div>
     </form>
 
     <div class="section-stack" data-prospect-settings>
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-        <section class="card section-stack">
-            <div class="card-header"><div><h2>Prospecting</h2><p>Configurable worth-calling score weights and editable call-opener templates. Values load from and save to the local prospecting API.</p></div></div>
+        <section class="card settings-section" id="settings-prospecting" aria-labelledby="settings-prospecting-title">
+            <div class="card-header"><div><h2 id="settings-prospecting-title">Prospecting</h2><p>Worth-calling score weights and the call-opener templates the result drawer fills in per business.</p></div></div>
             <div class="card-body section-stack">
-                <div class="prospect-editor" data-prospect-editor="scoring" data-endpoint="/api/v1/prospects/scoring">
-                    <h3>Score weights</h3>
+                <div class="prospect-editor settings-group" data-prospect-editor="scoring" data-endpoint="/api/v1/prospects/scoring">
+                    <h3 class="section-header">Score weights</h3>
                     <div class="grid grid-4" data-prospect-fields></div>
-                    <div class="form-actions"><button class="button button-primary" type="button" data-action="save-prospect-editor" hidden>Save score weights</button><span class="field-hint" data-prospect-status aria-live="polite">Loading score weights&hellip;</span></div>
+                    <div class="form-actions"><span class="field-hint" data-prospect-status aria-live="polite">Loading score weights&hellip;</span><button class="button button-primary" type="button" data-action="save-prospect-editor" hidden>Save score weights</button></div>
                 </div>
-                <div class="prospect-editor" data-prospect-editor="openers" data-endpoint="/api/v1/prospects/openers">
-                    <h3>Call openers</h3>
-                    <p class="field-hint">One template per website status plus a default. Placeholders such as <code>{name}</code>, <code>{category}</code>, <code>{city}</code>, <code>{rating}</code>, and <code>{reviews}</code> are filled per business in the result drawer.</p>
+                <div class="prospect-editor settings-group" data-prospect-editor="openers" data-endpoint="/api/v1/prospects/openers">
+                    <h3 class="section-header">Call openers</h3>
+                    <p class="field-help">One template per website status plus a default. Placeholders such as <code>{name}</code>, <code>{category}</code>, <code>{city}</code>, <code>{rating}</code>, and <code>{reviews}</code> are filled per business in the result drawer.</p>
                     <div class="section-stack" data-prospect-fields></div>
-                    <div class="form-actions"><button class="button button-primary" type="button" data-action="save-prospect-editor" hidden>Save openers</button><span class="field-hint" data-prospect-status aria-live="polite">Loading call openers&hellip;</span></div>
+                    <div class="form-actions"><span class="field-hint" data-prospect-status aria-live="polite">Loading call openers&hellip;</span><button class="button button-primary" type="button" data-action="save-prospect-editor" hidden>Save openers</button></div>
                 </div>
             </div>
         </section>
-        <section class="card section-stack">
-            <div class="card-header"><div><h2>Future integrations (dormant)</h2><p>This application is fully standalone. Everything below is stored-only configuration for a future Lead-Engine/CRM integration: nothing is ever called from this process, and the toggle is off by default.</p></div></div>
+        <section class="card settings-section" id="settings-integrations" aria-labelledby="settings-integrations-title">
+            <div class="card-header"><div><h2 id="settings-integrations-title">Future integrations</h2><p>Stored-only configuration for a future Lead-Engine/CRM integration. Nothing below is ever called from this process, and the toggle is off by default.</p></div><span class="badge badge-outline">Dormant</span></div>
             <div class="card-body section-stack">
-                <div class="prospect-editor" data-prospect-editor="integrations" data-endpoint="/api/v1/prospects/integrations">
+                <div class="prospect-editor settings-group" data-prospect-editor="integrations" data-endpoint="/api/v1/prospects/integrations">
                     <label class="check-row"><input type="checkbox" data-future-integrations-toggle disabled><span>Enable the dormant Lead-Engine surfaces<small>Turns on the read-only discovered-companies API and the discovered_companies export format. The URLs below stay stored-only either way; no request ever leaves this machine.</small></span></label>
-                    <h3>Integration boundary URLs</h3>
-                    <p class="field-hint">Optional loopback or private URLs for a future email verifier and website audit service. They are validated and stored, never called. Leave a field empty to clear it.</p>
+                    <h3 class="section-header">Integration boundary URLs</h3>
+                    <p class="field-help">Optional loopback or private URLs for a future email verifier and website audit service. They are validated and stored, never called. Leave a field empty to clear it.</p>
                     <div class="grid grid-2" data-prospect-fields></div>
-                    <div class="form-actions"><button class="button button-primary" type="button" data-action="save-prospect-editor" hidden>Save future integrations</button><span class="field-hint" data-prospect-status aria-live="polite">Loading integrations&hellip;</span></div>
+                    <div class="form-actions"><span class="field-hint" data-prospect-status aria-live="polite">Loading integrations&hellip;</span><button class="button button-primary" type="button" data-action="save-prospect-editor" hidden>Save future integrations</button></div>
                 </div>
             </div>
         </section>
+    </div>
     </div>
 </div>
 {{end}}

@@ -42,12 +42,12 @@ func TestMapHeatLayerTogglesServedWithAccessibleMarkup(t *testing.T) {
 		`data-action="toggle-empty-heat"`,
 		`aria-pressed="false"`,
 		"data-map-heat-legend",
-		">Heatmap<",
-		">Failed cells<",
-		">Empty cells<",
+		">Density heatmap<",
+		">Highlight failures<",
+		">Highlight empty<",
 		"darker blue means more results per bucket",
-		"deeper red means more failed or blocked tasks",
-		"amber marks completed cells with zero results",
+		"deeper red means more failed or blocked searches",
+		"amber marks areas that finished with zero results",
 	} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("map page missing %q", expected)

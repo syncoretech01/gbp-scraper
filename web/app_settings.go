@@ -312,7 +312,7 @@ func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
 	}
 	s.renderAppPage(w, "settings", appPageData{
 		Title:     "Settings",
-		Subtitle:  "Choose defaults applied to every newly configured local scrape.",
+		Subtitle:  "Defaults for new scrapes, plus storage, appearance, privacy, scoring, and prospecting.",
 		ActiveNav: "settings",
 		Theme:     settingString(values, "appearance.theme", "system"),
 		CSRFToken: s.csrfToken,

@@ -374,7 +374,7 @@ func TestMapExplorerPageUsesLocalInteractiveAssetsAndSavedGeometry(t *testing.T)
 		"map-initial-geojson",
 		"radius_m",
 		"Draw polygon",
-		"Restore removed",
+		"Restore excluded",
 		"Paused",
 	} {
 		if !strings.Contains(body, expected) {

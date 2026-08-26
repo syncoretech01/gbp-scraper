@@ -12,6 +12,34 @@ Page data is jobsPageData in web/app_read_pages.go.
 */}}
 {{define "app/page/jobs"}}{{template "app/layout" .}}{{end}}
 
+{{/*
+app-monitor.js also carries the queue's one presentational repair: rewriting a
+coordinate-only location summary into the area it describes. Nothing else on
+this page depends on script.
+*/}}
+{{define "app/head"}}<script defer src="/static/js/app-monitor.js"></script>{{end}}
+
+{{/*
+app/state-word is the word this product says out loud for a lifecycle value.
+"partial" is the one that matters: printed raw it reads as damaged data, when
+it means the run stopped at a limit and kept everything it had collected. The
+argument is the state string.
+*/}}
+{{define "app/state-word"}}
+{{- if eq . "completed" -}}Finished
+{{- else if eq . "partial" -}}Stopped early
+{{- else if eq . "failed" -}}Failed
+{{- else if eq . "cancelled" -}}Cancelled
+{{- else if eq . "cancelling" -}}Stopping
+{{- else if eq . "running" -}}Running
+{{- else if eq . "starting" -}}Starting
+{{- else if eq . "paused" -}}Paused
+{{- else if eq . "queued" -}}Queued
+{{- else if eq . "draft" -}}Not started
+{{- else -}}{{.}}
+{{- end -}}
+{{end}}
+
 {{define "app/page-actions"}}
 <div class="page-actions">
     {{if .Page.CanViewArchived}}{{if .Page.ShowArchived}}<a class="button" href="/app/jobs" data-action="navigate" data-endpoint="/app/jobs">Hide archived</a>{{else}}<a class="button" href="/app/jobs?archived=1" data-action="navigate" data-endpoint="/app/jobs?archived=1">Show archived</a>{{end}}{{end}}
@@ -42,8 +70,8 @@ Page data is jobsPageData in web/app_read_pages.go.
                 <select class="select input-sm" id="job-state" name="state">
                     <option value="">All states</option>
                     <option value="draft" {{if eq .Page.ActiveState "draft"}}selected{{end}}>Draft</option><option value="queued" {{if eq .Page.ActiveState "queued"}}selected{{end}}>Queued</option><option value="starting" {{if eq .Page.ActiveState "starting"}}selected{{end}}>Starting</option>
-                    <option value="running" {{if eq .Page.ActiveState "running"}}selected{{end}}>Running</option><option value="paused" {{if eq .Page.ActiveState "paused"}}selected{{end}}>Paused</option><option value="partial" {{if eq .Page.ActiveState "partial"}}selected{{end}}>Partial</option>
-                    <option value="completed" {{if eq .Page.ActiveState "completed"}}selected{{end}}>Completed</option><option value="failed" {{if eq .Page.ActiveState "failed"}}selected{{end}}>Failed</option><option value="cancelled" {{if eq .Page.ActiveState "cancelled"}}selected{{end}}>Cancelled</option>
+                    <option value="running" {{if eq .Page.ActiveState "running"}}selected{{end}}>Running</option><option value="paused" {{if eq .Page.ActiveState "paused"}}selected{{end}}>Paused</option><option value="partial" {{if eq .Page.ActiveState "partial"}}selected{{end}}>Stopped early</option>
+                    <option value="completed" {{if eq .Page.ActiveState "completed"}}selected{{end}}>Finished</option><option value="failed" {{if eq .Page.ActiveState "failed"}}selected{{end}}>Failed</option><option value="cancelled" {{if eq .Page.ActiveState "cancelled"}}selected{{end}}>Cancelled</option>
                 </select>
             </div>
             {{if .Page.Folders}}
@@ -86,9 +114,13 @@ Page data is jobsPageData in web/app_read_pages.go.
                             <small class="cell-subtitle t-mono">{{.ID}}</small>
                             {{if or .Tags .Archived .Folder .Owner}}<span class="tag-list" data-job-labels>{{if .Archived}}<span class="tag">archived</span>{{end}}{{if .Folder}}<a class="tag" href="/app/jobs?folder={{.Folder}}" data-action="navigate" data-endpoint="/app/jobs?folder={{.Folder}}">{{.Folder}}</a>{{end}}{{range .Tags}}<span class="tag">{{.}}</span>{{end}}{{if .Owner}}<span class="tag" data-job-owner>{{.Owner}}</span>{{end}}</span>{{end}}
                         </td>
+                        {{/* The state cell says what the state means for the
+                        operator's data, not what the database column holds.
+                        "Stopped early" plus "results kept" is the whole point:
+                        a stopped run is not a lost run. */}}
                         <td class="jobs-state-col">
-                            <span class="status status-{{.State}}">{{.State}}</span>
-                            <small class="cell-subtitle">{{.Stage}}</small>
+                            <span class="status status-{{.State}}">{{template "app/state-word" .State}}</span>
+                            <small class="cell-subtitle">{{if eq .State "partial"}}Results kept{{else if eq .State "failed"}}Collected rows kept{{else if eq .State "cancelled"}}Collected rows kept{{else if eq .State "completed"}}Every search finished{{else}}{{.Stage}}{{end}}</small>
                         </td>
                         <td class="jobs-progress-col">
                             <div class="jobs-progress">
@@ -100,18 +132,21 @@ Page data is jobsPageData in web/app_read_pages.go.
                             {{.UniqueRecords}} unique
                             <small class="cell-subtitle num">{{.RawRecords}} raw &middot; {{.Emails}} emails</small>
                         </td>
+                        {{/* An unrecorded duration is an absence, so the line
+                        that would have carried it is dropped rather than
+                        printed as an engineering status. */}}
                         <td class="jobs-timing">
                             {{if .Terminal}}
-                                {{if .Finished}}Finished {{.Finished}}{{else}}Stopped &mdash; end time not recorded{{end}}
-                                <small class="cell-subtitle">Ran for {{.Runtime}}</small>
+                                {{if .Finished}}Finished {{.Finished}}{{else}}{{template "app/state-word" .State}}{{end}}
+                                {{if and (ne .Runtime "—") (ne .Runtime "not recorded") (ne .Runtime "not started") (ne .Runtime "unknown")}}<small class="cell-subtitle">Ran for {{.Runtime}}</small>{{end}}
                             {{else}}
                                 Updated {{.UpdatedAt}}
-                                <small class="cell-subtitle">{{if eq .Runtime "not started"}}Has not started yet{{else}}Running for {{.Runtime}}{{end}}</small>
+                                {{if eq .Runtime "not started"}}<small class="cell-subtitle">Has not started yet</small>{{else if and (ne .Runtime "—") (ne .Runtime "not recorded") (ne .Runtime "unknown")}}<small class="cell-subtitle">Running for {{.Runtime}}</small>{{end}}
                             {{end}}
                         </td>
                         <td class="jobs-config">
                             <span class="truncate">{{.QuerySummary}}</span>
-                            <small class="cell-subtitle">{{.LocationSummary}}</small>
+                            <small class="cell-subtitle" data-location-summary>{{.LocationSummary}}</small>
                         </td>
                         <td>
                             <div class="table-actions">

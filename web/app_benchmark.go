@@ -217,7 +217,7 @@ func buildBenchmarkPageData(report BenchmarkReport) benchmarkPageData {
 	// The evidence strip leads with the five numbers an operator judges a run
 	// by. Wall time is the one that is routinely missing on a run the durable
 	// runtime never timed, so it carries the empty-state flag rather than the
-	// words "not recorded" at headline weight.
+	// an engineering status phrase at headline weight.
 	wall := benchmarkWall(report.Runtime.WallSeconds)
 	page.Metrics = []benchmarkMetricView{
 		{Label: "Unique businesses", Value: fmt.Sprintf("%d", report.Totals.UniqueBusinesses),
@@ -381,7 +381,7 @@ func benchmarkMeter(value, limit float64) int {
 // callers pair it with an Empty flag so the view can style the absence.
 func benchmarkOrPlaceholder(value string) string {
 	if value == "" {
-		return "Not recorded"
+		return "—"
 	}
 
 	return value
@@ -402,7 +402,7 @@ func benchmarkShare(part, whole int64) string {
 // benchmarkTimestamp and benchmarkWall return an empty string for evidence the
 // run never recorded. The template turns that into the design system's muted
 // inline empty state, so an operator reads an absence instead of four
-// identical "not recorded" sentences sitting in value position.
+// identical status sentences sitting in value position.
 func benchmarkTimestamp(unix int64) string {
 	if unix <= 0 {
 		return ""

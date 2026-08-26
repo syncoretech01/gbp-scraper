@@ -125,6 +125,10 @@ func New(svc *Service, addr string) (*Server, error) {
 	mux.HandleFunc("GET /app/schedules", ans.schedulesPage)
 	mux.HandleFunc("GET /app/proxies", ans.proxiesPage)
 	mux.HandleFunc("GET /app/onboarding", ans.onboardingPage)
+	// Anything else under /app is a mistyped or stale address. Without this the
+	// Go mux answers with bare unstyled "404 page not found" text outside the
+	// shell, which leaves the operator with no way back.
+	mux.HandleFunc("GET /app/", ans.appNotFoundPage)
 
 	// api routes
 	mux.HandleFunc("/api/docs", ans.redocHandler)

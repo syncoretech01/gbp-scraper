@@ -79,7 +79,9 @@
         advanced: "Every option, including data fields, enrichment, filtering, and performance tuning.",
         gbp: "Advanced plus the ZIP coverage generator, the prospecting pipeline preset, and adaptive coverage."
     };
-    let mode = "advanced";
+    // Basic is the landing state: a first run needs a query, an area, and the
+    // launch button. Advanced and GBP stay one click away and lose nothing.
+    let mode = "basic";
 
     function modeAllows(element) {
         if (element.hasAttribute("data-wizard-gbp")) return mode === "gbp";
@@ -115,7 +117,7 @@
     }
 
     function applyMode(next, remember) {
-        const chosen = modeInputs.some((input) => input.value === next) ? next : "advanced";
+        const chosen = modeInputs.some((input) => input.value === next) ? next : "basic";
         mode = chosen;
         modeInputs.forEach((input) => { input.checked = input.value === chosen; });
         if (remember) {
@@ -144,7 +146,7 @@
         });
 
         const hint = wizard.querySelector("[data-wizard-mode-hint]");
-        if (hint) hint.textContent = modeHints[chosen] || modeHints.advanced;
+        if (hint) hint.textContent = modeHints[chosen] || modeHints.basic;
         if (chosen === "gbp") {
             const coverage = wizard.querySelector("[data-gbp-coverage]");
             if (coverage) coverage.open = true;
@@ -205,6 +207,74 @@
         wizard.querySelectorAll(selector).forEach((target) => { target.textContent = text; });
     }
 
+    // --- Search mode: Fast or Thorough --------------------------------------
+    // The engine flag stays one checkbox named "fastmode", unchecked by
+    // default, so the posted body is exactly what it always was. The two cards
+    // on step 1 are UI-only radios with no form owner; they drive the checkbox
+    // and are never submitted themselves.
+    function isFastMode() {
+        const flag = field("fastmode");
+        return Boolean(flag && flag.checked);
+    }
+
+    function runModeInputs() { return Array.from(wizard.querySelectorAll("[data-run-mode]")); }
+
+    // syncRunMode(fromCards) pushes the choice in one direction: from the
+    // cards onto the checkbox when the operator clicked a card, and from the
+    // checkbox onto the cards on load or after a preset writes the flag.
+    function syncRunMode(fromCards) {
+        const flag = field("fastmode");
+        if (!flag) return;
+        if (fromCards) {
+            const chosen = runModeInputs().find((input) => input.checked);
+            flag.checked = Boolean(chosen && chosen.dataset.runMode === "fast");
+        } else {
+            runModeInputs().forEach((input) => { input.checked = (input.dataset.runMode === "fast") === flag.checked; });
+        }
+        const fast = flag.checked;
+        setText("[data-run-mode-echo]", fast ? "Fast mode — quick, no map grid" : "Thorough mode — full map coverage");
+        // Grid-cell size decides nothing in Fast mode. The control stays in the
+        // DOM so its value still submits; only the row is hidden.
+        wizard.querySelectorAll("[data-grid-field]").forEach((row) => { row.hidden = fast; });
+        updatePreview();
+    }
+
+    // --- Radius: kilometres on the surface, metres on the wire ---------------
+    // "radius" is metres and must stay metres; the kilometre box is a view of
+    // it. Conversion is explicit in both directions and never writes an empty
+    // or out-of-range value into the field the job actually submits.
+    function radiusKilometreInput() { return wizard.querySelector("[data-radius-km]"); }
+
+    function syncKilometresFromMetres() {
+        const kilometres = radiusKilometreInput();
+        const metres = field("radius");
+        if (!kilometres || !metres) return;
+        const amount = Number(metres.value);
+        if (!Number.isFinite(amount) || amount <= 0) return;
+        kilometres.value = String(Math.round(amount / 100) / 10);
+    }
+
+    function syncMetresFromKilometres() {
+        const kilometres = radiusKilometreInput();
+        const metres = field("radius");
+        if (!kilometres || !metres) return;
+        const amount = Number(kilometres.value);
+        if (!Number.isFinite(amount) || amount <= 0) return;
+        metres.value = String(Math.min(100000, Math.max(100, Math.round(amount * 1000))));
+    }
+
+    function radiusKilometres() {
+        return Math.round(Math.max(0, Number(value("radius", 10000))) / 100) / 10;
+    }
+
+    function syncCoordinateEcho() {
+        const latitude = value("latitude", "");
+        const longitude = value("longitude", "");
+        setText("[data-coordinates-echo]", latitude && longitude ? latitude + ", " + longitude : "Not set");
+    }
+
+    function countOf(total, one, many) { return total + " " + (total === 1 ? one : many); }
+
     function estimate() {
         const queryCount = Math.max(1, uniqueQueries().unique.length);
         const locationCount = Math.max(1, locations().length);
@@ -256,6 +326,39 @@
         setText("[data-estimate-cells]", String(stats.cells));
         setText("[data-estimate-tasks]", String(stats.tasks));
         setText("[data-estimate-runtime]", "~" + stats.minutes + " min");
+        syncCoordinateEcho();
+        updateCostSummary(stats);
+    }
+
+    // updateCostSummary states, on the step where the area is chosen, what the
+    // choice costs: how many areas get searched, how many searches that is, and
+    // roughly how long it runs against the limit that would cut it short. It
+    // uses the same estimate the pre-flight step uses, so the two never
+    // disagree, and it says "estimate" because that is what it is.
+    function updateCostSummary(stats) {
+        const summary = wizard.querySelector("[data-cost-summary]");
+        if (!summary) return;
+        const fast = isFastMode();
+        const limit = value("maxtime", "60m");
+        const limitMinutes = durationMinutes(limit);
+        setText("[data-limit-echo]", limit);
+
+        const coverage = fast
+            ? countOf(stats.cells, "radius search", "radius searches") + " of " + radiusKilometres() + " km"
+            : countOf(stats.cells, "area", "areas") + " covering " + radiusKilometres() + " km";
+        setText("[data-cost-sentence]", (fast ? "Fast mode" : "Thorough mode") + ": " +
+            countOf(stats.queryCount, "query", "queries") + " across " + coverage +
+            " is " + countOf(stats.tasks, "search", "searches") + " to run. Estimated runtime ~" +
+            stats.minutes + " min, and this job stops after " + limit + ".");
+
+        const warning = summary.querySelector("[data-cost-warning]");
+        if (!warning) return;
+        const overruns = limitMinutes > 0 && limitMinutes < stats.minutes;
+        warning.hidden = !overruns;
+        if (overruns) {
+            setText("[data-cost-warning-text]", "About " + stats.minutes + " minutes of work against a " + limit +
+                " limit. The run would end as “Stopped early — results kept”, holding everything saved up to that point. Give it longer, search a larger area size, or switch to Fast mode.");
+        }
     }
 
     // A pre-flight row states a fact and its consequence, and turns amber when
@@ -283,17 +386,17 @@
             queries > 0 ? "Queries ready" : "No queries yet",
             queries + (queries === 1 ? " unique query" : " unique queries"));
 
-        const fastMode = Boolean(field("fastmode") && field("fastmode").checked);
+        const fast = isFastMode();
         const savedArea = value("saved_area_id", "");
         setPreflight("area", "ok",
-            savedArea ? "Saved area snapshot" : (fastMode ? "Strict radius" : "Grid coverage"),
-            Number(value("radius", 10000)).toLocaleString() + " m" + (fastMode ? " radius" : " extent, " + value("grid_cell_km", "2.5") + " km cells"));
+            savedArea ? "Saved area snapshot" : (fast ? "Strict radius" : "Full map coverage"),
+            radiusKilometres() + " km" + (fast ? " radius, no grid walk" : " radius, searched in " + value("grid_cell_km", "2.5") + " km areas"));
 
         const limit = durationMinutes(value("maxtime", "60m"));
         const fits = limit >= stats.minutes;
         setPreflight("budget", fits ? "ok" : "warn",
-            fits ? "Runtime budget fits" : "Runtime limit is tight",
-            "~" + stats.minutes + " min estimated against a " + value("maxtime", "60m") + " limit");
+            fits ? "Time budget fits" : "This will stop early",
+            "~" + stats.minutes + " min estimated, stops after " + value("maxtime", "60m"));
 
         const enrichmentOn = Boolean(field("email") && field("email").checked);
         setPreflight("enrichment", "ok",
@@ -307,9 +410,10 @@
         setText("[data-review-name]", value("name", "Untitled scrape"));
         setText("[data-review-location]", value("location_label", "San Francisco, California"));
         setText("[data-review-coordinates]", value("latitude", "37.7749") + ", " + value("longitude", "-122.4194"));
-        const fastMode = Boolean(field("fastmode") && field("fastmode").checked);
-        setText("[data-review-radius]", Number(value("radius", 10000)).toLocaleString() + " m " + (fastMode ? "strict radius" : "grid extent"));
-        setText("[data-review-grid]", fastMode ? "Not used in Fast Mode" : value("grid_cell_km", "2.5") + " km");
+        const fast = isFastMode();
+        setText("[data-review-mode]", fast ? "Fast mode — quick, no map grid" : "Thorough mode — full map coverage");
+        setText("[data-review-radius]", radiusKilometres() + " km " + (fast ? "strict radius" : "covered as a map grid"));
+        setText("[data-review-grid]", fast ? "Not used in Fast mode" : value("grid_cell_km", "2.5") + " km areas");
         setText("[data-review-tasks]", String(stats.tasks));
         setText("[data-review-runtime]", value("maxtime", "60m"));
         const enrichmentOn = Boolean(field("email") && field("email").checked);
@@ -322,9 +426,9 @@
         const warning = wizard.querySelector("[data-estimate-warning]");
         if (warning) {
             const messages = [];
-            if (stats.tasks > 1000) messages.push("This configuration creates more than 1,000 tasks. Consider a larger grid cell or fewer queries.");
+            if (stats.tasks > 1000) messages.push("This configuration runs more than 1,000 searches. Consider a larger area size or fewer queries.");
             if (Number(value("concurrency", 2)) > (navigator.hardwareConcurrency || 4)) messages.push("Concurrency exceeds the browser's reported CPU count.");
-            if (durationMinutes(value("maxtime", "60m")) < stats.minutes) messages.push("The runtime limit may stop this job before all estimated tasks finish. The job will finish as Partial and keep its checkpointed results.");
+            if (durationMinutes(value("maxtime", "60m")) < stats.minutes) messages.push("The “Stop after” limit is shorter than the estimate, so this run would end as “Stopped early — results kept”, holding every result saved up to that point.");
             warning.hidden = messages.length === 0;
             warning.textContent = messages.join(" ");
         }
@@ -689,6 +793,7 @@
             maxtime: "60m"
         };
         Object.keys(values).forEach((name) => { const control = field(name); if (control) control.value = values[name]; });
+        syncKilometresFromMetres();
         updatePreview();
         if (window.GMapsApp) window.GMapsApp.toast("San Francisco dentist settings applied.", "success");
     }
@@ -1021,6 +1126,7 @@
         if (trigger.dataset.action === "wizard-step") { event.preventDefault(); setStep(trigger.dataset.stepTarget, true); }
         else if (trigger.dataset.action === "wizard-next") { event.preventDefault(); setStep(current + 1, true); }
         else if (trigger.dataset.action === "wizard-back") { event.preventDefault(); setStep(current - 1, true); }
+        else if (trigger.dataset.action === "open-stop-after") { event.preventDefault(); openStopAfter(); }
         else if (trigger.dataset.action === "use-san-francisco-preset") { event.preventDefault(); applySanFranciscoPreset(); }
         else if (trigger.dataset.action === "preview-queries") { event.preventDefault(); updatePreview(); }
         else if (trigger.dataset.action === "local-ai-keywords") { event.preventDefault(); generateLocalAIKeywords(trigger); }
@@ -1041,9 +1147,41 @@
         else if (trigger.dataset.action === "preview-parameters") { event.preventDefault(); previewParameters(trigger); }
     });
 
+    // openStopAfter takes the operator from the cost warning to the control
+    // that fixes it. In Basic the Performance step is hidden, so the mode
+    // changes with them rather than leaving the button doing nothing.
+    function openStopAfter() {
+        if (mode === "basic") applyMode("advanced", true);
+        setStep(6, false);
+        const limit = field("maxtime");
+        if (!limit) return;
+        revealAncestorDisclosures(limit);
+        limit.focus();
+        if (limit.select) limit.select();
+    }
+
+    // A control inside a collapsed <details> cannot be focused or reported on,
+    // so every disclosure above it is opened first.
+    function revealAncestorDisclosures(element) {
+        let disclosure = element.closest && element.closest("details");
+        while (disclosure) {
+            disclosure.open = true;
+            disclosure = disclosure.parentElement && disclosure.parentElement.closest("details");
+        }
+    }
+
     wizard.addEventListener("change", (event) => {
         if (event.target.matches("[data-wizard-mode-input]")) {
             applyMode(event.target.value, true);
+            return;
+        }
+        if (event.target.matches("[data-run-mode]")) {
+            syncRunMode(true);
+            return;
+        }
+        if (event.target.matches("[data-radius-km]")) {
+            syncMetresFromKilometres();
+            updatePreview();
             return;
         }
         if (event.target.matches("[data-campaign-template-picker]")) {
@@ -1069,7 +1207,9 @@
     });
     wizard.addEventListener("input", (event) => {
         if (event.target.matches("[data-category-search]")) { renderCategoryOptions(); return; }
-        if (["keywords", "locations", "radius", "grid_cell_km", "depth", "concurrency", "browser_pool_size", "pages_per_browser", "maxtime"].includes(event.target.name)) updatePreview();
+        if (event.target.matches("[data-radius-km]")) { syncMetresFromKilometres(); updatePreview(); return; }
+        if (event.target.name === "radius") { syncKilometresFromMetres(); updatePreview(); return; }
+        if (["keywords", "locations", "latitude", "longitude", "grid_cell_km", "depth", "concurrency", "browser_pool_size", "pages_per_browser", "maxtime"].includes(event.target.name)) updatePreview();
     });
 
     // A required control inside a step the current mode hides cannot be
@@ -1078,6 +1218,7 @@
     // reports the problem.
     if (form) {
         form.addEventListener("invalid", (event) => {
+            revealAncestorDisclosures(event.target);
             const panel = event.target.closest && event.target.closest("[data-wizard-panel]");
             if (!panel) return;
             if (panel.dataset.modeHidden === "true") applyMode("advanced", true);
@@ -1086,10 +1227,12 @@
     }
 
     panels.forEach((panel, index) => { panel.hidden = index !== 0; });
-    applyMode(requestedMode() || readStoredMode() || "advanced", false);
+    applyMode(requestedMode() || readStoredMode() || "basic", false);
     setStep(requestedStep() || 1, false);
     syncFieldSelection();
     syncIncrementalNote();
+    syncKilometresFromMetres();
+    syncRunMode(false);
     updatePreview();
     probeCampaignTemplates();
     loadCategoryCatalogue();

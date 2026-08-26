@@ -27,15 +27,49 @@
    ===========================================================================
    Page shape:
      .ops-console
+       section.card.ops-outcome     the answer: what happened, is the data
+                                    safe, what to do next
        section.card.ops-hero        status header: identity, readouts,
                                     progress, pipeline, run controls
-       .stat-grid                   live vitals (component from app.css)
-       .split-pane                  coverage + task table | run context
-       .split-pane                  logs | failure classes
-       details.card                 configuration snapshot
+       .ops-collected               the counters a non-engineer reads
+       .split-pane                  coverage + logs | failures, resume, labels
+       details.card.ops-technical   every engine internal, demoted
+       details.card.ops-config      configuration snapshot
    =========================================================================== */
 
 .ops-console { --stack-space: var(--space-5); }
+
+/* --- The answer ----------------------------------------------------------
+   One accent edge and one coloured overline carry the outcome; the sentence
+   below them carries the meaning. A tinted card would shout the state at the
+   cost of the words that explain it. */
+.ops-outcome { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-4) var(--space-6); padding: var(--space-5); border-left-width: 4px; border-left-color: var(--state-info-fg); }
+.ops-outcome-copy { display: grid; gap: var(--space-2); min-width: 0; }
+.ops-outcome-state { margin: 0; color: var(--state-info-fg); }
+.ops-outcome-title { max-width: 62ch; margin: 0; color: var(--text); font-size: var(--text-lg); font-weight: var(--weight-semibold); letter-spacing: var(--tracking-tight); line-height: var(--leading-snug); }
+.ops-outcome-detail { max-width: 72ch; margin: 0; color: var(--text-muted); font-size: var(--text-sm); }
+.ops-outcome-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.ops-outcome-actions form { display: contents; }
+
+.ops-outcome[data-outcome="completed"] { border-left-color: var(--state-success-fg); }
+.ops-outcome[data-outcome="completed"] .ops-outcome-state { color: var(--state-success-fg); }
+.ops-outcome[data-outcome="partial"] { border-left-color: var(--state-warning-fg); }
+.ops-outcome[data-outcome="partial"] .ops-outcome-state { color: var(--state-warning-fg); }
+.ops-outcome[data-outcome="failed"] { border-left-color: var(--state-danger-fg); }
+.ops-outcome[data-outcome="failed"] .ops-outcome-state { color: var(--state-danger-fg); }
+.ops-outcome[data-outcome="paused"] { border-left-color: var(--state-special-fg); }
+.ops-outcome[data-outcome="paused"] .ops-outcome-state { color: var(--state-special-fg); }
+.ops-outcome[data-outcome="cancelled"], .ops-outcome[data-outcome="draft"] { border-left-color: var(--border); }
+.ops-outcome[data-outcome="cancelled"] .ops-outcome-state,
+.ops-outcome[data-outcome="draft"] .ops-outcome-state { color: var(--text-muted); }
+
+/* The server rendered the answer above for the state this page loaded in. If
+   the live stream says the run has since stopped, this strip says so and lets
+   the operator choose the moment to refresh. */
+.ops-refresh[hidden] { display: none; }
+.ops-refresh { align-items: center; }
+.ops-refresh > div { flex: 1 1 auto; min-width: 0; }
+.ops-refresh p { margin: var(--space-1) 0 0; color: var(--text-muted); font-size: var(--text-xs); }
 
 /* --- Status header ------------------------------------------------------- */
 .ops-hero { display: grid; overflow: hidden; }
@@ -45,6 +79,9 @@
 .ops-identity h2 { margin: 0; }
 .ops-identity-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-3); margin: 0; }
 .ops-identity-meta code { color: var(--text-faint); }
+/* What this run was asked to look for, in the words the operator typed. Two
+   lines at most: it is context for the title, not a field. */
+.ops-identity-summary { display: -webkit-box; overflow: hidden; max-width: 62ch; margin: 0; -webkit-box-orient: vertical; -webkit-line-clamp: 2; color: var(--text-muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
 
 /* Readout cluster: the numbers an operator scans first. Tabular numerals and a
    fixed minimum width keep them from twitching as live values change. */
@@ -74,8 +111,11 @@
 /* --- Stage detail --------------------------------------------------------
    The stepper is the index; this grid is the evidence behind it. One block per
    stage, each carrying only the measurements that stage actually produces, so
-   the run reads as eight small reports rather than one wall of numbers. */
-.ops-stage-grid { display: grid; gap: var(--space-3); grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); padding: var(--space-4) var(--space-5); }
+   the run reads as eight small reports rather than one wall of numbers. It
+   lives inside the Technical details disclosure, which supplies the padding. */
+.ops-stages { display: grid; gap: var(--space-1); min-width: 0; }
+.ops-stages > h3, .ops-stages-note { margin: 0; }
+.ops-stage-grid { display: grid; gap: var(--space-3); grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); margin-top: var(--space-2); }
 /* State is carried by a single accent edge rather than a tinted card: eight
    coloured blocks would drown the numbers they exist to present. */
 .ops-stage { display: grid; align-content: start; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--border-subtle); border-left: 3px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-muted); }
@@ -87,9 +127,15 @@
 .ops-stage-head b { color: var(--text); font-size: var(--text-sm); font-weight: var(--weight-semibold); }
 .ops-stage-state { color: var(--text-faint); font-size: var(--text-2xs); text-align: right; }
 .ops-stage-metrics { display: grid; gap: var(--space-1); margin: 0; }
-.ops-stage-metric { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2); align-items: baseline; }
-.ops-stage-metric dt { color: var(--text-muted); font-size: var(--text-2xs); }
-.ops-stage-metric dd { margin: 0; color: var(--text); font-size: var(--text-xs); font-variant-numeric: tabular-nums; text-align: right; overflow-wrap: anywhere; }
+/* Flex, not grid, and deliberately so. A two-column grid whose value track is
+   max-content collapses the label track to zero for a long value, and a grid
+   item's automatic minimum size then paints the label straight over the value
+   it labels ("Geographic coverage" across "Maps search near 37.7749, …").
+   Here a value that cannot share the line wraps onto its own full-width line
+   underneath instead, which is legible at every card width and cannot overlap. */
+.ops-stage-metric { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0 var(--space-3); min-width: 0; }
+.ops-stage-metric dt { flex: 0 1 auto; min-width: 0; color: var(--text-muted); font-size: var(--text-2xs); overflow-wrap: anywhere; }
+.ops-stage-metric dd { flex: 1 1 auto; min-width: 0; margin: 0; color: var(--text); font-size: var(--text-xs); font-variant-numeric: tabular-nums; text-align: right; overflow-wrap: anywhere; }
 
 /* --- Run controls --------------------------------------------------------
    Every control here maps to a route that exists: the lifecycle group posts to
@@ -173,6 +219,9 @@
 
 /* --- Run context aside ---------------------------------------------------- */
 .ops-aside { --stack-space: var(--space-4); }
+/* An inline empty state is a value, not a paragraph: the browser's default
+   paragraph margins would give it the height of a populated card. */
+.ops-console .card-body > .empty-inline, .ops-technical-block > .empty-inline { margin: 0; }
 .ops-facts { display: grid; gap: var(--space-2); margin: 0; }
 .ops-fact { display: grid; grid-template-columns: minmax(6rem, 8rem) minmax(0, 1fr); align-items: baseline; gap: var(--space-3); }
 .ops-fact dt { color: var(--text-muted); font-size: var(--text-xs); }
@@ -225,13 +274,28 @@
 .ops-console .log-target:hover { color: #ffffff; }
 .ops-log-note { margin: 0; padding: var(--space-2) var(--space-4) var(--space-3); }
 
-/* --- Configuration snapshot ------------------------------------------------ */
-.ops-config > summary { padding: var(--space-3) var(--space-5); color: var(--text); font-size: var(--text-sm); font-weight: var(--weight-semibold); cursor: pointer; }
-.ops-config[open] > summary { border-bottom: 1px solid var(--border); }
+/* --- What this run collected ----------------------------------------------- */
+.ops-collected { display: grid; gap: var(--space-3); min-width: 0; }
+.ops-collected > h2 { margin: 0; }
+
+/* --- Technical details -----------------------------------------------------
+   Nothing is removed from the console, only demoted: the live worker frame,
+   host resources, the network route, and the eight per-stage reports all live
+   behind this one disclosure so the outcome above never competes with them. */
+.ops-technical > summary, .ops-config > summary { padding: var(--space-3) var(--space-5); color: var(--text); font-size: var(--text-sm); font-weight: var(--weight-semibold); cursor: pointer; }
+.ops-technical[open] > summary, .ops-config[open] > summary { border-bottom: 1px solid var(--border); }
+.ops-technical-body { padding: var(--space-5); }
+.ops-technical-grid { display: grid; gap: var(--space-5) var(--space-6); grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); }
+.ops-technical-block { display: grid; align-content: start; gap: var(--space-2); min-width: 0; }
+.ops-technical-block > h3 { margin: 0; }
 
 @media (max-width: 78rem) {
     .ops-hero-top { grid-template-columns: minmax(0, 1fr); }
     .ops-pipeline { overflow-x: auto; overscroll-behavior-x: contain; }
+}
+
+@media (max-width: 62rem) {
+    .ops-outcome { grid-template-columns: minmax(0, 1fr); align-items: start; }
 }
 
 @media (max-width: 56rem) {

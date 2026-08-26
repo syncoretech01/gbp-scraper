@@ -14,10 +14,10 @@ unique.
             <div class="detail-hero-copy">
                 <p class="eyebrow">{{if .Business.PrimaryCategory}}{{.Business.PrimaryCategory}}{{else}}Local business{{end}}</p>
                 <h3 class="t-title">{{.Business.Name}}</h3>
-                <p class="detail-hero-address">{{if .Business.Address}}{{.Business.Address}}{{else}}No address recorded{{end}}</p>
+                <p class="detail-hero-address">{{if .Business.Address}}{{.Business.Address}}{{else}}<span class="empty-inline">No address stored</span>{{end}}</p>
             </div>
             {{if and .Prospect.HasStatus .Prospect.ScoreLabel}}
-            <div class="detail-hero-score" role="group" aria-label="Prospect score">
+            <div class="detail-hero-score" role="group" aria-label="Prospect score" title="How worth calling this business is, out of 100. Separate from the data quality score below.">
                 <span class="detail-hero-score-value num">{{.Prospect.ScoreLabel}}</span>
                 <span class="detail-hero-score-label">prospect score</span>
             </div>
@@ -25,16 +25,21 @@ unique.
         </div>
         {{/*
         Signal hierarchy, strongest first: how worth calling this business is
-        (tier), why (prospect status), what the site audit found, then the
-        generic quality score. Every badge carries its own text label.
+        (tier), why (prospect status), what the site audit found, then how
+        complete the record itself is. The two scores are named apart —
+        "prospect score" judges the lead, "data quality" judges the record —
+        because sharing the word "score" is what made the table and this drawer
+        look as though they disagreed. Every badge carries its own text label.
         */}}
         <div class="detail-signals">
             {{if .Prospect.HasStatus}}
             {{if .Prospect.Tier}}<span class="prospect-badge prospect-tier-{{.Prospect.TierState}}" title="Worth-calling tier">Tier {{.Prospect.Tier}}</span>{{end}}
             <span class="prospect-badge prospect-{{.Prospect.State}}" title="Prospect website signal">{{.Prospect.Status}}</span>
+            {{else}}
+            <span class="badge" title="No prospect score has been calculated for this business yet">prospect: not scored</span>
             {{end}}
-            <span class="status status-{{.Business.WebsiteState}}" title="Stored website audit status">{{if .Business.WebsiteStatus}}{{.Business.WebsiteStatus}}{{else}}website not checked{{end}}</span>
-            <span class="badge" title="Explainable quality score">quality {{.Business.QualityLabel}}/100</span>
+            <span class="status status-{{.Business.WebsiteState}}" title="Stored website audit status">{{if and .Business.WebsiteStatus (ne .Business.WebsiteStatus "unknown")}}{{.Business.WebsiteStatus}}{{else}}website never checked{{end}}</span>
+            <span class="badge" title="How complete and well-evidenced the stored record is — not how good a prospect it is">data quality {{.Business.QualityLabel}}/100</span>
             {{if .Business.Reviewed}}<span class="badge badge-success">reviewed</span>{{else}}<span class="badge badge-warning">needs review</span>{{end}}
         </div>
         <div class="detail-quick-actions">
@@ -62,12 +67,12 @@ unique.
         <section class="card detail-explain" aria-labelledby="detail-prospect-title-{{.Business.ID}}">
             <div class="card-header">
                 <div>
-                    <h4 class="card-title" id="detail-prospect-title-{{.Business.ID}}">Prospecting signals</h4>
-                    <p class="card-subtitle"><span class="prospect-badge prospect-{{.Prospect.State}}">{{.Prospect.Status}}</span>{{if .Prospect.ScoreLabel}} &middot; score <strong>{{.Prospect.ScoreLabel}}</strong>{{end}}{{if .Prospect.Tier}} &middot; <span class="prospect-badge prospect-tier-{{.Prospect.TierState}}">Tier {{.Prospect.Tier}}</span>{{end}}</p>
+                    <h4 class="card-title" id="detail-prospect-title-{{.Business.ID}}">Prospect score &mdash; how worth calling this is</h4>
+                    <p class="card-subtitle"><span class="prospect-badge prospect-{{.Prospect.State}}">{{.Prospect.Status}}</span>{{if .Prospect.ScoreLabel}} &middot; prospect score <strong>{{.Prospect.ScoreLabel}}</strong>/100{{end}}{{if .Prospect.Tier}} &middot; <span class="prospect-badge prospect-tier-{{.Prospect.TierState}}">Tier {{.Prospect.Tier}}</span>{{end}}</p>
                 </div>
             </div>
             <div class="card-body stack">
-                <h5 class="detail-subhead">Why this business scored this way</h5>
+                <h5 class="detail-subhead">Prospecting signals behind this score</h5>
                 {{if .Prospect.Reasons}}
                 <ul class="reason-list">
                     {{range .Prospect.Reasons}}
@@ -94,8 +99,9 @@ unique.
         <section class="card detail-explain" aria-labelledby="detail-quality-title-{{.Business.ID}}">
             <div class="card-header">
                 <div>
-                    <h4 class="card-title" id="detail-quality-title-{{.Business.ID}}">Explainable quality score</h4>
+                    <h4 class="card-title" id="detail-quality-title-{{.Business.ID}}">Data quality &mdash; how complete this record is</h4>
                     <p class="card-subtitle"><strong>{{.Quality.ScoreLabel}}/100</strong> &middot; {{.Quality.ConfidenceLabel}} evidence confidence &middot; {{.Quality.RuleName}} (<code>{{.Quality.RuleVersion}}</code>) &middot; evaluated {{.Quality.EvaluatedLabel}}</p>
+                    <p class="field-hint">This measures the stored data, not the lead. A complete record can still be a poor prospect.</p>
                 </div>
             </div>
             <div class="card-body">
@@ -118,19 +124,19 @@ unique.
             <div class="card-header"><div><h4 class="card-title">Record</h4></div></div>
             <div class="card-body">
                 <dl class="detail-list">
-                    <div><dt>Phone</dt><dd>{{if .Business.Phone}}<a href="tel:{{.Business.NormalizedPhone}}">{{.Business.Phone}}</a>{{else}}Not available{{end}}</dd></div>
-                    <div><dt>Email</dt><dd>{{if .Business.PrimaryEmail}}<a href="mailto:{{.Business.PrimaryEmail}}">{{.Business.PrimaryEmail}}</a>{{else}}Not available{{end}}</dd></div>
-                    <div><dt>Website</dt><dd>{{if .Business.Website}}<a href="{{.Business.Website}}" target="_blank" rel="noopener noreferrer">{{.Business.Domain}}</a>{{else}}Not available{{end}}</dd></div>
-                    <div><dt>Category</dt><dd>{{if .Business.PrimaryCategory}}{{.Business.PrimaryCategory}}{{else}}Not recorded{{end}}{{if .Business.AdditionalCategories}} &middot; {{.Business.AdditionalCategories}}{{end}}</dd></div>
-                    <div><dt>Rating</dt><dd>{{.Business.RatingLabel}} / 5 ({{.Business.ReviewCountLabel}} reviews)</dd></div>
-                    <div><dt>Quality</dt><dd>{{.Business.QualityLabel}}/100 &middot; {{.Business.ConfidenceLabel}} confidence</dd></div>
-                    <div><dt>Business status</dt><dd>{{if .Business.BusinessStatus}}{{.Business.BusinessStatus}}{{else}}Not recorded{{end}}{{if .Business.Claimed}} &middot; claimed{{end}}</dd></div>
+                    <div><dt>Phone</dt><dd>{{if .Business.Phone}}<a href="tel:{{.Business.NormalizedPhone}}">{{.Business.Phone}}</a>{{else}}<span class="empty-inline">&mdash;</span>{{end}}</dd></div>
+                    <div><dt>Email</dt><dd>{{if .Business.PrimaryEmail}}<a href="mailto:{{.Business.PrimaryEmail}}">{{.Business.PrimaryEmail}}</a>{{else}}<span class="empty-inline">&mdash;</span>{{end}}</dd></div>
+                    <div><dt>Website</dt><dd>{{if .Business.Website}}<a href="{{.Business.Website}}" target="_blank" rel="noopener noreferrer">{{.Business.Domain}}</a>{{else}}<span class="empty-inline">No website</span>{{end}}</dd></div>
+                    <div><dt>Category</dt><dd>{{if .Business.PrimaryCategory}}{{.Business.PrimaryCategory}}{{else}}<span class="empty-inline">&mdash;</span>{{end}}{{if .Business.AdditionalCategories}} &middot; {{.Business.AdditionalCategories}}{{end}}</dd></div>
+                    <div><dt>Rating</dt><dd>{{if .Business.Rating}}{{.Business.RatingLabel}} / 5 ({{.Business.ReviewCountLabel}} reviews){{else}}<span class="empty-inline">&mdash;</span>{{end}}</dd></div>
+                    <div><dt>Data quality</dt><dd>{{.Business.QualityLabel}}/100 &middot; {{.Business.ConfidenceLabel}} evidence confidence</dd></div>
+                    <div><dt>Business status</dt><dd>{{if .Business.BusinessStatus}}{{.Business.BusinessStatus}}{{else}}<span class="empty-inline">&mdash;</span>{{end}}{{if .Business.Claimed}} &middot; claimed{{end}}</dd></div>
                     <div><dt>Last scraped</dt><dd>{{.Business.ScrapedLabel}}</dd></div>
                     <div><dt>Last updated</dt><dd>{{.Business.UpdatedLabel}} &middot; {{.Business.ChangeStatus}}</dd></div>
-                    <div><dt>Source query</dt><dd>{{if .Business.SourceQuery}}{{.Business.SourceQuery}}{{else}}Not recorded{{end}}{{if .Business.SourceCell}} &middot; cell {{.Business.SourceCell}}{{end}}</dd></div>
-                    <div><dt>Coordinates</dt><dd>{{if .MapURL}}<a href="{{.MapURL}}" target="_blank" rel="noopener noreferrer">{{.Business.Latitude}}, {{.Business.Longitude}} on OpenStreetMap</a>{{else}}Not available{{end}}</dd></div>
-                    <div><dt>Place ID</dt><dd><code class="t-mono">{{if .Business.PlaceID}}{{.Business.PlaceID}}{{else}}not recorded{{end}}</code></dd></div>
-                    <div><dt>CID / Data ID</dt><dd><code class="t-mono">{{.Business.CID}} {{.Business.DataID}}</code></dd></div>
+                    <div><dt>Source query</dt><dd>{{if .Business.SourceQuery}}{{.Business.SourceQuery}}{{else}}<span class="empty-inline">&mdash;</span>{{end}}{{if .Business.SourceCell}} &middot; cell {{.Business.SourceCell}}{{end}}</dd></div>
+                    <div><dt>Coordinates</dt><dd>{{if .MapURL}}<a href="{{.MapURL}}" target="_blank" rel="noopener noreferrer">{{.Business.Latitude}}, {{.Business.Longitude}} on OpenStreetMap</a>{{else}}<span class="empty-inline">&mdash;</span>{{end}}</dd></div>
+                    <div><dt>Place ID</dt><dd>{{if .Business.PlaceID}}<code class="t-mono">{{.Business.PlaceID}}</code>{{else}}<span class="empty-inline">&mdash;</span>{{end}}</dd></div>
+                    <div><dt>CID / Data ID</dt><dd>{{if or .Business.CID .Business.DataID}}<code class="t-mono">{{.Business.CID}} {{.Business.DataID}}</code>{{else}}<span class="empty-inline">&mdash;</span>{{end}}</dd></div>
                 </dl>
                 {{if .Business.Tags}}<div class="tag-list">{{range .Business.Tags}}<span class="tag">{{.}}</span>{{end}}</div>{{end}}
             </div>
@@ -140,11 +146,11 @@ unique.
             <div class="card-header"><div><h4 class="card-title" id="detail-location-title-{{.Business.ID}}">Location</h4><p class="card-subtitle">The stored address, parsed into its parts, and this record on the local map.</p></div></div>
             <div class="card-body stack">
                 <dl class="detail-list">
-                    <div><dt>Street</dt><dd>{{if .Business.Street}}{{.Business.Street}}{{else}}Not parsed{{end}}</dd></div>
-                    <div><dt>City and state</dt><dd>{{if .Business.City}}{{.Business.City}}{{if .Business.State}}, {{.Business.State}}{{end}}{{else}}Not recorded{{end}}</dd></div>
-                    <div><dt>Postal code</dt><dd>{{if .Business.PostalCode}}{{.Business.PostalCode}}{{else}}Not recorded{{end}}{{if .Business.Country}} &middot; {{.Business.Country}}{{end}}</dd></div>
-                    <div><dt>Plus code</dt><dd><code class="t-mono">{{if .Business.PlusCode}}{{.Business.PlusCode}}{{else}}not recorded{{end}}</code></dd></div>
-                    <div><dt>Coordinates</dt><dd>{{if .Business.CoordinatesLabel}}<span class="t-mono">{{.Business.CoordinatesLabel}}</span>{{else}}Not available{{end}}</dd></div>
+                    <div><dt>Street</dt><dd>{{if .Business.Street}}{{.Business.Street}}{{else}}<span class="empty-inline">&mdash;</span>{{end}}</dd></div>
+                    <div><dt>City and state</dt><dd>{{if .Business.City}}{{.Business.City}}{{if .Business.State}}, {{.Business.State}}{{end}}{{else}}<span class="empty-inline">&mdash;</span>{{end}}</dd></div>
+                    <div><dt>Postal code</dt><dd>{{if .Business.PostalCode}}{{.Business.PostalCode}}{{else}}<span class="empty-inline">&mdash;</span>{{end}}{{if .Business.Country}} &middot; {{.Business.Country}}{{end}}</dd></div>
+                    <div><dt>Plus code</dt><dd>{{if .Business.PlusCode}}<code class="t-mono">{{.Business.PlusCode}}</code>{{else}}<span class="empty-inline">&mdash;</span>{{end}}</dd></div>
+                    <div><dt>Coordinates</dt><dd>{{if .Business.CoordinatesLabel}}<span class="t-mono">{{.Business.CoordinatesLabel}}</span>{{else}}<span class="empty-inline">&mdash;</span>{{end}}</dd></div>
                 </dl>
                 {{if .MapEmbedURL}}
                 {{/* Map Explorer is framed same-origin and lazily, so the drawer shows a real map without a second map implementation or any remote tile fetch. */}}
@@ -168,7 +174,7 @@ unique.
             </div>
             <div class="card-body stack">
                 <dl class="detail-list">
-                    <div><dt>Final URL</dt><dd>{{if .FinalURL}}{{.FinalURL}}{{else}}Not recorded{{end}}</dd></div>
+                    <div><dt>Final URL</dt><dd>{{if .FinalURL}}{{.FinalURL}}{{else}}<span class="empty-inline">&mdash;</span>{{end}}</dd></div>
                     <div><dt>HTTP / HTTPS</dt><dd>{{.HTTPStatusLabel}} &middot; HTTPS {{.HTTPSLabel}}</dd></div>
                     <div><dt>TLS certificate</dt><dd>valid {{.TLSLabel}}{{if .CertificateError}} &middot; {{.CertificateError}}{{end}}</dd></div>
                     <div><dt>Title</dt><dd>{{if .PageTitle}}{{.PageTitle}}{{else}}Missing{{end}}</dd></div>

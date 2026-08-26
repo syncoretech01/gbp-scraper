@@ -35,8 +35,9 @@ func TestProvenanceSourceTypeLabelCoversTheSpecificationVocabulary(t *testing.T)
 func TestProvenanceLabelsDegradeGracefully(t *testing.T) {
 	t.Parallel()
 
-	if got := ProvenanceSourceTypeLabel(""); got != "Not recorded" {
-		t.Errorf("empty source type = %q, want Not recorded", got)
+	// Absence reads as an em dash, not as an engineering status phrase.
+	if got := ProvenanceSourceTypeLabel(""); got != "—" {
+		t.Errorf("empty source type = %q, want an em dash", got)
 	}
 
 	// A page kind the crawler learns later still reads as a page, not a token.
@@ -52,7 +53,7 @@ func TestProvenanceLabelsDegradeGracefully(t *testing.T) {
 		t.Errorf("structured data method = %q", got)
 	}
 
-	if got := ProvenanceMethodLabel(""); got != "not recorded" {
-		t.Errorf("empty method = %q, want not recorded", got)
+	if got := ProvenanceMethodLabel(""); got != "—" {
+		t.Errorf("empty method = %q, want an em dash", got)
 	}
 }

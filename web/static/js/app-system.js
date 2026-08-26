@@ -1,3 +1,16 @@
+/*
+ * app-system.js — behaviour shared by the operations pages.
+ *
+ * Two independent blocks, each guarded by its own page marker so the file can
+ * be loaded on System health and on Settings without either half running on
+ * the wrong page:
+ *
+ *   [data-system-diagnostics]  the local self-test and offline update info
+ *   [data-settings-nav]        the sticky section rail on Settings
+ *
+ * No inline handlers, no framework, no network access beyond the two local
+ * endpoints the System page already exposes.
+ */
 (function () {
     "use strict";
 
@@ -84,10 +97,17 @@
             const payload = await response.json();
             if (!response.ok) throw new Error((payload.error && payload.error.message) || "Update info unavailable");
             const data = payload.data || {};
-            updateOutput.textContent =
-                "Installed: " + String(data.installed_version || "unknown") +
-                " · Latest: " + String(data.latest_version || "not checked") +
-                " · " + String(data.message || "");
+            // Absence is rendered as an em dash, never as an engineering status
+            // string: "unknown" and "not checked" read to an operator as breakage.
+            const installed = String(data.installed_version || "").trim();
+            const latest = String(data.latest_version || "").trim();
+            const message = String(data.message || "").trim();
+            const parts = [
+                "Installed: " + (installed || "—"),
+                "Latest: " + (latest || "—")
+            ];
+            if (message) parts.push(message);
+            updateOutput.textContent = parts.join(" · ");
         } catch (error) {
             updateOutput.textContent = error.message || "Update info unavailable";
             if (window.GMapsApp) window.GMapsApp.toast(updateOutput.textContent, "error");
@@ -108,4 +128,81 @@
         event.preventDefault();
         showUpdateInfo(button);
     });
+}());
+
+/*
+ * Settings section rail.
+ *
+ * The rail is plain anchor links, so it already works with scripting off and
+ * with the keyboard. This block only adds the "you are here" marker, driven by
+ * whichever section is nearest the top of the scrolling region.
+ */
+(function () {
+    "use strict";
+
+    const nav = document.querySelector("[data-settings-nav]");
+    if (!nav) return;
+
+    const links = Array.prototype.slice.call(nav.querySelectorAll("[data-settings-nav-link]"));
+    if (!links.length) return;
+
+    const entries = links
+        .map((link) => {
+            const id = (link.getAttribute("href") || "").replace(/^#/, "");
+            const target = id ? document.getElementById(id) : null;
+            return target ? { link: link, target: target } : null;
+        })
+        .filter(Boolean);
+    if (!entries.length) return;
+
+    let active = null;
+
+    function mark(entry) {
+        if (entry === active) return;
+        active = entry;
+        entries.forEach((candidate) => {
+            if (candidate === entry) {
+                candidate.link.setAttribute("aria-current", "true");
+            } else {
+                candidate.link.removeAttribute("aria-current");
+            }
+        });
+    }
+
+    function nearest() {
+        // The scrolling region is .app-main, so section positions are measured
+        // against the viewport rather than the document.
+        const threshold = 140;
+        let best = entries[0];
+        entries.forEach((entry) => {
+            const top = entry.target.getBoundingClientRect().top;
+            if (top <= threshold) best = entry;
+        });
+        mark(best);
+    }
+
+    let queued = false;
+    function schedule() {
+        if (queued) return;
+        queued = true;
+        window.requestAnimationFrame(() => {
+            queued = false;
+            nearest();
+        });
+    }
+
+    const scroller = document.querySelector(".app-main") || window;
+    scroller.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule, { passive: true });
+
+    // Anchor clicks land before the scroll finishes, so mark the destination
+    // immediately rather than waiting for the smooth scroll to settle.
+    nav.addEventListener("click", (event) => {
+        const link = event.target.closest("[data-settings-nav-link]");
+        if (!link) return;
+        const entry = entries.find((candidate) => candidate.link === link);
+        if (entry) mark(entry);
+    });
+
+    nearest();
 }());

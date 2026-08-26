@@ -54,15 +54,16 @@ type savedViewCard struct {
 func (s *Server) templateHistoryLabel(r *http.Request, template ScrapeTemplate) string {
 	used := fmt.Sprintf("used %d×", template.UseCount)
 	metrics, err := s.svc.ScrapeTemplateMetricsFor(r.Context(), template.ID)
+	// A template nobody has run yet simply reports its use count. Saying so in
+	// words ("no recorded run yet") reads as a fault rather than as a template
+	// that is merely new.
 	if err != nil || metrics.RunCount == 0 {
-		return used + "; no recorded run yet"
+		return used
 	}
 	label := fmt.Sprintf("%s; %d run(s)", used, metrics.RunCount)
 	label += fmt.Sprintf("; avg %.0f results", metrics.AverageResults)
 	if metrics.TimedRunCount > 0 {
 		label += fmt.Sprintf("; avg %s", metrics.AverageDuration.Round(time.Second))
-	} else {
-		label += "; no completed run timed yet"
 	}
 	if parameters := template.Configuration.Parameters; parameters != nil && !parameters.Empty() {
 		label += fmt.Sprintf("; parameterised (%d × %d)",
@@ -94,9 +95,11 @@ func (s *Server) reusablePage(w http.ResponseWriter, r *http.Request) {
 		Notice:    strings.TrimSpace(r.URL.Query().Get("notice")),
 	}
 	for _, template := range templates {
-		lastRun := "never"
+		performance := fmt.Sprintf("depth %d; %s; concurrency %d",
+			template.Configuration.Depth, template.Configuration.MaxTime,
+			template.Configuration.Concurrency)
 		if template.LastRunAt != nil {
-			lastRun = template.LastRunAt.Format(time.RFC3339)
+			performance += "; last run " + template.LastRunAt.Format(time.RFC3339)
 		}
 		page.Templates = append(page.Templates, templateCardView{
 			ID:          template.ID,
@@ -106,11 +109,9 @@ func (s *Server) reusablePage(w http.ResponseWriter, r *http.Request) {
 			UseCount:    template.UseCount,
 			Keywords:    strings.Join(template.Configuration.Keywords, ", "),
 			Geography:   templateGeography(template.Configuration),
-			Performance: fmt.Sprintf("depth %d; %s; concurrency %d; last run %s",
-				template.Configuration.Depth, template.Configuration.MaxTime,
-				template.Configuration.Concurrency, lastRun),
-			History:   s.templateHistoryLabel(r, template),
-			UpdatedAt: template.UpdatedAt.Format(time.RFC3339),
+			Performance: performance,
+			History:     s.templateHistoryLabel(r, template),
+			UpdatedAt:   template.UpdatedAt.Format(time.RFC3339),
 		})
 	}
 	for _, view := range views {
@@ -345,6 +346,43 @@ func (s *Server) duplicateScrapeTemplate(w http.ResponseWriter, r *http.Request)
 // `ans.registerTemplateRenameRoutes(mux)` call.
 func (s *Server) registerTemplateRenameRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/templates/{id}/rename", s.renameScrapeTemplate)
+	mux.HandleFunc("GET /api/v1/templates", s.apiListScrapeTemplates)
+}
+
+// apiListScrapeTemplates lists reusable scrape templates as JSON.
+//
+// Every other template route is addressed by id; the collection itself had no
+// GET, so the wizard's template picker fetched a route that did not exist and
+// silently hid itself. The shape matches the other local list endpoints: a
+// data envelope of id/name plus the fields a picker needs to describe a choice.
+func (s *Server) apiListScrapeTemplates(w http.ResponseWriter, r *http.Request) {
+	templates, err := s.svc.ListScrapeTemplates(r.Context(), strings.TrimSpace(r.URL.Query().Get("q")))
+	if err != nil {
+		renderLocalAPIError(w, http.StatusInternalServerError, "template_list_failed", err.Error())
+
+		return
+	}
+
+	type templateSummary struct {
+		ID          string   `json:"id"`
+		Name        string   `json:"name"`
+		Description string   `json:"description,omitempty"`
+		Tags        []string `json:"tags,omitempty"`
+		Folder      string   `json:"folder,omitempty"`
+		Pinned      bool     `json:"pinned"`
+		UseCount    int64    `json:"use_count"`
+	}
+
+	summaries := make([]templateSummary, 0, len(templates))
+	for _, template := range templates {
+		summaries = append(summaries, templateSummary{
+			ID: template.ID, Name: template.Name, Description: template.Description,
+			Tags: template.Tags, Folder: template.Folder,
+			Pinned: template.Pinned, UseCount: template.UseCount,
+		})
+	}
+
+	renderJSON(w, http.StatusOK, localAPIEnvelope{Data: summaries})
 }
 
 func (s *Server) renameScrapeTemplate(w http.ResponseWriter, r *http.Request) {

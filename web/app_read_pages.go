@@ -690,7 +690,7 @@ func (s *Server) buildJobMonitorPage(r *http.Request, id string) (jobMonitorPage
 			ID:                job.ID,
 			Name:              job.Name,
 			CreatedAt:         formatDate(job.Date),
-			ScraperVersion:    "not recorded",
+			ScraperVersion:    "—",
 			LocalBuild:        ScraperVersion(),
 			State:             string(runtime.State),
 			Stage:             humanStage(runtime.Stage),
@@ -710,17 +710,17 @@ func (s *Server) buildJobMonitorPage(r *http.Request, id string) (jobMonitorPage
 			TasksRemaining:    remaining,
 			Runtime:           runtimeLabel(runtime),
 			MaxRuntime:        humanDuration(job.Data.MaxTime),
-			CurrentKeyword:    "not reported by worker",
+			CurrentKeyword:    "—",
 			CurrentLocation:   locationSummary(job.Data),
-			CurrentCell:       "not reported by worker",
-			WebsiteQueue:      "not reported by worker",
+			CurrentCell:       "—",
+			WebsiteQueue:      "—",
 			ActiveProxy:       proxySummary(job.Data.Proxies),
-			LastCheckpoint:    "not reported by worker",
-			CPUPercent:        "not reported",
-			Memory:            "not reported",
-			Browsers:          "not reported",
-			Pages:             "not reported",
-			DatabaseWrites:    "not reported",
+			LastCheckpoint:    "—",
+			CPUPercent:        "—",
+			Memory:            "—",
+			Browsers:          "—",
+			Pages:             "—",
+			DatabaseWrites:    "—",
 			ProxyPoolLabel:    proxySummary(job.Data.Proxies),
 			QuerySummary:      querySummary(job.Data.Keywords),
 			LocationSummary:   locationSummary(job.Data),
@@ -728,7 +728,7 @@ func (s *Server) buildJobMonitorPage(r *http.Request, id string) (jobMonitorPage
 			Zoom:              job.Data.Zoom,
 			Radius:            radiusSummary(job.Data),
 			EnrichmentSummary: enrichmentSummary(job.Data),
-			Owner:             "not recorded",
+			Owner:             "—",
 			ConfigJSON:        configJSON,
 			HasResults:        stats.Rows > 0,
 			CanStart:          lifecycleAvailable && canApplyControl(runtime, jobruntime.ControlStart),
@@ -776,7 +776,7 @@ func (s *Server) buildJobMonitorPage(r *http.Request, id string) (jobMonitorPage
 		page.Job.Owner = labels.Owner
 	}
 	if page.Job.Owner == "" {
-		page.Job.Owner = "not recorded"
+		page.Job.Owner = "—"
 	}
 
 	page.CanEditNotes = s.jobOrganisationAvailable()
@@ -1050,8 +1050,8 @@ func (s *Server) buildMapPage(r *http.Request) (mapPageData, appActivity, error)
 		SelectedJobID: strings.TrimSpace(r.URL.Query().Get("job_id")),
 		Estimate: mapEstimateView{
 			Cells:   "0",
-			Queries: "not configured",
-			Tasks:   "not configured",
+			Queries: "—",
+			Tasks:   "—",
 			Runtime: "not enough data",
 		},
 	}
@@ -1366,18 +1366,31 @@ func querySummary(keywords []string) string {
 	return fmt.Sprintf("%s; %s; +%d more", keywords[0], keywords[1], len(keywords)-2)
 }
 
+// locationSummary names the area a run covered in the words an operator would
+// use. JobData records the place the wizard resolved, so a pair of decimal
+// degrees is only ever a fallback for a job configured before that field
+// existed — and even then it is described rather than printed.
 func locationSummary(data JobData) string {
-	if data.GridBBox != "" {
-		return fmt.Sprintf("Grid %s (%g km cells)", data.GridBBox, data.GridCellKM)
-	}
-	if data.FastMode {
-		return fmt.Sprintf("Fast Mode within %s of %s, %s", metresLabel(data.Radius), data.Lat, data.Lon)
-	}
-	if data.Lat != "" || data.Lon != "" {
-		return fmt.Sprintf("Maps search near %s, %s", data.Lat, data.Lon)
+	place := strings.TrimSpace(data.LocationLabel)
+
+	switch {
+	case data.GridBBox != "":
+		if place != "" {
+			return fmt.Sprintf("%s, in %g km squares", place, data.GridCellKM)
+		}
+
+		return fmt.Sprintf("Map area, in %g km squares", data.GridCellKM)
+	case data.FastMode && place != "":
+		return fmt.Sprintf("Fast mode, within %s of %s", metresLabel(data.Radius), place)
+	case data.FastMode:
+		return fmt.Sprintf("Fast mode, within %s of one map point", metresLabel(data.Radius))
+	case place != "":
+		return place
+	case data.Lat != "" || data.Lon != "":
+		return "One map area"
 	}
 
-	return "No geographic constraint recorded"
+	return "No area limit"
 }
 
 func radiusSummary(data JobData) string {
@@ -1391,7 +1404,7 @@ func radiusSummary(data JobData) string {
 		return metresLabel(data.Radius) + " (not strict outside Fast Mode)"
 	}
 
-	return "not configured"
+	return "—"
 }
 
 func metresLabel(metres int) string {
@@ -1424,7 +1437,7 @@ func proxySummary(proxies []string) string {
 
 func humanDuration(value time.Duration) string {
 	if value <= 0 {
-		return "not recorded"
+		return "—"
 	}
 
 	return value.Round(time.Second).String()

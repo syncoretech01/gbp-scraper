@@ -43,7 +43,7 @@ correct whether or not that endpoint exists in a given build.
                 <b>{{.Page.JobName}}</b>
             </div>
             <div class="bench-fact"><span>Job</span><b class="t-mono">{{.Page.JobID}}</b></div>
-            <div class="bench-fact"><span>Engine</span><b>{{if .Page.EngineVersion}}{{.Page.EngineVersion}}{{else}}<span class="empty-inline">Not recorded</span>{{end}}</b></div>
+            <div class="bench-fact"><span>Engine</span><b>{{if .Page.EngineVersion}}{{.Page.EngineVersion}}{{else}}<span class="empty-inline">&mdash;</span>{{end}}</b></div>
             <div class="bench-fact"><span>Schema</span><b>v{{.Page.SchemaVersion}}</b></div>
             <div class="bench-fact"><span>Generated</span><b>{{.Page.GeneratedAt}}</b></div>
             <div class="bench-identity-actions"><p class="t-caption t-mono">{{.Page.APIPath}}</p></div>
@@ -81,11 +81,11 @@ correct whether or not that endpoint exists in a given build.
     <div class="grid grid-2">
         <article class="card">
             <div class="card-header"><div><h2>Task plan outcome</h2><p>Durable task states, attempts, and retries</p></div></div>
-            <div class="card-body"><div class="bench-kv">{{range .Page.TaskRows}}<div><span class="bench-key">{{.Label}}</span><span class="bench-value num">{{if .Value}}{{.Value}}{{else}}<span class="empty-inline">Not recorded</span>{{end}}</span></div>{{end}}</div></div>
+            <div class="card-body"><div class="bench-kv">{{range .Page.TaskRows}}<div><span class="bench-key">{{.Label}}</span><span class="bench-value num">{{if .Value}}{{.Value}}{{else}}<span class="empty-inline">&mdash;</span>{{end}}</span></div>{{end}}</div></div>
         </article>
         <article class="card">
             <div class="card-header"><div><h2>Runtime</h2><p>Wall-clock evidence from the durable job runtime</p></div></div>
-            <div class="card-body"><div class="bench-kv">{{range .Page.RuntimeRows}}<div><span class="bench-key">{{.Label}}</span><span class="bench-value num">{{if .Value}}{{.Value}}{{else}}<span class="empty-inline">Not recorded</span>{{end}}</span></div>{{end}}</div></div>
+            <div class="card-body"><div class="bench-kv">{{range .Page.RuntimeRows}}<div><span class="bench-key">{{.Label}}</span><span class="bench-value num">{{if .Value}}{{.Value}}{{else}}<span class="empty-inline">&mdash;</span>{{end}}</span></div>{{end}}</div></div>
         </article>
     </div>
 

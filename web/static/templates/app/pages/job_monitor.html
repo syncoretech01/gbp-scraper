@@ -1,7 +1,12 @@
 {{/*
 Live operations console for one job.
 
-Everything on this page is bound to a route that already exists:
+The page answers three questions in this order: what happened, is the data
+safe, and what should I do next. Everything below that answer is evidence, and
+everything that is engine internals rather than an outcome lives inside the
+"Technical details" disclosure so a non-engineer never has to read it.
+
+Everything here is bound to a route that already exists:
   GET  /api/v1/jobs/{id}/events        server-sent lifecycle stream
   GET  /api/v1/jobs/{id}/progress      polling fallback snapshot
   GET  /api/v1/jobs/{id}/coverage      adaptive plan, saturation, trend
@@ -16,12 +21,32 @@ rendered only when the server says the worker can apply it safely.
 {{define "app/head"}}<script defer src="/static/js/app-monitor.js"></script>{{end}}
 
 {{/*
+app/state-word turns a lifecycle value into the word this product says out
+loud. "partial" is the one that matters: it is the state users fear means lost
+data, so it is never printed raw. The argument is the state string.
+*/}}
+{{define "app/state-word"}}
+{{- if eq . "completed" -}}Finished
+{{- else if eq . "partial" -}}Stopped early
+{{- else if eq . "failed" -}}Failed
+{{- else if eq . "cancelled" -}}Cancelled
+{{- else if eq . "cancelling" -}}Stopping
+{{- else if eq . "running" -}}Running
+{{- else if eq . "starting" -}}Starting
+{{- else if eq . "paused" -}}Paused
+{{- else if eq . "queued" -}}Queued
+{{- else if eq . "draft" -}}Not started
+{{- else -}}{{.}}
+{{- end -}}
+{{end}}
+
+{{/*
 The state pill stays in the top bar so it is still visible once the console
 scrolls past the status header.
 */}}
 {{define "app/topbar-slot"}}
 <div class="topbar-slot">
-    <span class="status status-{{.Page.Job.State}}" data-progress-field="state">{{.Page.Job.State}}</span>
+    <span class="status status-{{.Page.Job.State}}" data-progress-field="state">{{template "app/state-word" .Page.Job.State}}</span>
     <span class="badge badge-outline num"><span data-progress-field="percent">{{.Page.Job.Percent}}</span>%</span>
 </div>
 {{end}}
@@ -36,77 +61,167 @@ scrolls past the status header.
 {{end}}
 
 {{define "app/content"}}
+{{$job := .Page.Job}}
+{{$terminal := or (eq $job.State "completed") (eq $job.State "partial") (eq $job.State "failed") (eq $job.State "cancelled")}}
 <div class="ops-console stack" data-job-monitor
-     data-job-id="{{.Page.Job.ID}}"
-     data-events-endpoint="/api/v1/jobs/{{.Page.Job.ID}}/events"
-     data-progress-endpoint="/api/v1/jobs/{{.Page.Job.ID}}/progress"
-     data-coverage-endpoint="/api/v1/jobs/{{.Page.Job.ID}}/coverage"
-     data-benchmark-endpoint="/api/v1/jobs/{{.Page.Job.ID}}/benchmark">
+     data-job-id="{{$job.ID}}"
+     data-events-endpoint="/api/v1/jobs/{{$job.ID}}/events"
+     data-progress-endpoint="/api/v1/jobs/{{$job.ID}}/progress"
+     data-coverage-endpoint="/api/v1/jobs/{{$job.ID}}/coverage"
+     data-benchmark-endpoint="/api/v1/jobs/{{$job.ID}}/benchmark">
     <p class="sr-only" data-monitor-announcement aria-live="polite" aria-atomic="true">Job state loaded.</p>
 
     {{if .Page.QueueNotice}}<div class="notice notice-info" role="status"><span aria-hidden="true">{{template "app/icon-alert"}}</span><div><strong>Why this job is queued</strong><p>{{.Page.QueueNotice}}</p></div></div>{{end}}
+
+    {{/*
+    The answer below is server-rendered for the state this page was loaded in.
+    When the live stream reports that the run has since stopped, saying so and
+    offering a refresh is honest; silently reloading would throw away whatever
+    the operator was typing into the notes field.
+    */}}
+    <div class="notice notice-info ops-refresh" data-outcome-refresh hidden role="status">
+        <div><strong data-outcome-refresh-title>This run has stopped.</strong><p>Refresh the page for the summary of what it collected.</p></div>
+        <button class="button button-sm" type="button" data-outcome-refresh-action>Refresh</button>
+    </div>
+
+    {{/* ---------------------------------------------------------------- THE ANSWER
+    One or two sentences of plain language, then the action that follows from
+    them. Three facts are always true of this engine and are stated as such:
+    committed rows are never discarded by a later failure, a stop condition
+    keeps everything collected before it, and a resume continues from the last
+    checkpoint without collecting the same business twice. */}}
+    <section class="card ops-outcome" data-outcome="{{$job.State}}" aria-labelledby="ops-outcome-title">
+        <div class="ops-outcome-copy">
+            <p class="t-overline ops-outcome-state">{{template "app/state-word" $job.State}}</p>
+            {{if eq $job.State "completed"}}
+                <h2 class="ops-outcome-title" id="ops-outcome-title">{{if $job.HasResults}}This run finished, and the {{$job.UniqueRecords}} businesses it collected are saved.{{else}}This run finished without finding any businesses.{{end}}</h2>
+                <p class="ops-outcome-detail">{{if $job.HasResults}}Rows are written to your workspace as they are found, so the list is complete and safe on this machine. Open the results to work them, or export the file.{{else}}The searches ran to the end but nothing matched. A wider area or more general keywords is usually what changes that.{{end}}</p>
+            {{else if eq $job.State "partial"}}
+                <h2 class="ops-outcome-title" id="ops-outcome-title">This run stopped before it finished, and the {{$job.UniqueRecords}} businesses it had already collected were kept.</h2>
+                <p class="ops-outcome-detail">It reached a stop condition &mdash; the "stop after" time limit, the record cap, or an area that stopped returning anything new. Nothing collected was thrown away. Resuming continues from the last saved checkpoint and will not collect the same business twice.</p>
+            {{else if eq $job.State "failed"}}
+                <h2 class="ops-outcome-title" id="ops-outcome-title">This run hit an error and stopped. The {{$job.UniqueRecords}} businesses it had already collected are still saved.</h2>
+                <p class="ops-outcome-detail">A failure never removes rows that were already committed. Restarting picks up from the last saved checkpoint, so nothing is collected twice. The job log below names what failed.</p>
+            {{else if eq $job.State "cancelled"}}
+                <h2 class="ops-outcome-title" id="ops-outcome-title">You stopped this run, and the {{$job.UniqueRecords}} businesses it had collected were kept.</h2>
+                <p class="ops-outcome-detail">Cancelling waits for the write in flight to finish, so the result file is complete up to the point you stopped. Run it again whenever you want the rest.</p>
+            {{else if eq $job.State "paused"}}
+                <h2 class="ops-outcome-title" id="ops-outcome-title">This run is paused, and nothing has been lost.</h2>
+                <p class="ops-outcome-detail">The {{$job.UniqueRecords}} businesses collected so far are already saved. Resuming continues from the last checkpoint and will not collect the same business twice.</p>
+            {{else if eq $job.State "cancelling"}}
+                <h2 class="ops-outcome-title" id="ops-outcome-title">This run is stopping safely.</h2>
+                <p class="ops-outcome-detail">The worker is finishing the write it has in flight before it stops. Everything collected up to now is kept.</p>
+            {{else if eq $job.State "queued"}}
+                <h2 class="ops-outcome-title" id="ops-outcome-title">This run is waiting for a free worker on this machine.</h2>
+                <p class="ops-outcome-detail">It has not started collecting yet. It begins on its own as soon as capacity frees up, and you can leave this page.</p>
+            {{else if eq $job.State "draft"}}
+                <h2 class="ops-outcome-title" id="ops-outcome-title">This run has not started yet.</h2>
+                <p class="ops-outcome-detail">Nothing has been collected. Start it when you are ready; you can pause or stop it at any point without losing what it has found.</p>
+            {{else}}
+                <h2 class="ops-outcome-title" id="ops-outcome-title">This run is working now &mdash; {{$job.UniqueRecords}} businesses collected so far.</h2>
+                <p class="ops-outcome-detail">Every row is written to the result file as it is found, so pausing, stopping, or closing this page does not lose them. You can leave and come back.</p>
+            {{end}}
+            {{/* A stopped run's copy above already says what a resume does, so
+            the recovery sentence is only added where nothing else states it:
+            a run that is still going after being recovered from a crash. */}}
+            {{if and (not $terminal) .Page.Checkpoint.Available .Page.Checkpoint.RecoveryRequired}}<p class="ops-outcome-detail">{{.Page.Checkpoint.RecoveryMessage}}</p>{{end}}
+        </div>
+
+        {{/* The recommended next action, and only that. The full control set
+        stays in the run-control strip below. */}}
+        <div class="ops-outcome-actions">
+            {{if eq $job.State "completed"}}
+                {{if $job.HasResults}}<a class="button button-primary" href="/app/results?job_id={{$job.ID}}" data-endpoint="/app/results?job_id={{$job.ID}}">Open results</a>
+                <a class="button" href="/api/v1/jobs/{{$job.ID}}/download" download data-endpoint="/api/v1/jobs/{{$job.ID}}/download">Export CSV</a>{{end}}
+                {{if $job.CanDuplicate}}<form action="/api/v1/jobs/{{$job.ID}}/duplicate" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button{{if not $job.HasResults}} button-primary{{end}}" type="submit" data-endpoint="/api/v1/jobs/{{$job.ID}}/duplicate">Run again</button></form>{{end}}
+            {{else if or (eq $job.State "partial") (eq $job.State "paused")}}
+                {{if $job.CanResume}}<form action="/api/v1/jobs/{{$job.ID}}/resume" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-primary" type="submit" data-endpoint="/api/v1/jobs/{{$job.ID}}/resume">Resume</button></form>
+                {{else if $job.CanRestartCheckpoint}}<form action="/api/v1/jobs/{{$job.ID}}/restart" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-primary" type="submit" data-endpoint="/api/v1/jobs/{{$job.ID}}/restart">Resume from checkpoint</button></form>{{end}}
+                {{if $job.HasResults}}<a class="button" href="/app/results?job_id={{$job.ID}}" data-endpoint="/app/results?job_id={{$job.ID}}">Open results so far</a>{{end}}
+            {{else if eq $job.State "failed"}}
+                {{if $job.CanRetry}}<form action="/api/v1/jobs/{{$job.ID}}/retry" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-primary" type="submit" data-endpoint="/api/v1/jobs/{{$job.ID}}/retry">Retry the failed searches</button></form>
+                {{else if $job.CanRestartCheckpoint}}<form action="/api/v1/jobs/{{$job.ID}}/restart" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-primary" type="submit" data-endpoint="/api/v1/jobs/{{$job.ID}}/restart">Resume from checkpoint</button></form>{{end}}
+                {{if $job.HasResults}}<a class="button" href="/app/results?job_id={{$job.ID}}" data-endpoint="/app/results?job_id={{$job.ID}}">Open results so far</a>{{end}}
+                <a class="button button-ghost" href="#job-logs">Read the log</a>
+            {{else if eq $job.State "cancelled"}}
+                {{if $job.CanDuplicate}}<form action="/api/v1/jobs/{{$job.ID}}/duplicate" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-primary" type="submit" data-endpoint="/api/v1/jobs/{{$job.ID}}/duplicate">Run again</button></form>{{end}}
+                {{if $job.HasResults}}<a class="button" href="/app/results?job_id={{$job.ID}}" data-endpoint="/app/results?job_id={{$job.ID}}">Open results so far</a>{{end}}
+            {{else if eq $job.State "draft"}}
+                {{if $job.CanStart}}<form action="/api/v1/jobs/{{$job.ID}}/start" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-primary" type="submit" data-endpoint="/api/v1/jobs/{{$job.ID}}/start">Start this run</button></form>{{end}}
+            {{else}}
+                {{if $job.HasResults}}<a class="button" href="/app/results?job_id={{$job.ID}}" data-endpoint="/app/results?job_id={{$job.ID}}">Open results so far</a>{{end}}
+            {{end}}
+        </div>
+    </section>
 
     {{/* ---------------------------------------------------------------- STATUS HEADER */}}
     <section class="card ops-hero" aria-labelledby="ops-hero-title">
         <div class="ops-hero-top">
             <div class="ops-identity">
                 <div class="cluster">
-                    <span class="status status-{{.Page.Job.State}}" data-progress-field="state">{{.Page.Job.State}}</span>
-                    <span class="badge badge-outline"><span data-progress-field="stage">{{.Page.Job.Stage}}</span></span>
+                    <span class="status status-{{$job.State}}" data-progress-field="state">{{template "app/state-word" $job.State}}</span>
+                    {{/* The stage a run ended in is context for a run that
+                    stopped, and noise beside a run that finished everything. */}}
+                    {{if not (or (eq $job.State "completed") (eq $job.State "cancelled"))}}<span class="badge badge-outline"><span data-progress-field="stage">{{$job.Stage}}</span></span>{{end}}
                 </div>
-                <h2 class="t-title" id="ops-hero-title">{{.Page.Job.Name}}</h2>
+                <h2 class="t-title" id="ops-hero-title">{{$job.Name}}</h2>
+                <p class="ops-identity-summary">{{$job.QuerySummary}}</p>
                 <p class="t-caption ops-identity-meta">
-                    <code class="t-mono">{{.Page.Job.ID}}</code>
-                    <span aria-hidden="true">&middot;</span><span>created {{.Page.Job.CreatedAt}}</span>
-                    <span aria-hidden="true">&middot;</span><span data-job-scraper-version>scraper {{.Page.Job.ScraperVersion}}</span>
+                    <code class="t-mono">{{$job.ID}}</code>
+                    <span aria-hidden="true">&middot;</span><span>created {{$job.CreatedAt}}</span>
                 </p>
             </div>
             <div class="ops-readouts">
                 <div class="ops-readout" data-emphasis="primary">
                     <p class="t-overline">Progress</p>
-                    <b><span data-progress-field="percent">{{.Page.Job.Percent}}</span>%</b>
-                    <small>of the planned work</small>
+                    <b><span data-progress-field="percent">{{$job.Percent}}</span>%</b>
+                    <small>of the planned searches</small>
+                </div>
+                <div class="ops-readout">
+                    <p class="t-overline">Businesses</p>
+                    <b data-progress-field="unique">{{$job.UniqueRecords}}</b>
+                    <small>kept so far</small>
                 </div>
                 <div class="ops-readout">
                     <p class="t-overline">Elapsed</p>
-                    <b>{{.Page.Job.Runtime}}</b>
-                    <small>limit {{.Page.Job.MaxRuntime}}</small>
+                    <b>{{if or (eq $job.Runtime "not recorded") (eq $job.Runtime "not started") (eq $job.Runtime "unknown")}}&mdash;{{else}}{{$job.Runtime}}{{end}}</b>
+                    <small>{{if or (eq $job.MaxRuntime "not recorded") (eq $job.MaxRuntime "—")}}no time limit{{else}}stop after {{$job.MaxRuntime}}{{end}}</small>
                 </div>
+                {{/* A run that has stopped has no time left, and a readout
+                that answers "Finished" to "Time left" is a box that says
+                nothing. The live ETA hook still exists in Technical details. */}}
+                {{if not $terminal}}
                 <div class="ops-readout">
-                    <p class="t-overline">ETA</p>
-                    <b data-progress-field="eta">{{.Page.Job.ETA}}</b>
-                    <small>to finish</small>
+                    <p class="t-overline">Time left</p>
+                    <b data-progress-field="eta">{{$job.ETA}}</b>
+                    <small>estimated</small>
                 </div>
+                {{end}}
                 <div class="ops-readout">
-                    <p class="t-overline">Tasks</p>
-                    <b><span data-progress-field="tasks-complete">{{.Page.Job.TasksComplete}}</span>/<span data-progress-field="tasks-total">{{.Page.Job.TasksTotal}}</span></b>
-                    <small><span data-progress-field="tasks-remaining">{{.Page.Job.TasksRemaining}}</span> remaining</small>
+                    <p class="t-overline">Searches run</p>
+                    <b><span data-progress-field="tasks-complete">{{$job.TasksComplete}}</span>/<span data-progress-field="tasks-total">{{$job.TasksTotal}}</span></b>
+                    <small><span data-progress-field="tasks-remaining">{{$job.TasksRemaining}}</span> still to run</small>
                 </div>
-                <div class="ops-readout" data-emphasis="danger">
-                    <p class="t-overline">Failed</p>
-                    <b data-progress-field="tasks-failed">{{.Page.Job.TasksFailed}}</b>
+                <div class="ops-readout" data-failed-readout{{if $job.TasksFailed}} data-emphasis="danger"{{end}}>
+                    <p class="t-overline">Failed searches</p>
+                    <b data-progress-field="tasks-failed">{{$job.TasksFailed}}</b>
                     <small><span data-progress-field="tasks-skipped">0</span> skipped</small>
-                </div>
-                <div class="ops-readout">
-                    <p class="t-overline">Rate</p>
-                    <b data-progress-field="rate">{{.Page.Job.PlacesPerMinute}}</b>
-                    <small>places per minute</small>
                 </div>
             </div>
         </div>
 
         <div class="ops-progress">
-            <div class="progress progress-lg" role="progressbar" data-progress-bar aria-label="Overall job progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{.Page.Job.Percent}}"><span class="progress-bar" style="--progress: {{.Page.Job.Percent}}%"></span></div>
+            <div class="progress progress-lg" role="progressbar" data-progress-bar aria-label="Overall job progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{$job.Percent}}"><span class="progress-bar" style="--progress: {{$job.Percent}}%"></span></div>
             <p class="t-caption ops-progress-legend">
-                <span class="ops-current">Working on <strong data-progress-field="current-query">{{.Page.Job.CurrentKeyword}}</strong> &middot; cell <span data-progress-field="current-cell">{{.Page.Job.CurrentCell}}</span></span>
-                <span>{{.Page.Job.CurrentTask}}</span>
+                <span class="ops-current">Working on <strong data-progress-field="current-query">{{$job.CurrentKeyword}}</strong> &middot; area <span data-progress-field="current-cell">{{$job.CurrentCell}}</span></span>
+                {{if not $terminal}}<span>{{$job.CurrentTask}}</span>{{end}}
             </p>
         </div>
 
         <ol class="ops-pipeline" aria-label="Scrape pipeline">
             {{range .Page.Pipeline}}<li class="ops-step" data-pipeline-stage data-pipeline-order="{{.Order}}" data-state="{{.State}}"><b>{{.Label}}</b><span>{{.Detail}}</span></li>{{else}}
             <li class="ops-step" data-pipeline-stage data-pipeline-order="0"><b>Queries</b><span>Prepare plan</span></li>
-            <li class="ops-step" data-pipeline-stage data-pipeline-order="1"><b>Grid</b><span>Generate cells</span></li>
+            <li class="ops-step" data-pipeline-stage data-pipeline-order="1"><b>Grid</b><span>Generate areas</span></li>
             <li class="ops-step" data-pipeline-stage data-pipeline-order="2"><b>Search</b><span>Maps results</span></li>
             <li class="ops-step" data-pipeline-stage data-pipeline-order="3"><b>Details</b><span>Place records</span></li>
             <li class="ops-step" data-pipeline-stage data-pipeline-order="4"><b>Websites</b><span>Crawl pages</span></li>
@@ -120,67 +235,51 @@ scrolls past the status header.
         is genuinely available. A bar of empty groups would be a placeholder,
         and a placeholder control is worse than no control.
         */}}
-        {{$lifecycle := or .Page.Job.CanStart .Page.Job.CanPause .Page.Job.CanResume .Page.Job.CanRetry .Page.Job.CanRestartCheckpoint .Page.Job.CanCancel}}
-        {{if or $lifecycle .Page.Job.HasRuntimeControls}}
+        {{$lifecycle := or $job.CanStart $job.CanPause $job.CanResume $job.CanRetry $job.CanRestartCheckpoint $job.CanCancel}}
+        {{if or $lifecycle $job.HasRuntimeControls}}
         <div class="ops-controls">
             {{if $lifecycle}}
             <div class="ops-control-group" role="group" aria-label="Run control">
                 <span class="ops-control-label">Run</span>
-                {{if .Page.Job.CanStart}}<form action="/api/v1/jobs/{{.Page.Job.ID}}/start" method="post"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button button-sm button-primary" type="submit" data-endpoint="/api/v1/jobs/{{.Page.Job.ID}}/start">Start</button></form>{{end}}
-                {{if .Page.Job.CanPause}}<form action="/api/v1/jobs/{{.Page.Job.ID}}/pause" method="post"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button button-sm button-primary" type="submit" data-action="pause-job" data-endpoint="/api/v1/jobs/{{.Page.Job.ID}}/pause">Pause</button></form>{{end}}
-                {{if .Page.Job.CanResume}}<form action="/api/v1/jobs/{{.Page.Job.ID}}/resume" method="post"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button button-sm button-primary" type="submit" data-endpoint="/api/v1/jobs/{{.Page.Job.ID}}/resume">Resume</button></form>{{end}}
-                {{if .Page.Job.CanRetry}}<form action="/api/v1/jobs/{{.Page.Job.ID}}/retry" method="post"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button button-sm" type="submit" data-endpoint="/api/v1/jobs/{{.Page.Job.ID}}/retry">Retry failed tasks</button></form>{{end}}
-                {{if .Page.Job.CanRestartCheckpoint}}<form action="/api/v1/jobs/{{.Page.Job.ID}}/restart" method="post"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button button-sm" type="submit" data-endpoint="/api/v1/jobs/{{.Page.Job.ID}}/restart">Restart from checkpoint</button></form>{{end}}
-                {{if .Page.Job.CanCancel}}<form action="/api/v1/jobs/{{.Page.Job.ID}}/cancel" method="post" data-confirm="Cancel this job after the active write finishes?"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button button-sm button-danger" type="submit" data-endpoint="/api/v1/jobs/{{.Page.Job.ID}}/cancel">Cancel safely</button></form>{{end}}
+                {{if $job.CanStart}}<form action="/api/v1/jobs/{{$job.ID}}/start" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-primary" type="submit" data-endpoint="/api/v1/jobs/{{$job.ID}}/start">Start</button></form>{{end}}
+                {{if $job.CanPause}}<form action="/api/v1/jobs/{{$job.ID}}/pause" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-primary" type="submit" data-action="pause-job" data-endpoint="/api/v1/jobs/{{$job.ID}}/pause">Pause</button></form>{{end}}
+                {{if $job.CanResume}}<form action="/api/v1/jobs/{{$job.ID}}/resume" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-primary" type="submit" data-endpoint="/api/v1/jobs/{{$job.ID}}/resume">Resume</button></form>{{end}}
+                {{if $job.CanRetry}}<form action="/api/v1/jobs/{{$job.ID}}/retry" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm" type="submit" data-endpoint="/api/v1/jobs/{{$job.ID}}/retry">Retry failed searches</button></form>{{end}}
+                {{if $job.CanRestartCheckpoint}}<form action="/api/v1/jobs/{{$job.ID}}/restart" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm" type="submit" data-endpoint="/api/v1/jobs/{{$job.ID}}/restart">Restart from checkpoint</button></form>{{end}}
+                {{if $job.CanCancel}}<form action="/api/v1/jobs/{{$job.ID}}/cancel" method="post" data-confirm="Stop this job after the active write finishes? Everything collected so far is kept."><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-danger" type="submit" data-endpoint="/api/v1/jobs/{{$job.ID}}/cancel">Stop safely</button></form>{{end}}
             </div>
             {{end}}
 
-            {{if .Page.Job.HasRuntimeControls}}
+            {{if $job.HasRuntimeControls}}
             {{if $lifecycle}}<span class="ops-control-sep" aria-hidden="true"></span>{{end}}
             <div class="ops-control-group" aria-label="Live tuning">
                 <span class="ops-control-label">Tune</span>
-                {{if .Page.Job.CanAddRuntime}}<form class="ops-control" action="/api/v1/jobs/{{.Page.Job.ID}}/runtime" method="post"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><label class="sr-only" for="add-runtime">Add runtime</label><select class="select" id="add-runtime" name="duration"><option value="15m">+15 minutes</option><option value="30m">+30 minutes</option><option value="1h">+1 hour</option></select><button class="button button-sm" type="submit" data-endpoint="/api/v1/jobs/{{.Page.Job.ID}}/runtime">Extend</button></form>{{end}}
-                {{if .Page.Job.CanChangeConcurrency}}<form class="ops-control" action="/api/v1/jobs/{{.Page.Job.ID}}/concurrency" method="post"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><label class="sr-only" for="monitor-concurrency">Concurrency</label><input class="input" id="monitor-concurrency" name="concurrency" type="number" min="1" max="64"{{if gt .Page.Job.Concurrency 0}} value="{{.Page.Job.Concurrency}}"{{else}} placeholder="auto"{{end}} aria-describedby="monitor-concurrency-unit"><span class="t-caption" id="monitor-concurrency-unit">workers</span><button class="button button-sm" type="submit" data-endpoint="/api/v1/jobs/{{.Page.Job.ID}}/concurrency">Apply</button></form>{{end}}
-                {{if .Page.Job.CanChangeProxyPool}}<form class="ops-control" action="/api/v1/jobs/{{.Page.Job.ID}}/proxy-pool" method="post"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><label class="sr-only" for="monitor-proxy">Proxy pool</label><select class="select" id="monitor-proxy" name="proxy_pool_id"><option value="">Direct connection</option>{{range .Page.ProxyPools}}<option value="{{.ID}}">{{.Name}} ({{.Healthy}} healthy)</option>{{end}}</select><button class="button button-sm" type="submit" data-endpoint="/api/v1/jobs/{{.Page.Job.ID}}/proxy-pool">Switch</button></form>{{end}}
-                {{if .Page.Job.CanRetryCurrent}}<form action="/api/v1/jobs/{{.Page.Job.ID}}/retry-current" method="post"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button button-sm" type="submit" data-endpoint="/api/v1/jobs/{{.Page.Job.ID}}/retry-current">Retry current task</button></form>{{end}}
+                {{if $job.CanAddRuntime}}<form class="ops-control" action="/api/v1/jobs/{{$job.ID}}/runtime" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><label class="sr-only" for="add-runtime">Add runtime</label><select class="select" id="add-runtime" name="duration"><option value="15m">+15 minutes</option><option value="30m">+30 minutes</option><option value="1h">+1 hour</option></select><button class="button button-sm" type="submit" data-endpoint="/api/v1/jobs/{{$job.ID}}/runtime">Extend</button></form>{{end}}
+                {{if $job.CanChangeConcurrency}}<form class="ops-control" action="/api/v1/jobs/{{$job.ID}}/concurrency" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><label class="sr-only" for="monitor-concurrency">Concurrency</label><input class="input" id="monitor-concurrency" name="concurrency" type="number" min="1" max="64"{{if gt $job.Concurrency 0}} value="{{$job.Concurrency}}"{{else}} placeholder="auto"{{end}} aria-describedby="monitor-concurrency-unit"><span class="t-caption" id="monitor-concurrency-unit">workers</span><button class="button button-sm" type="submit" data-endpoint="/api/v1/jobs/{{$job.ID}}/concurrency">Apply</button></form>{{end}}
+                {{if $job.CanChangeProxyPool}}<form class="ops-control" action="/api/v1/jobs/{{$job.ID}}/proxy-pool" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><label class="sr-only" for="monitor-proxy">Proxy pool</label><select class="select" id="monitor-proxy" name="proxy_pool_id"><option value="">Direct connection</option>{{range .Page.ProxyPools}}<option value="{{.ID}}">{{.Name}} ({{.Healthy}} healthy)</option>{{end}}</select><button class="button button-sm" type="submit" data-endpoint="/api/v1/jobs/{{$job.ID}}/proxy-pool">Switch</button></form>{{end}}
+                {{if $job.CanRetryCurrent}}<form action="/api/v1/jobs/{{$job.ID}}/retry-current" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm" type="submit" data-endpoint="/api/v1/jobs/{{$job.ID}}/retry-current">Retry current search</button></form>{{end}}
             </div>
             {{end}}
 
             <span class="toolbar-spacer"></span>
-            <p class="ops-controls-note">{{if .Page.Job.HasRuntimeControls}}Tuning applies at the next safe task boundary and is recorded in the audit log.{{else}}Live tuning appears while the worker can apply it safely.{{end}}</p>
+            <p class="ops-controls-note">{{if $job.HasRuntimeControls}}Tuning applies at the next safe boundary and is recorded in the audit log.{{else}}Live tuning appears while the worker can apply it safely.{{end}}</p>
         </div>
         {{end}}
     </section>
 
-    {{/* ----------------------------------------------------------------- STAGE DETAIL
-    The stepper above is the index; this is the evidence. Each stage carries the
-    metrics the specification names for it, and any value the worker has not
-    published reads as "not reported yet" rather than as a zero result. */}}
-    <section class="card card-flush ops-stages" aria-labelledby="ops-stages-title">
-        <div class="card-header">
-            <div><h2 id="ops-stages-title">Pipeline stages</h2><p>What each stage measured, from the durable task plan, the redacted event log, and the committed result file</p></div>
+    {{/* ---------------------------------------------------------------- WHAT IT COLLECTED
+    The counters a non-engineer reads. Raw internals — queue depth, HTTP status,
+    response times, coordinates, per-stage counters — are all still on the page,
+    inside the Technical details disclosure near the bottom. */}}
+    <section class="ops-collected" aria-labelledby="ops-collected-title">
+        <h2 class="t-overline" id="ops-collected-title">What this run collected</h2>
+        <div class="stat-grid" style="--stat-min: 11rem">
+            <article class="stat stat-compact"><p class="stat-label">Emails found</p><p class="stat-value num" data-progress-field="emails">{{$job.Emails}}</p><p class="stat-meta">{{$job.Websites}} websites &middot; {{$job.SocialProfiles}} social profiles</p></article>
+            <article class="stat stat-compact"><p class="stat-label">Rows collected</p><p class="stat-value num" data-progress-field="records">{{$job.RawRecords}}</p><p class="stat-meta">{{$job.CommittedRows}} written to the result file</p></article>
+            <article class="stat stat-compact"><p class="stat-label">Duplicates merged</p><p class="stat-value num">{{$job.Duplicates}}</p><p class="stat-meta">the same business seen more than once</p></article>
+            <article class="stat stat-compact"><p class="stat-label">Warnings and errors</p><p class="stat-value num" data-job-warnings>{{$job.Warnings}}</p><p class="stat-meta"><span class="num" data-job-errors>{{$job.Errors}}</span> errors recorded in the job log</p></article>
+            <article class="stat stat-compact"><p class="stat-label">Blocked or rate-limited</p><p class="stat-value metric-value-small" data-job-block-rate>{{if $job.BlockRate}}{{$job.BlockRate}}{{else}}&mdash;{{end}}</p><p class="stat-meta">refusals measured against finished searches</p></article>
         </div>
-        <div class="card-body ops-stage-grid">
-            {{range .Page.Pipeline}}
-            <article class="ops-stage" data-pipeline-detail data-pipeline-order="{{.Order}}" data-state="{{.State}}">
-                <p class="ops-stage-head"><b>{{.Label}}</b><span class="ops-stage-state">{{.Detail}}</span></p>
-                <dl class="ops-stage-metrics">
-                    {{range .Metrics}}<div class="ops-stage-metric"><dt>{{.Label}}</dt><dd>{{.Value}}</dd></div>{{end}}
-                </dl>
-            </article>
-            {{end}}
-        </div>
-    </section>
-
-    {{/* ---------------------------------------------------------------- LIVE VITALS */}}
-    <section class="stat-grid" style="--stat-min: 9.5rem" aria-label="Live counters">
-        <article class="stat stat-compact"><p class="stat-label">Rows collected</p><p class="stat-value num" data-progress-field="records">{{.Page.Job.RawRecords}}</p><p class="stat-meta">{{.Page.Job.CommittedRows}} committed to the result file</p></article>
-        <article class="stat stat-compact"><p class="stat-label">Unique businesses</p><p class="stat-value num" data-progress-field="unique">{{.Page.Job.UniqueRecords}}</p><p class="stat-meta">{{.Page.Job.Duplicates}} duplicate matches merged</p></article>
-        <article class="stat stat-compact"><p class="stat-label">Emails found</p><p class="stat-value num" data-progress-field="emails">{{.Page.Job.Emails}}</p><p class="stat-meta">{{.Page.Job.Websites}} websites &middot; {{.Page.Job.SocialProfiles}} social profiles</p></article>
-        <article class="stat stat-compact"><p class="stat-label">Retried attempts</p><p class="stat-value num" data-progress-field="tasks-retries">{{.Page.Job.Retries}}</p><p class="stat-meta">attempts returned to the queue</p></article>
-        <article class="stat stat-compact"><p class="stat-label">Warnings and errors</p><p class="stat-value num" data-job-warnings>{{.Page.Job.Warnings}}</p><p class="stat-meta"><span class="num" data-job-errors>{{.Page.Job.Errors}}</span> errors recorded in the event log</p></article>
-        <article class="stat stat-compact"><p class="stat-label">Workers</p><p class="stat-value metric-value-small num" data-progress-field="worker-concurrency">{{.Page.Job.WorkerConcurrency}}</p><p class="stat-meta">effective against requested concurrency</p></article>
-        <article class="stat stat-compact"><p class="stat-label">Network route</p><p class="stat-value metric-value-small" data-metric-value>{{.Page.Job.ProxyPoolLabel}}</p><p class="stat-meta">block rate <span data-job-block-rate>{{if .Page.Job.BlockRate}}{{.Page.Job.BlockRate}}{{else}}not reported yet{{end}}</span></p></article>
     </section>
 
     {{/* ---------------------------------------------------------------- PLAN + CONTEXT */}}
@@ -195,15 +294,15 @@ scrolls past the status header.
             */}}
             <section class="card card-flush ops-coverage" id="job-coverage" data-coverage-panel hidden aria-labelledby="job-coverage-title">
                 <div class="card-header">
-                    <div><h2 id="job-coverage-title">Task plan and coverage</h2><p>Every query the adaptive engine ran, with the rows it actually contributed</p></div>
-                    <div class="card-actions"><a class="button button-sm button-ghost" href="/app/jobs/{{.Page.Job.ID}}/benchmark" data-coverage-benchmark>Full benchmark</a></div>
+                    <div><h2 id="job-coverage-title">Areas searched</h2><p>Every search this run made, and the businesses each one actually contributed</p></div>
+                    <div class="card-actions"><a class="button button-sm button-ghost" href="/app/jobs/{{$job.ID}}/benchmark" data-coverage-benchmark>Full benchmark</a></div>
                 </div>
 
                 <div class="ops-coverage-totals" data-coverage-totals></div>
                 <p class="ops-saturation" data-coverage-saturation></p>
 
                 <div class="ops-chart-frame" data-coverage-trend-frame hidden>
-                    <p class="t-overline">Throughput per finished query</p>
+                    <p class="t-overline">New rows per finished search</p>
                     <div class="overflow-safe" data-coverage-trend></div>
                     <p class="ops-chart-legend">
                         <span><i class="ops-swatch" aria-hidden="true"></i>Rows added</span>
@@ -214,9 +313,9 @@ scrolls past the status header.
 
                 <div class="table-wrap overflow-safe ops-task-scroll" data-density="compact">
                     <table class="data-table ops-tasks" data-coverage-table>
-                        <caption class="sr-only">Per-query coverage outcomes for this job</caption>
+                        <caption class="sr-only">Per-search coverage outcomes for this job</caption>
                         <thead><tr>
-                            <th scope="col">Query</th>
+                            <th scope="col">Search</th>
                             <th scope="col">ZIP</th>
                             <th scope="col">Origin</th>
                             <th scope="col">State</th>
@@ -236,14 +335,14 @@ scrolls past the status header.
                     <div><h2 id="job-logs-title">Job logs</h2><p>Human-readable, redacted lifecycle events</p></div>
                     <div class="card-actions">
                         <button class="button button-sm" type="button" data-log-copy>Copy details</button>
-                        {{if .Page.CanDownloadLogs}}<a class="button button-sm" href="/api/v1/jobs/{{.Page.Job.ID}}/logs?format=text" download data-endpoint="/api/v1/jobs/{{.Page.Job.ID}}/logs?format=text">Download logs</a>{{end}}
+                        {{if .Page.CanDownloadLogs}}<a class="button button-sm" href="/api/v1/jobs/{{$job.ID}}/logs?format=text" download data-endpoint="/api/v1/jobs/{{$job.ID}}/logs?format=text">Download logs</a>{{end}}
                     </div>
                 </div>
-                <form class="ops-log-toolbar" action="/app/jobs/{{.Page.Job.ID}}" method="get">
-                    <div class="field"><label for="log-search">Search logs</label><input class="input input-sm" id="log-search" name="log_q" type="search" value="{{.Page.LogQuery}}" placeholder="Message, query, cell, or record"></div>
+                <form class="ops-log-toolbar" action="/app/jobs/{{$job.ID}}" method="get">
+                    <div class="field"><label for="log-search">Search logs</label><input class="input input-sm" id="log-search" name="log_q" type="search" value="{{.Page.LogQuery}}" placeholder="Message, search, area, or record"></div>
                     <div class="field"><label for="log-severity">Severity</label><select class="select input-sm" id="log-severity" name="severity"><option value="">All</option>{{range .Page.LogLevels}}<option value="{{.Value}}"{{if eq .Value $.Page.LogSeverity}} selected{{end}}>{{.Label}}</option>{{end}}</select></div>
                     <label class="check-row"><input name="log_autoscroll" type="checkbox" value="1" data-log-autoscroll{{if .Page.LogAutoscroll}} checked{{end}}><span>Follow live</span></label>
-                    <button class="button button-sm" type="submit" data-endpoint="/app/jobs/{{.Page.Job.ID}}#job-logs">Filter</button>
+                    <button class="button button-sm" type="submit" data-endpoint="/app/jobs/{{$job.ID}}#job-logs">Filter</button>
                 </form>
                 <div class="log-viewer" data-log-viewer role="log" aria-live="polite" aria-relevant="additions text" tabindex="0">
                     {{range .Page.Logs}}<div class="log-line log-{{.Severity}}" data-log-line data-log-level="{{.Severity}}"><time datetime="{{.OccurredAtISO}}">{{.OccurredAt}}</time><span class="log-level">{{.Severity}}</span><span>{{.Message}}{{if .TargetURL}} <a class="log-target" href="{{.TargetURL}}" data-endpoint="{{.TargetURL}}">Open affected item</a>{{end}}</span></div>{{else}}<div class="log-line"><span></span><span class="log-level">information</span><span>No log entries match the current filter.</span></div>{{end}}
@@ -253,45 +352,30 @@ scrolls past the status header.
         </div>
 
         <aside class="stack ops-aside" aria-label="Run context">
-            <article class="card">
-                <div class="card-header"><div><h2>Current activity</h2></div></div>
-                <div class="card-body">
-                    <dl class="ops-facts">
-                        <div class="ops-fact"><dt>Keyword</dt><dd data-progress-field="current-query">{{.Page.Job.CurrentKeyword}}</dd></div>
-                        <div class="ops-fact"><dt>Location</dt><dd>{{.Page.Job.CurrentLocation}}</dd></div>
-                        <div class="ops-fact"><dt>Grid cell</dt><dd data-progress-field="current-cell">{{.Page.Job.CurrentCell}}</dd></div>
-                        <div class="ops-fact"><dt>Places per minute</dt><dd data-progress-field="rate">{{.Page.Job.PlacesPerMinute}}</dd></div>
-                        <div class="ops-fact"><dt>Estimated completion</dt><dd data-progress-field="eta">{{.Page.Job.ETA}}</dd></div>
-                        <div class="ops-fact"><dt>Website queue</dt><dd>{{.Page.Job.WebsiteQueue}}</dd></div>
-                        <div class="ops-fact"><dt>Last checkpoint</dt><dd>{{.Page.Job.LastCheckpoint}}</dd></div>
-                    </dl>
-                </div>
+            {{/*
+            Failure classes come from GET /api/v1/jobs/{id}/benchmark, the same
+            durable evidence the benchmark report reads. The card stays hidden
+            unless that endpoint answers with at least one recorded failure.
+            */}}
+            <article class="card ops-failures" data-failure-panel hidden aria-labelledby="ops-failures-title">
+                <div class="card-header"><div><h2 id="ops-failures-title">What went wrong</h2><p>Warnings and errors grouped by cause</p></div></div>
+                <div class="card-body"><ul class="ops-failure-list" data-failure-list></ul></div>
             </article>
 
             <article class="card">
-                <div class="card-header"><div><h2>Workers and network</h2></div></div>
+                <div class="card-header"><div><h2>Safe resume point</h2><p>Where a resume would pick up</p></div></div>
                 <div class="card-body">
+                    {{if .Page.Checkpoint.Available}}
+                    {{if .Page.Checkpoint.RecoveryRequired}}<div class="notice notice-warning" role="status"><div><strong>Recovery required</strong><p>{{.Page.Checkpoint.RecoveryMessage}}</p></div></div>{{else}}<p class="t-caption">{{.Page.Checkpoint.RecoveryMessage}}</p>{{end}}
                     <dl class="ops-facts">
-                        <div class="ops-fact"><dt>Concurrency</dt><dd data-progress-field="worker-concurrency">{{.Page.Job.WorkerConcurrency}}</dd></div>
-                        <div class="ops-fact"><dt>Proxy pool</dt><dd>{{.Page.Job.ProxyPoolLabel}}</dd></div>
-                        <div class="ops-fact"><dt>Active proxy</dt><dd>{{.Page.Job.ActiveProxy}}</dd></div>
-                        <div class="ops-fact"><dt>Browsers</dt><dd>{{.Page.Job.Browsers}}</dd></div>
-                        <div class="ops-fact"><dt>Active pages</dt><dd>{{.Page.Job.Pages}}</dd></div>
+                        <div class="ops-fact"><dt>Saved at</dt><dd>{{.Page.Checkpoint.CreatedAt}}</dd></div>
+                        <div class="ops-fact"><dt>Finished</dt><dd>{{.Page.Checkpoint.CompletedTasks}}</dd></div>
+                        <div class="ops-fact"><dt>In flight</dt><dd>{{.Page.Checkpoint.RunningTasks}}</dd></div>
+                        <div class="ops-fact"><dt>Still to run</dt><dd>{{.Page.Checkpoint.RemainingTasks}}</dd></div>
+                        <div class="ops-fact"><dt>Failed</dt><dd>{{.Page.Checkpoint.FailedTasks}}</dd></div>
+                        <div class="ops-fact"><dt>Reference</dt><dd>{{.Page.Checkpoint.Version}}</dd></div>
                     </dl>
-                </div>
-            </article>
-
-            <article class="card">
-                <div class="card-header"><div><h2>Resources</h2></div></div>
-                <div class="card-body">
-                    {{if .Page.HasResources}}
-                    <dl class="ops-facts">
-                        <div class="ops-fact"><dt>CPU</dt><dd><span data-progress-field="cpu">{{.Page.Job.CPUPercent}}</span>%</dd></div>
-                        <div class="ops-fact"><dt>Memory</dt><dd>{{.Page.Job.Memory}}</dd></div>
-                        <div class="ops-fact"><dt>Disk free</dt><dd data-progress-field="disk-free">{{.Page.Job.DiskFree}}</dd></div>
-                        <div class="ops-fact"><dt>Database writes</dt><dd>{{.Page.Job.DatabaseWrites}}</dd></div>
-                    </dl>
-                    {{else}}<p class="empty-inline">Worker resource telemetry has not been reported for this job.</p>{{end}}
+                    {{else}}<p class="empty-inline">No resume point was recorded for this run.</p>{{end}}
                 </div>
             </article>
 
@@ -304,8 +388,8 @@ scrolls past the status header.
             {{if .Page.CanApplyLabels}}
             <article class="card" id="job-labels">
                 <div class="card-header"><div><h2>Organisation</h2><p>Folder, tags, owner, and notes for this job</p></div></div>
-                <form class="card-body stack" style="--stack-space: var(--space-3)" action="/api/v1/jobs/{{.Page.Job.ID}}/labels" method="post" data-job-label-form>
-                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <form class="card-body stack" style="--stack-space: var(--space-3)" action="/api/v1/jobs/{{$job.ID}}/labels" method="post" data-job-label-form>
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                     <div class="field">
                         <label for="job-folder-input">Folder</label>
                         <input class="input input-sm" id="job-folder-input" name="folder" type="text" maxlength="60" value="{{.Page.Labels.Folder}}" placeholder="Unfiled">
@@ -325,55 +409,106 @@ scrolls past the status header.
                         <textarea class="input input-sm" id="job-notes-input" name="notes" rows="3" maxlength="5000" placeholder="What this run is for, and anything the next person needs to know.">{{.Page.Notes}}</textarea>
                     </div>
                     {{end}}
-                    <div class="cluster"><button class="button button-sm button-primary" type="submit" data-endpoint="/api/v1/jobs/{{.Page.Job.ID}}/labels">Save organisation</button></div>
+                    <div class="cluster"><button class="button button-sm button-primary" type="submit" data-endpoint="/api/v1/jobs/{{$job.ID}}/labels">Save organisation</button></div>
                 </form>
             </article>
             {{end}}
-
-            <article class="card">
-                <div class="card-header"><div><h2>Checkpoint</h2><p>Crash-safe resume position</p></div></div>
-                <div class="card-body">
-                    {{if .Page.Checkpoint.Available}}
-                    {{if .Page.Checkpoint.RecoveryRequired}}<div class="notice notice-warning" role="status"><div><strong>Recovery required</strong><p>{{.Page.Checkpoint.RecoveryMessage}}</p></div></div>{{else}}<p class="t-caption">{{.Page.Checkpoint.RecoveryMessage}}</p>{{end}}
-                    <dl class="ops-facts">
-                        <div class="ops-fact"><dt>Saved at</dt><dd>{{.Page.Checkpoint.CreatedAt}}</dd></div>
-                        <div class="ops-fact"><dt>Completed</dt><dd>{{.Page.Checkpoint.CompletedTasks}}</dd></div>
-                        <div class="ops-fact"><dt>Running</dt><dd>{{.Page.Checkpoint.RunningTasks}}</dd></div>
-                        <div class="ops-fact"><dt>Remaining</dt><dd>{{.Page.Checkpoint.RemainingTasks}}</dd></div>
-                        <div class="ops-fact"><dt>Failed</dt><dd>{{.Page.Checkpoint.FailedTasks}}</dd></div>
-                        <div class="ops-fact"><dt>Version</dt><dd>{{.Page.Checkpoint.Version}}</dd></div>
-                    </dl>
-                    {{else}}<p class="empty-inline">No checkpoint metadata is available through the current repository.</p>{{end}}
-                </div>
-            </article>
-
-            {{/*
-            Failure classes come from GET /api/v1/jobs/{id}/benchmark, the same
-            durable evidence the benchmark report reads. The card stays hidden
-            unless that endpoint answers with at least one recorded failure.
-            */}}
-            <article class="card ops-failures" data-failure-panel hidden aria-labelledby="ops-failures-title">
-                <div class="card-header"><div><h2 id="ops-failures-title">Failures by class</h2><p>Warning and error events grouped by cause</p></div></div>
-                <div class="card-body"><ul class="ops-failure-list" data-failure-list></ul></div>
-            </article>
         </aside>
     </div>
+
+    {{/* ---------------------------------------------------------------- TECHNICAL DETAILS
+    Nothing is deleted here, only demoted. Everything an engineer needs to
+    diagnose a run — the live worker frame, host resources, the network route,
+    and the per-stage measurements the specification names — lives behind this
+    one disclosure instead of competing with the outcome for the top of the
+    page. Values the worker never published render as an em dash. */}}
+    <details class="card ops-technical">
+        <summary>Technical details</summary>
+        <div class="ops-technical-body stack" style="--stack-space: var(--space-5)">
+            <div class="stat-grid" style="--stat-min: 11rem">
+                <article class="stat stat-compact stat-quiet"><p class="stat-label">Retried attempts</p><p class="stat-value num" data-progress-field="tasks-retries">{{$job.Retries}}</p><p class="stat-meta">attempts returned to the queue</p></article>
+                <article class="stat stat-compact stat-quiet"><p class="stat-label">Workers</p><p class="stat-value metric-value-small num" data-progress-field="worker-concurrency">{{$job.WorkerConcurrency}}</p><p class="stat-meta">effective against requested concurrency</p></article>
+                <article class="stat stat-compact stat-quiet"><p class="stat-label">Network route</p><p class="stat-value metric-value-small" data-metric-value>{{$job.ProxyPoolLabel}}</p><p class="stat-meta">how requests leave this machine</p></article>
+            </div>
+
+            <div class="ops-technical-grid">
+                <section class="ops-technical-block" aria-labelledby="ops-tech-activity">
+                    <h3 class="t-overline" id="ops-tech-activity">Current activity</h3>
+                    <dl class="ops-facts">
+                        <div class="ops-fact"><dt>Keyword</dt><dd data-progress-field="current-query">{{$job.CurrentKeyword}}</dd></div>
+                        <div class="ops-fact"><dt>Location</dt><dd>{{$job.CurrentLocation}}</dd></div>
+                        <div class="ops-fact"><dt>Grid cell</dt><dd data-progress-field="current-cell">{{$job.CurrentCell}}</dd></div>
+                        <div class="ops-fact"><dt>Places per minute</dt><dd data-progress-field="rate">{{$job.PlacesPerMinute}}</dd></div>
+                        <div class="ops-fact"><dt>Estimated completion</dt><dd data-progress-field="eta">{{$job.ETA}}</dd></div>
+                        <div class="ops-fact"><dt>Website queue</dt><dd>{{$job.WebsiteQueue}}</dd></div>
+                        <div class="ops-fact"><dt>Last checkpoint</dt><dd>{{$job.LastCheckpoint}}</dd></div>
+                    </dl>
+                </section>
+
+                <section class="ops-technical-block" aria-labelledby="ops-tech-workers">
+                    <h3 class="t-overline" id="ops-tech-workers">Workers and network</h3>
+                    <dl class="ops-facts">
+                        <div class="ops-fact"><dt>Concurrency</dt><dd data-progress-field="worker-concurrency">{{$job.WorkerConcurrency}}</dd></div>
+                        <div class="ops-fact"><dt>Proxy pool</dt><dd>{{$job.ProxyPoolLabel}}</dd></div>
+                        <div class="ops-fact"><dt>Active proxy</dt><dd>{{$job.ActiveProxy}}</dd></div>
+                        <div class="ops-fact"><dt>Browsers</dt><dd>{{$job.Browsers}}</dd></div>
+                        <div class="ops-fact"><dt>Active pages</dt><dd>{{$job.Pages}}</dd></div>
+                    </dl>
+                </section>
+
+                <section class="ops-technical-block" aria-labelledby="ops-tech-resources">
+                    <h3 class="t-overline" id="ops-tech-resources">Host resources</h3>
+                    {{if .Page.HasResources}}
+                    <dl class="ops-facts">
+                        {{/* The unit belongs to the value: an unreported reading
+                        has to be able to render as a bare em dash rather than
+                        as "—%". app-monitor.js appends the same suffix live. */}}
+                        <div class="ops-fact"><dt>CPU</dt><dd data-progress-field="cpu">{{if or (eq $job.CPUPercent "not reported") (eq $job.CPUPercent "—") (eq $job.CPUPercent "")}}&mdash;{{else}}{{$job.CPUPercent}}%{{end}}</dd></div>
+                        <div class="ops-fact"><dt>Memory</dt><dd>{{$job.Memory}}</dd></div>
+                        <div class="ops-fact"><dt>Disk free</dt><dd data-progress-field="disk-free">{{$job.DiskFree}}</dd></div>
+                        <div class="ops-fact"><dt>Database writes</dt><dd>{{$job.DatabaseWrites}}</dd></div>
+                    </dl>
+                    {{else}}<p class="empty-inline">The worker did not report host resources for this run.</p>{{end}}
+                </section>
+            </div>
+
+            {{/* -------------------------------------------------------- STAGE DETAIL
+            The stepper in the header is the index; this grid is the evidence.
+            Each stage carries the measurements the specification names for it,
+            taken from the durable task plan, the redacted event log, and the
+            committed result file. */}}
+            <section class="ops-stages" aria-labelledby="ops-stages-title">
+                <h3 class="t-overline" id="ops-stages-title">Pipeline stages</h3>
+                <p class="t-caption ops-stages-note">What each stage measured, from the durable task plan, the redacted event log, and the committed result file.</p>
+                <div class="ops-stage-grid">
+                    {{range .Page.Pipeline}}
+                    <article class="ops-stage" data-pipeline-detail data-pipeline-order="{{.Order}}" data-state="{{.State}}">
+                        <p class="ops-stage-head"><b>{{.Label}}</b><span class="ops-stage-state">{{.Detail}}</span></p>
+                        <dl class="ops-stage-metrics">
+                            {{range .Metrics}}<div class="ops-stage-metric"><dt>{{.Label}}</dt><dd>{{.Value}}</dd></div>{{end}}
+                        </dl>
+                    </article>
+                    {{end}}
+                </div>
+            </section>
+        </div>
+    </details>
 
     <details class="card ops-config">
         <summary>Configuration snapshot and provenance</summary>
         <div class="card-body stack" style="--stack-space: var(--space-4)">
             <dl class="ops-facts">
-                <div class="ops-fact"><dt>Queries</dt><dd>{{.Page.Job.QuerySummary}}</dd></div>
-                <div class="ops-fact"><dt>Searches generated</dt><dd class="num" data-job-queries>{{.Page.Job.Queries}}</dd></div>
-                <div class="ops-fact"><dt>Geographic cells</dt><dd data-job-cells>{{.Page.Job.Cells}}</dd></div>
-                <div class="ops-fact"><dt>Geography</dt><dd>{{.Page.Job.LocationSummary}}</dd></div>
-                <div class="ops-fact"><dt>Depth / zoom / radius</dt><dd>{{.Page.Job.Depth}} / {{.Page.Job.Zoom}} / {{.Page.Job.Radius}}</dd></div>
-                <div class="ops-fact"><dt>Enrichment</dt><dd>{{.Page.Job.EnrichmentSummary}}</dd></div>
-                <div class="ops-fact"><dt>Created by</dt><dd>{{.Page.Job.Owner}}</dd></div>
-                <div class="ops-fact"><dt>Scraper version for this run</dt><dd data-job-scraper-version>{{.Page.Job.ScraperVersion}}</dd></div>
-                <div class="ops-fact"><dt>Local build serving this page</dt><dd class="t-mono">{{.Page.Job.LocalBuild}}</dd></div>
+                <div class="ops-fact"><dt>Searches</dt><dd>{{$job.QuerySummary}}</dd></div>
+                <div class="ops-fact"><dt>Searches generated</dt><dd class="num" data-job-queries>{{$job.Queries}}</dd></div>
+                <div class="ops-fact"><dt>Areas to search</dt><dd data-job-cells>{{$job.Cells}}</dd></div>
+                <div class="ops-fact"><dt>Geography</dt><dd>{{$job.LocationSummary}}</dd></div>
+                <div class="ops-fact"><dt>Depth / zoom / radius</dt><dd>{{$job.Depth}} / {{$job.Zoom}} / {{$job.Radius}}</dd></div>
+                <div class="ops-fact"><dt>Enrichment</dt><dd>{{$job.EnrichmentSummary}}</dd></div>
+                <div class="ops-fact"><dt>Created by</dt><dd>{{$job.Owner}}</dd></div>
+                <div class="ops-fact"><dt>Scraper version for this run</dt><dd data-job-scraper-version>{{$job.ScraperVersion}}</dd></div>
+                <div class="ops-fact"><dt>Local build serving this page</dt><dd class="t-mono">{{$job.LocalBuild}}</dd></div>
             </dl>
-            <pre class="code-block" tabindex="0">{{.Page.Job.ConfigJSON}}</pre>
+            <pre class="code-block" tabindex="0">{{$job.ConfigJSON}}</pre>
         </div>
     </details>
 </div>

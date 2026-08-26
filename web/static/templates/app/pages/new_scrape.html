@@ -12,25 +12,28 @@
 {{/*
 One form, three levels of disclosure. Mode never disables a control: every
 step stays in the DOM so its value still submits, which is why a job created
-in Basic is identical to the same job created in Advanced.
+in Basic is identical to the same job created in Advanced. Basic is the
+landing state; Advanced and GBP Prospecting are one click away and lose
+nothing.
 */}}
 <div class="wizard" data-wizard>
     <div class="card wizard-toolbar">
         <fieldset class="wizard-mode-fieldset" data-wizard-mode-switch>
             <legend class="sr-only">Wizard mode</legend>
             <div class="segmented wizard-mode-switch" role="radiogroup" aria-label="Wizard mode">
-                <input id="wizard-mode-basic" name="wizard-mode" type="radio" value="basic" data-wizard-mode-input><label for="wizard-mode-basic">Basic</label>
-                <input id="wizard-mode-advanced" name="wizard-mode" type="radio" value="advanced" checked data-wizard-mode-input><label for="wizard-mode-advanced">Advanced</label>
+                <input id="wizard-mode-basic" name="wizard-mode" type="radio" value="basic" checked data-wizard-mode-input><label for="wizard-mode-basic">Basic</label>
+                <input id="wizard-mode-advanced" name="wizard-mode" type="radio" value="advanced" data-wizard-mode-input><label for="wizard-mode-advanced">Advanced</label>
                 {{if .Page.ProspectQueriesSupported}}<input id="wizard-mode-gbp" name="wizard-mode" type="radio" value="gbp" data-wizard-mode-input><label for="wizard-mode-gbp">GBP Prospecting</label>{{end}}
             </div>
         </fieldset>
         <div class="wizard-mode-copy">
-            <p class="wizard-mode-note" data-wizard-mode-hint aria-live="polite">Every option, including data fields, enrichment, filtering, and performance tuning.</p>
+            <p class="wizard-mode-note" data-wizard-mode-hint aria-live="polite">Just the search, the area, and launch. Saved defaults cover everything else.</p>
         </div>
         <div class="wizard-toolbar-actions">
             {{/* Campaign templates are optional server capability: the picker
                  only appears once app-wizard.js confirms the reusable-template
-                 API answers, so a repository without it shows no dead control. */}}
+                 API answers with at least one template, so a repository
+                 without it — or with an empty list — shows no dead control. */}}
             <div class="field-row" data-campaign-templates hidden>
                 <label class="sr-only" for="campaign-template-picker">Campaign template</label>
                 <select class="select input-sm" id="campaign-template-picker" data-campaign-template-picker><option value="">Use a template&hellip;</option></select>
@@ -53,7 +56,7 @@ in Basic is identical to the same job created in Advanced.
             <li data-wizard-advanced><button type="button" data-action="wizard-step" data-step-target="6"><span class="step-number">6</span><span>Performance</span></button></li>
             <li><button type="button" data-action="wizard-step" data-step-target="7"><span class="step-number">7</span><span>Review</span></button></li>
         </ol>
-        <p class="wizard-rail-foot">Hidden steps still submit their saved defaults.</p>
+        <p class="wizard-rail-foot">Steps you cannot see keep the defaults saved in Settings.</p>
     </aside>
 
     <form class="card wizard-card" action="/app/scrapes" method="post" enctype="multipart/form-data">
@@ -62,20 +65,53 @@ in Basic is identical to the same job created in Advanced.
 
         <section class="card-body wizard-panel" id="wizard-step-1" data-wizard-panel="1" aria-labelledby="wizard-step-1-title">
             <div class="wizard-panel-head">
-                <div class="wizard-panel-head-copy"><h2 id="wizard-step-1-title">What should Maps find?</h2><p>Enter one Maps search or direct Google Maps URL per line. Exact duplicate lines are removed before launch.</p></div>
+                <div class="wizard-panel-head-copy"><h2 id="wizard-step-1-title">What should Maps find?</h2><p>Choose how the run searches, then enter one Maps search or direct Google Maps URL per line. Exact duplicate lines are removed before launch.</p></div>
             </div>
+
+            {{/*
+            The engine flag is one checkbox, name="fastmode", and it keeps its
+            name and its unchecked default: Thorough is what every job has
+            always done. The two cards below are UI only. They declare a form
+            owner that does not exist, so the browser never submits them and
+            the posted body is byte-identical to the old checkbox's.
+            */}}
+            <fieldset class="fieldset run-mode" data-run-mode-chooser>
+                <legend>How should this run search?</legend>
+                <input id="fastmode" name="fastmode" type="checkbox" value="on" hidden>
+                <div class="run-mode-cards" role="radiogroup" aria-label="Search mode">
+                    <label class="run-mode-card">
+                        <input type="radio" name="scrape_mode_ui" value="thorough" form="wizard-ui-only" data-run-mode="thorough" checked>
+                        <span class="run-mode-body">
+                            <span class="run-mode-title">Thorough mode<span class="run-mode-tag">Full map coverage</span></span>
+                            <span class="run-mode-lede">Walks the area as a map grid, cell by cell, so listings that never surface in a single Maps result set are still found.</span>
+                            <span class="run-mode-points">
+                                <span class="run-mode-point run-mode-point-yes">Covers the whole area, one grid cell at a time</span>
+                                <span class="run-mode-point run-mode-point-yes">Runs a local browser, so every field Maps renders is captured</span>
+                                <span class="run-mode-point run-mode-point-no">Much slower, and needs the bundled browser installed</span>
+                            </span>
+                        </span>
+                    </label>
+                    <label class="run-mode-card">
+                        <input type="radio" name="scrape_mode_ui" value="fast" form="wizard-ui-only" data-run-mode="fast">
+                        <span class="run-mode-body">
+                            <span class="run-mode-title">Fast mode<span class="run-mode-tag run-mode-tag-fast">Quick, no map grid</span></span>
+                            <span class="run-mode-lede">One radius search per query, fetched over plain HTTP. Typically many times faster than Thorough mode.</span>
+                            <span class="run-mode-points">
+                                <span class="run-mode-point run-mode-point-yes">Finishes in a fraction of the time and needs no browser</span>
+                                <span class="run-mode-point run-mode-point-no">One radius search per query &mdash; no grid walk of the area</span>
+                                <span class="run-mode-point run-mode-point-no">No JavaScript rendering, so fewer fields come back</span>
+                            </span>
+                        </span>
+                    </label>
+                </div>
+                <p class="field-hint">In one local benchmark on an identical workload, Fast mode returned the same 20 businesses in 2 seconds where Thorough mode took 127. Wider areas and denser categories are where the grid walk earns its time back.</p>
+            </fieldset>
+
             <div class="wizard-split">
                 <div class="section-stack">
                     <div class="field"><label for="scrape-name">Job name</label><input class="input" id="scrape-name" name="name" value="{{.Page.Initial.Name}}" maxlength="120" required autocomplete="off"></div>
                     <div class="field"><label for="keywords">Queries or Maps URLs</label><textarea class="textarea" id="keywords" name="keywords" rows="9" required>{{.Page.Initial.Keywords}}</textarea><p class="field-hint">Specific category + city queries usually produce cleaner coverage.</p></div>
                     <div class="field"><label for="keywords-file">Add TXT or CSV queries</label><input class="input file-input" id="keywords-file" name="keywords_file" type="file" accept=".txt,.csv,text/plain,text/csv" data-keywords-file><p class="field-hint">The first CSV column is used; maximum file size is 2 MB.</p></div>
-                    {{if .Page.KeywordSetsSupported}}
-                    <div class="wizard-field-card">
-                        <h3>Saved keyword sets</h3>
-                        {{if .Page.KeywordSets}}<div class="field"><label for="keyword-set-picker">Insert saved set</label><div class="input-group"><select class="select" id="keyword-set-picker" data-keyword-set-picker><option value="">Choose a saved set&hellip;</option>{{range .Page.KeywordSets}}<option value="{{.ID}}">{{.Name}} ({{len .Keywords}} keywords, used {{.UseCount}}&times;)</option>{{end}}</select><button class="button" type="button" data-action="insert-keyword-set">Insert</button></div><p class="field-hint">New keywords are appended; lines already present are skipped.</p></div>{{end}}
-                        <div class="field"><label for="keyword-set-name">Save current keywords as a set</label><div class="input-group"><input class="input" id="keyword-set-name" maxlength="64" placeholder="Bay Area dental queries" autocomplete="off" data-keyword-set-name><button class="button" type="button" data-action="save-keyword-set">Save set</button></div><p class="field-hint" data-keyword-set-status aria-live="polite"></p></div>
-                    </div>
-                    {{end}}
                 </div>
                 <aside class="card wizard-preview" aria-label="Live query preview">
                     <div class="wizard-preview-counts">
@@ -85,6 +121,15 @@ in Basic is identical to the same job created in Advanced.
                     <ol class="query-preview" data-query-preview></ol>
                 </aside>
             </div>
+            {{if .Page.KeywordSetsSupported}}
+            {{/* Saved sets are a shortcut into the query box, not part of it,
+                 so they sit in a disclosure below rather than between the box
+                 and its own advanced tools. */}}
+            <details class="card disclosure"><summary>Saved keyword sets</summary><div class="card-body">
+                {{if .Page.KeywordSets}}<div class="field"><label for="keyword-set-picker">Insert saved set</label><div class="input-group"><select class="select" id="keyword-set-picker" data-keyword-set-picker><option value="">Choose a saved set&hellip;</option>{{range .Page.KeywordSets}}<option value="{{.ID}}">{{.Name}} ({{len .Keywords}} keywords, used {{.UseCount}}&times;)</option>{{end}}</select><button class="button" type="button" data-action="insert-keyword-set">Insert</button></div><p class="field-hint">New keywords are appended; lines already present are skipped.</p></div>{{end}}
+                <div class="field"><label for="keyword-set-name">Save current keywords as a set</label><div class="input-group"><input class="input" id="keyword-set-name" maxlength="64" placeholder="Bay Area dental queries" autocomplete="off" data-keyword-set-name><button class="button" type="button" data-action="save-keyword-set">Save set</button></div><p class="field-hint" data-keyword-set-status aria-live="polite"></p></div>
+            </div></details>
+            {{end}}
             <details class="card disclosure" data-wizard-advanced><summary>Refine the list with include and exclude terms</summary><div class="card-body">
                 <div class="grid grid-2">
                     <div class="field"><label for="include-terms">Include terms (comma-separated)</label><input class="input" id="include-terms" autocomplete="off" placeholder="dentist, dental" data-include-terms><p class="field-hint">Keep only lines containing at least one of these terms. Leave empty to keep every line.</p></div>
@@ -146,7 +191,7 @@ in Basic is identical to the same job created in Advanced.
                 <div class="grid grid-3">
                     <div class="field"><label for="gbp-state">State (2-letter)</label><input class="input" id="gbp-state" maxlength="2" minlength="2" autocomplete="off" placeholder="CA" data-gbp-state></div>
                     <div class="field"><label for="gbp-city">City (optional)</label><input class="input" id="gbp-city" maxlength="120" autocomplete="off" placeholder="San Francisco" data-gbp-city></div>
-                    <div class="field"><label for="gbp-top-n">Top N ZIPs by population</label><input class="input" id="gbp-top-n" type="number" min="1" max="500" value="25" data-gbp-top-n></div>
+                    <div class="field"><label for="gbp-top-n">Top N ZIPs by population</label><input class="input num" id="gbp-top-n" type="number" min="1" max="500" value="25" data-gbp-top-n></div>
                 </div>
                 <div class="grid grid-2">
                     <div class="field"><label for="gbp-synonyms">Category synonyms (one per line)</label><textarea class="textarea" id="gbp-synonyms" rows="4" placeholder="plumber&#10;plumbing company&#10;emergency plumber" data-gbp-synonyms></textarea></div>
@@ -161,7 +206,7 @@ in Basic is identical to the same job created in Advanced.
 
         <section class="card-body wizard-panel" id="wizard-step-2" data-wizard-panel="2" aria-labelledby="wizard-step-2-title">
             <div class="wizard-panel-head">
-                <div class="wizard-panel-head-copy"><h2 id="wizard-step-2-title">Location and coverage</h2><p>The default covers San Francisco with a grid. Grid mode searches many coordinates and is the recommended way to go beyond a single Maps result set.</p></div>
+                <div class="wizard-panel-head-copy"><h2 id="wizard-step-2-title">Where should we search?</h2><p>Name the area and set how far out to search. The estimate below is what this configuration costs before you commit to it.</p></div>
                 <a class="button button-sm" href="/app/map">Open Map Explorer</a>
             </div>
             <input type="hidden" name="geography_mode" value="{{.Page.Initial.GeographyMode}}">
@@ -170,16 +215,44 @@ in Basic is identical to the same job created in Advanced.
             <textarea name="area_geojson" hidden>{{.Page.Initial.AreaGeoJSON}}</textarea>
             {{if .Page.Initial.SavedAreaID}}<div class="notice notice-success"><div><strong>Saved area: {{.Page.Initial.SavedAreaName}}</strong><p>The exact GeoJSON and excluded grid cells are snapshotted into this job. Later edits to the saved area will not change it.</p></div></div>{{end}}
             {{if .Page.SavedAreas}}<div class="field"><label for="saved-area-picker">Start from a saved area</label><select class="select" id="saved-area-picker" data-saved-area-picker><option value="">Choose an area…</option>{{range .Page.SavedAreas}}<option value="{{.ID}}" {{if eq $.Page.Initial.SavedAreaID .ID}}selected{{end}}>{{.Name}}</option>{{end}}</select><p class="field-hint">Selecting another area reloads this wizard with its immutable geometry snapshot.</p></div>{{end}}
-            <div class="grid grid-3">
-                <div class="field"><label for="location-label">Location label</label><input class="input" id="location-label" name="location_label" value="{{.Page.Initial.LocationLabel}}" required></div>
-                <div class="field"><label for="latitude">Centre latitude</label><input class="input num" id="latitude" name="latitude" type="number" min="-90" max="90" step="0.000001" value="{{.Page.Initial.Latitude}}" required></div>
-                <div class="field"><label for="longitude">Centre longitude</label><input class="input num" id="longitude" name="longitude" type="number" min="-180" max="180" step="0.000001" value="{{.Page.Initial.Longitude}}" required></div>
-                <div class="field"><label for="radius">Coverage extent (metres)</label><input class="input num" id="radius" name="radius" type="number" min="100" max="100000" step="100" value="{{.Page.Defaults.Radius}}" required><p class="field-hint">In grid mode this creates a bounding area around the centre. In Fast Mode it becomes a strict radius.</p></div>
-                <div class="field"><label for="zoom">Maps zoom</label><input class="input num" id="zoom" name="zoom" type="number" min="1" max="21" value="{{.Page.Defaults.Zoom}}" required></div>
-                <div class="field"><label for="grid-cell">Grid-cell size (km)</label><input class="input num" id="grid-cell" name="grid_cell_km" type="number" min="0.1" max="50" step="0.1" value="{{.Page.Defaults.GridCellKM}}" required><p class="field-hint">2.5 km is a practical first pass; smaller cells create more tasks.</p></div>
-                <div class="field"><label for="lang">Maps language</label><input class="input" id="lang" name="lang" value="{{.Page.Defaults.Language}}" minlength="2" maxlength="2" required></div>
+            {{/*
+            A human place name leads. Latitude, longitude, Maps zoom and the
+            metres the job actually submits live in the disclosure below: the
+            radius box here is a kilometre view of that same metres field, and
+            app-wizard.js keeps the two in step. Nothing was removed, so a
+            browser without JavaScript still submits every value.
+            */}}
+            <div class="form-grid form-grid-4 location-primary">
+                <div class="field"><label for="location-label">Place or area</label><input class="input" id="location-label" name="location_label" value="{{.Page.Initial.LocationLabel}}" placeholder="San Francisco, California" autocomplete="off" required><p class="field-hint">Names this job and its results. It does not move the map centre.</p></div>
+                <div class="field"><label for="radius-km">Search radius (km)</label><input class="input num" id="radius-km" type="number" min="0.1" max="100" step="0.1" inputmode="decimal" data-radius-km><p class="field-hint">How far out from the centre this run reaches.</p></div>
+                <div class="field" data-grid-field><label for="grid-cell">Size of each area to search (km)</label><input class="input num" id="grid-cell" name="grid_cell_km" type="number" min="0.1" max="50" step="0.1" value="{{.Page.Defaults.GridCellKM}}" required><p class="field-hint">Grid-cell size. 2.5 km is a practical first pass; smaller areas mean more searches.</p></div>
+                <div class="field"><label for="lang">Maps language</label><input class="input" id="lang" name="lang" value="{{.Page.Defaults.Language}}" minlength="2" maxlength="2" required><p class="field-hint">Two-letter code, such as <code>en</code>.</p></div>
             </div>
-            <div class="estimate"><div><span>Locations</span><strong data-estimate-locations>1</strong></div><div><span>Cells</span><strong data-estimate-cells>0</strong></div><div><span>Queries</span><strong data-estimate-queries>0</strong></div><div><span>Tasks</span><strong data-estimate-tasks>0</strong></div></div>
+            <details class="card disclosure" data-precise-coordinates><summary>Precise coordinates<span class="disclosure-tag" data-coordinates-echo>{{.Page.Initial.Latitude}}, {{.Page.Initial.Longitude}}</span></summary><div class="card-body">
+                <p class="field-hint">These are the values the job submits. Drawing an area in Map Explorer fills them in for you; the metres box is the exact form of the kilometre radius above.</p>
+                <div class="form-grid form-grid-4">
+                    <div class="field"><label for="latitude">Centre latitude</label><input class="input num" id="latitude" name="latitude" type="number" min="-90" max="90" step="0.000001" value="{{.Page.Initial.Latitude}}" required></div>
+                    <div class="field"><label for="longitude">Centre longitude</label><input class="input num" id="longitude" name="longitude" type="number" min="-180" max="180" step="0.000001" value="{{.Page.Initial.Longitude}}" required></div>
+                    <div class="field"><label for="radius">Coverage extent (metres)</label><input class="input num" id="radius" name="radius" type="number" min="100" max="100000" step="100" value="{{.Page.Defaults.Radius}}" required><p class="field-hint">Thorough mode bounds the grid with it; Fast mode uses it as a strict radius.</p></div>
+                    <div class="field"><label for="zoom">Maps zoom</label><input class="input num" id="zoom" name="zoom" type="number" min="1" max="21" value="{{.Page.Defaults.Zoom}}" required><p class="field-hint">Detail level Maps is asked for. Leave it alone unless a run comes back thin.</p></div>
+                </div>
+            </div></details>
+            {{/* The cost of this configuration, stated where it is chosen. The
+                 same numbers the pre-flight step shows, from the same client
+                 estimate, so the two can never disagree. */}}
+            <section class="cost-summary" aria-label="What this configuration costs" data-cost-summary>
+                <p class="cost-sentence" data-cost-sentence aria-live="polite">Calculating&hellip;</p>
+                <div class="estimate">
+                    <div><span>Areas to search</span><strong data-estimate-cells>0</strong></div>
+                    <div><span>Searches to run</span><strong data-estimate-tasks>0</strong></div>
+                    <div><span>Estimated runtime</span><strong data-estimate-runtime>&mdash;</strong></div>
+                    <div><span>Stop after</span><strong data-limit-echo>&mdash;</strong></div>
+                </div>
+                <div class="notice notice-warning cost-warning" data-cost-warning role="status" hidden>
+                    <div><strong>This plan is estimated to run past its limit.</strong><p data-cost-warning-text></p></div>
+                    <button class="button button-sm" type="button" data-action="open-stop-after">Change &ldquo;Stop after&rdquo;</button>
+                </div>
+            </section>
             {{if .Page.ProspectQueriesSupported}}
             {{/*
             Adaptive coverage. These controls decide when the run stops on its
@@ -211,7 +284,7 @@ in Basic is identical to the same job created in Advanced.
             catalogue in lockstep, so a field can never appear here without a
             backend that understands it.
             */}}
-            <div class="notice notice-info"><div><strong>Selection controls display and export, not collection.</strong><p>Google Maps has no field mask. Deselecting a field keeps it out of the workspace's result columns and the export profile this job saves; the value is still collected and still present in the job CSV. Fast Mode returns fewer fields regardless of what is selected here.</p></div></div>
+            <div class="notice notice-info"><div><strong>Selection controls display and export, not collection.</strong><p>Google Maps has no field mask. Deselecting a field keeps it out of the workspace's result columns and the export profile this job saves; the value is still collected and still present in the job CSV. Fast mode returns fewer fields regardless of what is selected here.</p></div></div>
             <label class="check-row"><input id="fields-selected" name="fields_selected" type="checkbox" value="on" data-fields-toggle><span>Narrow the retained field set<small>Leave this off to keep every field, which is what every job did before this step existed.</small></span></label>
             <div class="field-selection" data-field-selection hidden>
                 <fieldset class="fieldset field-group">
@@ -324,53 +397,79 @@ in Basic is identical to the same job created in Advanced.
         </section>
 
         <section class="card-body wizard-panel" id="wizard-step-6" data-wizard-panel="6" data-wizard-advanced aria-labelledby="wizard-step-6-title">
-            <div class="wizard-panel-head"><div class="wizard-panel-head-copy"><h2 id="wizard-step-6-title">Performance and browser capacity</h2><p>These values are saved with this job and applied by the local worker. Balanced is the safest starting point.</p></div></div>
+            <div class="wizard-panel-head"><div class="wizard-panel-head-copy"><h2 id="wizard-step-6-title">Speed and limits</h2><p>Pick a preset. Everything the local worker needs is derived from it; the individual engine values are still there, one disclosure away, and are saved with this job.</p></div></div>
             <fieldset class="fieldset"><legend>Preset</legend><div class="preset-grid">
-                <label class="preset-option"><input name="performance_preset" type="radio" value="custom" checked><strong>Saved defaults</strong><span>Values configured in Settings.</span></label>
-                <label class="preset-option"><input name="performance_preset" type="radio" value="fast"><strong>Quick validation</strong><span>Depth 3, concurrency 6, 15-minute limit.</span></label>
-                <label class="preset-option"><input name="performance_preset" type="radio" value="balanced"><strong>Balanced</strong><span>Depth 10, concurrency 4, 60-minute limit.</span></label>
-                <label class="preset-option"><input name="performance_preset" type="radio" value="deep"><strong>Deep</strong><span>Depth 20, concurrency 2, 120-minute limit.</span></label>
+                <label class="preset-option"><input name="performance_preset" type="radio" value="custom" checked><strong>Saved defaults</strong><span>Whatever Settings holds. Changes nothing about this run.</span></label>
+                <label class="preset-option"><input name="performance_preset" type="radio" value="fast"><strong>Quick validation</strong><span>Shallow pass to prove the plan works. Depth 3, concurrency 6, stops after 15m.</span></label>
+                <label class="preset-option"><input name="performance_preset" type="radio" value="balanced"><strong>Balanced</strong><span>The everyday choice. Depth 10, concurrency 4, stops after 60m.</span></label>
+                <label class="preset-option"><input name="performance_preset" type="radio" value="deep"><strong>Deep</strong><span>Digs furthest, moves slowest. Depth 20, concurrency 2, stops after 120m.</span></label>
             </div></fieldset>
-            <div class="grid grid-4">
-                <div class="field"><label for="depth">Search depth</label><input class="input num" id="depth" name="depth" type="number" min="1" max="100" value="{{.Page.Defaults.Depth}}" required></div>
-                <div class="field"><label for="concurrency">Concurrency</label><input class="input num" id="concurrency" name="concurrency" type="number" min="1" max="64" value="{{.Page.Defaults.Concurrency}}" required></div>
-                <div class="field"><label for="task-workers">Parallel tasks</label><input class="input num" id="task-workers" name="task_workers" type="number" min="1" max="16" value="{{.Page.Defaults.TaskWorkers}}"><p class="field-hint">Queries or grid cells run side by side. The concurrency and browser pool above are shared between them, so this changes resume granularity rather than total load.</p></div>
-                <div class="field"><label for="browser-pool">Browser pool</label><input class="input num" id="browser-pool" name="browser_pool_size" type="number" min="1" max="32" value="{{.Page.Defaults.BrowserPool}}" required></div>
-                <div class="field"><label for="pages-browser">Pages per browser</label><input class="input num" id="pages-browser" name="pages_per_browser" type="number" min="1" max="16" value="{{.Page.Defaults.PagesBrowser}}" required></div>
-                <div class="field"><label for="maxtime">Maximum runtime</label><input class="input" id="maxtime" name="maxtime" value="{{.Page.Defaults.MaxTime}}" pattern="[0-9]+(s|m|h)" required><p class="field-hint">If reached, the job becomes Partial and keeps committed rows.</p></div>
-                <div class="field"><label for="max-records">Maximum records</label><input class="input num" id="max-records" name="max_records" type="number" min="0" max="10000000" value="{{.Page.Defaults.MaxRecords}}" required><p class="field-hint">0 means unlimited; a reached limit saves a Partial job.</p></div>
-                <div class="field"><label for="retry-count">Retries per request</label><input class="input num" id="retry-count" name="retry_count" type="number" min="0" max="20" value="{{.Page.Defaults.RetryCount}}" required></div>
-                <div class="field"><label for="retry-delay">Maximum retry delay</label><input class="input" id="retry-delay" name="retry_delay" value="{{.Page.Defaults.RetryDelay}}" pattern="[0-9]+(ms|s|m)" required></div>
-                <div class="field"><label for="page-timeout">Page timeout</label><input class="input" id="page-timeout" name="page_timeout" value="{{.Page.Defaults.PageTimeout}}" pattern="[0-9]+(ms|s|m)" required></div>
-                <div class="field"><label for="random-delay-min">Random delay minimum</label><input class="input" id="random-delay-min" name="random_delay_min" value="{{.Page.Defaults.RandomMin}}" pattern="[0-9]+(ms|s|m)" required></div>
-                <div class="field"><label for="random-delay-max">Random delay maximum</label><input class="input" id="random-delay-max" name="random_delay_max" value="{{.Page.Defaults.RandomMax}}" pattern="[0-9]+(ms|s|m)" required></div>
-                <div class="field"><label for="low-disk-mb">Pause below free disk (MB)</label><input class="input num" id="low-disk-mb" name="low_disk_mb" type="number" min="128" max="1048576" value="{{.Page.Defaults.LowDiskMB}}" required></div>
-                <div class="field"><label for="memory-ceiling-mb">Memory ceiling (MB)</label><input class="input num" id="memory-ceiling-mb" name="memory_ceiling_mb" type="number" min="512" max="1048576" placeholder="No ceiling"><p class="field-hint">When memory in use reaches this, the job drops to one worker and one browser with one page until it falls back. Empty means no ceiling. Needs adaptive resource safeguards below.</p></div>
-                <div class="field"><label for="checkpoint-seconds">Checkpoint interval (seconds)</label><input class="input num" id="checkpoint-seconds" name="checkpoint_seconds" type="number" min="5" max="3600" placeholder="30"><p class="field-hint">Time-based resume boundary written between completed tasks. Leave empty for the 30 second default.</p></div>
+            <div class="form-grid form-grid-4">
+                <div class="field"><label for="maxtime">Stop after</label><input class="input" id="maxtime" name="maxtime" value="{{.Page.Defaults.MaxTime}}" pattern="[0-9]+(s|m|h)" required><p class="field-hint">Maximum runtime for the whole job, as <code>45m</code> or <code>2h</code>. Reaching it ends the run as <em>Stopped early — results kept</em>: every committed row stays.</p></div>
                 <div class="field"><label for="proxy-pool">Proxy pool</label><select class="select" id="proxy-pool" name="proxy_pool_id"><option value="">Direct connection</option>{{range .Page.ProxyPools}}<option value="{{.ID}}" {{if eq $.Page.DefaultProxyPoolID .ID}}selected{{end}}>{{.Name}} ({{.HealthyCount}} healthy/testable)</option>{{end}}</select><p class="field-hint">Credentials are decrypted only in worker memory.</p></div>
+                <div class="field run-mode-echo-field"><span class="field-label">Search mode</span><p class="run-mode-echo" data-run-mode-echo>Thorough mode — full map coverage</p><p class="field-hint"><button class="link-button" type="button" data-action="wizard-step" data-step-target="1">Change it on the search step</button></p></div>
             </div>
-            <div class="check-grid">
-                <label class="check-row"><input id="fastmode" name="fastmode" type="checkbox" value="on"><span>Fast HTTP mode<small>Uses the radius strictly, skips grid coverage, and returns fewer fields.</small></span></label>
-                <label class="check-row"><input id="adaptive-performance" name="adaptive_performance" type="checkbox" value="on" {{if .Page.Defaults.Adaptive}}checked{{end}}><span>Adaptive resource safeguards<small>Reduces work under memory, disk, or failure pressure and records the reason.</small></span></label>
-                <label class="check-row"><input id="load-images" name="load_images" type="checkbox" value="on" {{if .Page.Defaults.LoadImages}}checked{{end}}><span>Load images<small>Leave off to save bandwidth and browser memory.</small></span></label>
-                <label class="check-row"><input id="headfull" name="headfull" type="checkbox" value="on" {{if .Page.Defaults.Headfull}}checked{{end}}><span>Visible browser<small>Useful for debugging when the local environment supports it.</small></span></label>
-            </div>
+            {{/* Sixteen engine values used to be the step. They are all still
+                 here and still submit; they are simply no longer the first
+                 thing an operator meets. */}}
+            <details class="card disclosure" data-advanced-tuning><summary>Advanced tuning<span class="disclosure-tag">Engine values</span></summary><div class="card-body">
+                <fieldset class="fieldset tuning-group">
+                    <legend>How much runs at once</legend>
+                    <p class="field-hint">These four multiply rather than add. <strong>Parallel tasks</strong> is how many queries or areas are in flight; each one draws from the shared <strong>concurrency</strong> budget, and <strong>browser pool</strong> &times; <strong>pages per browser</strong> caps how many Maps pages can be open at the same time — which is the real ceiling on a Thorough run. Raising one of them alone usually changes nothing.</p>
+                    <div class="form-grid form-grid-4">
+                        <div class="field"><label for="concurrency">Concurrency</label><input class="input num" id="concurrency" name="concurrency" type="number" min="1" max="64" value="{{.Page.Defaults.Concurrency}}" required><p class="field-hint">Shared budget of simultaneous requests.</p></div>
+                        <div class="field"><label for="task-workers">Parallel tasks</label><input class="input num" id="task-workers" name="task_workers" type="number" min="1" max="16" value="{{.Page.Defaults.TaskWorkers}}"><p class="field-hint">Changes resume granularity more than total load.</p></div>
+                        <div class="field"><label for="browser-pool">Browser pool</label><input class="input num" id="browser-pool" name="browser_pool_size" type="number" min="1" max="32" value="{{.Page.Defaults.BrowserPool}}" required><p class="field-hint">Browsers held open. Memory scales with this.</p></div>
+                        <div class="field"><label for="pages-browser">Pages per browser</label><input class="input num" id="pages-browser" name="pages_per_browser" type="number" min="1" max="16" value="{{.Page.Defaults.PagesBrowser}}" required><p class="field-hint">Tabs per browser; pool &times; pages is the page ceiling.</p></div>
+                    </div>
+                </fieldset>
+                <fieldset class="fieldset tuning-group">
+                    <legend>How far each search goes</legend>
+                    <div class="form-grid form-grid-4">
+                        <div class="field"><label for="depth">Search depth</label><input class="input num" id="depth" name="depth" type="number" min="1" max="100" value="{{.Page.Defaults.Depth}}" required><p class="field-hint">Result pages walked per search.</p></div>
+                        <div class="field"><label for="max-records">Maximum records</label><input class="input num" id="max-records" name="max_records" type="number" min="0" max="10000000" value="{{.Page.Defaults.MaxRecords}}" required><p class="field-hint">0 means unlimited; reaching it stops the run early and keeps every saved row.</p></div>
+                    </div>
+                </fieldset>
+                <fieldset class="fieldset tuning-group">
+                    <legend>Timing and retries</legend>
+                    <div class="form-grid form-grid-4">
+                        <div class="field"><label for="retry-count">Retries per request</label><input class="input num" id="retry-count" name="retry_count" type="number" min="0" max="20" value="{{.Page.Defaults.RetryCount}}" required></div>
+                        <div class="field"><label for="retry-delay">Maximum retry delay</label><input class="input" id="retry-delay" name="retry_delay" value="{{.Page.Defaults.RetryDelay}}" pattern="[0-9]+(ms|s|m)" required></div>
+                        <div class="field"><label for="page-timeout">Page timeout</label><input class="input" id="page-timeout" name="page_timeout" value="{{.Page.Defaults.PageTimeout}}" pattern="[0-9]+(ms|s|m)" required></div>
+                        <div class="field"><label for="random-delay-min">Random delay minimum</label><input class="input" id="random-delay-min" name="random_delay_min" value="{{.Page.Defaults.RandomMin}}" pattern="[0-9]+(ms|s|m)" required></div>
+                        <div class="field"><label for="random-delay-max">Random delay maximum</label><input class="input" id="random-delay-max" name="random_delay_max" value="{{.Page.Defaults.RandomMax}}" pattern="[0-9]+(ms|s|m)" required></div>
+                    </div>
+                </fieldset>
+                <fieldset class="fieldset tuning-group">
+                    <legend>Safety valves</legend>
+                    <div class="form-grid form-grid-4">
+                        <div class="field"><label for="low-disk-mb">Pause below free disk (MB)</label><input class="input num" id="low-disk-mb" name="low_disk_mb" type="number" min="128" max="1048576" value="{{.Page.Defaults.LowDiskMB}}" required></div>
+                        <div class="field"><label for="memory-ceiling-mb">Memory ceiling (MB)</label><input class="input num" id="memory-ceiling-mb" name="memory_ceiling_mb" type="number" min="512" max="1048576" placeholder="No ceiling"><p class="field-hint">At this much memory in use the job drops to one worker and one browser with one page until it falls back. Empty means no ceiling. Needs adaptive resource safeguards below.</p></div>
+                        <div class="field"><label for="checkpoint-seconds">Checkpoint interval (seconds)</label><input class="input num" id="checkpoint-seconds" name="checkpoint_seconds" type="number" min="5" max="3600" placeholder="30"><p class="field-hint">Time-based resume boundary written between completed tasks. Leave empty for the 30 second default.</p></div>
+                    </div>
+                    <div class="check-grid">
+                        <label class="check-row"><input id="adaptive-performance" name="adaptive_performance" type="checkbox" value="on" {{if .Page.Defaults.Adaptive}}checked{{end}}><span>Adaptive resource safeguards<small>Reduces work under memory, disk, or failure pressure and records the reason.</small></span></label>
+                        <label class="check-row"><input id="load-images" name="load_images" type="checkbox" value="on" {{if .Page.Defaults.LoadImages}}checked{{end}}><span>Load images<small>Leave off to save bandwidth and browser memory.</small></span></label>
+                        <label class="check-row"><input id="headfull" name="headfull" type="checkbox" value="on" {{if .Page.Defaults.Headfull}}checked{{end}}><span>Visible browser<small>Useful for debugging when the local environment supports it.</small></span></label>
+                    </div>
+                </fieldset>
+            </div></details>
             <div class="form-actions"><button class="button" type="button" data-action="wizard-back">Back</button><button class="button button-primary" type="button" data-action="wizard-next">Review job &rarr;</button></div>
         </section>
 
         <section class="card-body wizard-panel" id="wizard-step-7" data-wizard-panel="7" aria-labelledby="wizard-step-7-title">
-            <div class="wizard-panel-head"><div class="wizard-panel-head-copy"><h2 id="wizard-step-7-title">Pre-flight and launch</h2><p>The task and runtime estimates are directional. Result volume, blocking, browser load, and website response times vary.</p></div></div>
-            <div class="estimate" aria-live="polite"><div><span>Queries</span><strong data-estimate-queries>0</strong></div><div><span>Grid cells</span><strong data-estimate-cells>0</strong></div><div><span>Total tasks</span><strong data-estimate-tasks>0</strong></div><div><span>Estimated runtime</span><strong data-estimate-runtime>Calculating...</strong></div></div>
+            <div class="wizard-panel-head"><div class="wizard-panel-head-copy"><h2 id="wizard-step-7-title">Pre-flight and launch</h2><p>The search and runtime estimates are directional. Result volume, blocking, browser load, and website response times vary.</p></div></div>
+            <div class="estimate" aria-live="polite"><div><span>Queries</span><strong data-estimate-queries>0</strong></div><div><span>Areas to search</span><strong data-estimate-cells>0</strong></div><div><span>Searches to run</span><strong data-estimate-tasks>0</strong></div><div><span>Estimated runtime</span><strong data-estimate-runtime>Calculating...</strong></div></div>
             <div class="notice notice-warning" data-estimate-warning role="status" hidden></div>
             <div class="preflight-grid" data-preflight aria-label="Pre-flight checks">
                 <div class="preflight-check" data-preflight-queries><span class="preflight-mark" aria-hidden="true">&check;</span><span><strong data-preflight-queries-title>Queries ready</strong><span data-preflight-queries-detail>0 unique queries</span></span></div>
-                <div class="preflight-check" data-preflight-area><span class="preflight-mark" aria-hidden="true">&check;</span><span><strong data-preflight-area-title>Area defined</strong><span data-preflight-area-detail>Grid extent set</span></span></div>
-                <div class="preflight-check" data-preflight-budget><span class="preflight-mark" aria-hidden="true">&check;</span><span><strong data-preflight-budget-title>Runtime budget fits</strong><span data-preflight-budget-detail>Within the configured limit</span></span></div>
+                <div class="preflight-check" data-preflight-area><span class="preflight-mark" aria-hidden="true">&check;</span><span><strong data-preflight-area-title>Area defined</strong><span data-preflight-area-detail>Search area set</span></span></div>
+                <div class="preflight-check" data-preflight-budget><span class="preflight-mark" aria-hidden="true">&check;</span><span><strong data-preflight-budget-title>Time budget fits</strong><span data-preflight-budget-detail>Within the configured limit</span></span></div>
                 <div class="preflight-check" data-preflight-enrichment><span class="preflight-mark" aria-hidden="true">&check;</span><span><strong data-preflight-enrichment-title>Enrichment off</strong><span data-preflight-enrichment-detail>Maps fields only</span></span></div>
             </div>
             <div class="grid grid-2">
-                <article class="card card-quiet"><div class="card-header"><h3>Search and geography</h3></div><div class="card-body"><dl class="key-value"><dt>Job</dt><dd data-review-name>San Francisco dentists</dd><dt>Location</dt><dd data-review-location>San Francisco, California</dd><dt>Centre</dt><dd class="num" data-review-coordinates>37.7749, -122.4194</dd><dt>Coverage</dt><dd data-review-radius>10,000 m grid extent</dd><dt>Grid</dt><dd data-review-grid>2.5 km</dd></dl></div></article>
-                <article class="card card-quiet"><div class="card-header"><h3>Execution</h3></div><div class="card-body"><dl class="key-value"><dt>Tasks</dt><dd class="num" data-review-tasks>0</dd><dt>Runtime limit</dt><dd data-review-runtime>60m</dd><dt>Enrichment</dt><dd data-review-enrichment>Off</dd><dt>Proxy</dt><dd data-review-proxy>Direct connection</dd><dt>Output</dt><dd>Normalized local SQLite plus compatible CSV</dd><dt>Recovery</dt><dd>Committed rows are retained; retries merge without replacing earlier results.</dd></dl></div></article>
+                <article class="card card-quiet"><div class="card-header"><h3>Search and geography</h3></div><div class="card-body"><dl class="key-value"><dt>Job</dt><dd data-review-name>San Francisco dentists</dd><dt>Search mode</dt><dd data-review-mode>Thorough mode — full map coverage</dd><dt>Place</dt><dd data-review-location>San Francisco, California</dd><dt>Centre</dt><dd class="num" data-review-coordinates>37.7749, -122.4194</dd><dt>Radius</dt><dd data-review-radius>10 km</dd><dt>Area size</dt><dd data-review-grid>2.5 km</dd></dl></div></article>
+                <article class="card card-quiet"><div class="card-header"><h3>Execution</h3></div><div class="card-body"><dl class="key-value"><dt>Searches to run</dt><dd class="num" data-review-tasks>0</dd><dt>Stop after</dt><dd data-review-runtime>60m</dd><dt>Enrichment</dt><dd data-review-enrichment>Off</dd><dt>Proxy</dt><dd data-review-proxy>Direct connection</dd><dt>Output</dt><dd>Normalized local SQLite plus compatible CSV</dd><dt>Recovery</dt><dd>Committed rows are retained; retries merge without replacing earlier results.</dd></dl></div></article>
             </div>
             {{/* The retained-set card mirrors the collection plan the server
                  resolves from the saved job (GET /api/v1/jobs/{id}/collection-plan),

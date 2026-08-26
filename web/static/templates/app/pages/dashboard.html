@@ -1,20 +1,40 @@
 {{/*
-Dashboard — the operator command centre.
+Dashboard — the operator home screen.
 
-Answers, in reading order: what is running right now, what needs my attention,
-what did the last campaigns yield, where is the prospect pipeline, and how is
-the workspace trending. Navigation is the sidebar's job, so nothing here
-duplicates it.
+Reading order is the order an operator acts in: what did the workspace collect,
+what work is queued for me, what is running, what can I continue, and only then
+the analysis. Navigation is the sidebar's job, so nothing here duplicates it.
 
-Every number below comes from dashboardPageData in web/app_pages.go and every
-link is a route registered in web/web.go. Page-specific layout lives in
+Two rules this page holds to:
+
+  1. A metric with no value never occupies prime space. Anything the server
+     could only describe as "not recorded" is either hidden until it has a
+     value or folded into the System health strip near the foot of the page.
+  2. Absence renders as an em dash, never as an engineering status string.
+     The "app/dash-value" helper below is the single place that decides this.
+
+Every number comes from dashboardPageData in web/app_pages.go and every link is
+a route registered in web/web.go. Page-specific layout lives in
 static/css/views/dashboard.css; components come from app.css unchanged.
 */}}
 {{define "app/page/dashboard"}}{{template "app/layout" .}}{{end}}
 
+{{/*
+dash-value prints a server-formatted string, or an em dash when the server had
+nothing to format. The sentinel list mirrors the placeholder strings
+app_pages.go can produce; the operator never sees any of them.
+*/}}
+{{define "app/dash-value"}}{{if or (eq . "") (eq . "—") (eq . "not recorded") (eq . "not started") (eq . "not configured") (eq . "not available") (eq . "not created") (eq . "unknown")}}<span class="dash-none" title="no value recorded">&mdash;</span>{{else}}{{.}}{{end}}{{end}}
+
+{{/*
+dash-state names a lifecycle state in operator language. "partial" is the one
+that matters: the fear it triggers is data loss, so it is never printed raw.
+The status colour still comes from the machine state class beside it.
+*/}}
+{{define "app/dash-state"}}{{if eq . "completed"}}Completed{{else if eq . "partial"}}Stopped early{{else if eq . "failed"}}Failed{{else if eq . "cancelled"}}Stopped{{else if eq . "cancelling"}}Stopping{{else if eq . "running"}}Running{{else if eq . "paused"}}Paused{{else if eq . "queued"}}Queued{{else if eq . "starting"}}Starting{{else if eq . "draft"}}Draft{{else}}{{.}}{{end}}{{end}}
+
 {{define "app/page-actions"}}
 <div class="page-actions">
-    {{if .Features.System}}<a class="button" href="/app/system" data-action="navigate" data-endpoint="/app/system">System health</a>{{end}}
     <a class="button" href="/app/jobs" data-action="navigate" data-endpoint="/app/jobs">All jobs</a>
     <a class="button button-primary" href="/app/scrapes/new" data-action="navigate" data-endpoint="/app/scrapes/new">{{template "app/icon-plus"}} New scrape</a>
 </div>
@@ -23,141 +43,350 @@ static/css/views/dashboard.css; components come from app.css unchanged.
 {{define "app/content"}}
 <div class="section-stack dashboard" data-dashboard data-endpoint="/api/v1/dashboard">
 
-    {{/* --- 1. KPI strip ------------------------------------------------ */}}
+{{/*
+A workspace with no live run, no finished run, no backlog, and no committed
+record has never been used. Held in one variable so the first-run hero and the
+sections it replaces can never disagree about which state the page is in.
+*/}}
+{{$empty := and (not .Page.RunningJobs) (not .Page.Campaigns) (not .Page.Attention) (eq .Page.Metrics.UniqueBusinesses 0) (eq .Page.Yield.Jobs 0) (eq .Page.Prospects.Scored 0)}}
+{{if $empty}}
+    {{/* --- First run: teach the workflow, do not draw empty tiles -------- */}}
+    <section class="card dash-firstrun" aria-labelledby="firstrun-heading">
+        <div class="card-body dash-firstrun-body">
+            <div class="dash-firstrun-intro">
+                <p class="eyebrow">Local workspace</p>
+                <h2 class="t-title" id="firstrun-heading">Collect your first list of businesses</h2>
+                <p class="dash-firstrun-lead">Nothing has run here yet. The whole loop below happens on this machine: no paid API, no hosted database, and no account. Five steps, start to finish.</p>
+                <div class="dash-firstrun-actions">
+                    <a class="button button-primary button-lg" href="/app/scrapes/new" data-action="navigate" data-endpoint="/app/scrapes/new">{{template "app/icon-plus"}} Start a scrape</a>
+                    <a class="button button-lg" href="/app/onboarding" data-action="navigate" data-endpoint="/app/onboarding">Check this machine first</a>
+                </div>
+            </div>
+            <ol class="dash-steps">
+                <li class="dash-step">
+                    <span class="dash-step-index" aria-hidden="true">1</span>
+                    <div class="dash-step-copy">
+                        <strong>Create the search</strong>
+                        <p>Name it, say where to look, then pick <em>Fast mode</em> for a quick pass with no map grid, or <em>Thorough mode</em> for full map coverage.</p>
+                        <a href="/app/scrapes/new" data-action="navigate" data-endpoint="/app/scrapes/new">New scrape</a>
+                    </div>
+                </li>
+                <li class="dash-step">
+                    <span class="dash-step-index" aria-hidden="true">2</span>
+                    <div class="dash-step-copy">
+                        <strong>Run it here</strong>
+                        <p>The job joins a queue on this machine and starts as soon as a worker is free. Close the browser if you like &mdash; the run keeps going.</p>
+                        <a href="/app/jobs" data-action="navigate" data-endpoint="/app/jobs">Job queue</a>
+                    </div>
+                </li>
+                <li class="dash-step">
+                    <span class="dash-step-index" aria-hidden="true">3</span>
+                    <div class="dash-step-copy">
+                        <strong>Watch and steer</strong>
+                        <p>Live progress per stage. Pause, stop, or download a partial CSV at any moment; committed rows are already safe on disk.</p>
+                        <a href="/app/jobs" data-action="navigate" data-endpoint="/app/jobs">Monitor runs</a>
+                    </div>
+                </li>
+                <li class="dash-step">
+                    <span class="dash-step-index" aria-hidden="true">4</span>
+                    <div class="dash-step-copy">
+                        <strong>Work the results</strong>
+                        <p>Filter, de-duplicate, score prospects, and open any business for its contacts, website audit, and provenance.</p>
+                        <a href="/app/results" data-action="navigate" data-endpoint="/app/results">Results workspace</a>
+                    </div>
+                </li>
+                <li class="dash-step">
+                    <span class="dash-step-index" aria-hidden="true">5</span>
+                    <div class="dash-step-copy">
+                        <strong>Export what you keep</strong>
+                        <p>Send a filtered selection to CSV or XLSX. Files land in your local data folder and stay there.</p>
+                        <a href="/app/exports" data-action="navigate" data-endpoint="/app/exports">Exports</a>
+                    </div>
+                </li>
+            </ol>
+        </div>
+        <footer class="card-footer dash-firstrun-footer">
+            <p class="t-caption">No coverage evidence yet: this page fills in the moment the first run commits a record &mdash; what needs your attention, what is running, and what each campaign yielded.</p>
+        </footer>
+    </section>
+
+    {{/*
+    The prospecting layer is worth previewing on a new workspace, but a
+    full-height empty card would be exactly the dead panel this state exists to
+    remove. One quiet line says the capability is there and what unlocks it.
+    */}}
+    {{if .Page.Prospects.Supported}}
+    <section class="card card-quiet dash-prospect-hint" aria-labelledby="prospecting-heading">
+        <div class="card-body">
+            <h2 class="t-overline" id="prospecting-heading">Prospect pipeline</h2>
+            <p class="t-caption">No prospect signals yet. Once a run has collected businesses, score them in Results to sort who is worth calling by their website signal and tier.</p>
+        </div>
+    </section>
+    {{end}}
+{{end}}
+
+{{if not $empty}}
+
+    {{/* --- 1. What the workspace holds --------------------------------- */}}
     <section class="stat-grid dash-kpis" aria-label="Workspace summary">
-        <article class="stat stat-compact">
+        <a class="stat dash-kpi" href="/app/results" data-action="navigate" data-endpoint="/app/results">
             <p class="stat-label"><span>Unique businesses</span></p>
             <p class="stat-value num" data-number="{{.Page.Metrics.UniqueBusinesses}}">{{.Page.Metrics.UniqueBusinesses}}</p>
             <p class="stat-meta"><span class="num">{{.Page.Metrics.RawRecords}}</span> raw &middot; <span class="num">{{.Page.Metrics.Duplicates}}</span> duplicate rows</p>
-        </article>
-        <article class="stat stat-compact">
+        </a>
+        <a class="stat dash-kpi" href="/app/results" data-action="navigate" data-endpoint="/app/results">
             <p class="stat-label"><span>Collected today</span></p>
             <p class="stat-value num" data-number="{{.Page.Metrics.CollectedToday}}">{{.Page.Metrics.CollectedToday}}</p>
             <p class="stat-meta"><span class="num">{{.Page.Metrics.CollectedWeek}}</span> this week &middot; <span class="num">{{.Page.Metrics.CollectedMonth}}</span> this month</p>
-        </article>
-        <article class="stat stat-compact">
-            <p class="stat-label"><span>Contact coverage</span></p>
+        </a>
+        <a class="stat dash-kpi" href="/app/results?filter_field=email&amp;filter_operator=not_empty&amp;filter_value=" data-action="navigate" data-endpoint="/app/results?filter_field=email&amp;filter_operator=not_empty&amp;filter_value=">
+            <p class="stat-label"><span>Reachable by email</span></p>
             <p class="stat-value num">{{.Page.Metrics.EmailCoverage}}%</p>
-            <p class="stat-meta">email &middot; <span class="num">{{.Page.Metrics.PhoneCoverage}}%</span> phone &middot; <span class="num">{{.Page.Metrics.WebsiteCoverage}}%</span> web</p>
-        </article>
-        <article class="stat stat-compact">
-            <p class="stat-label"><span>Active jobs</span></p>
+            <p class="stat-meta"><span class="num">{{.Page.Metrics.Emails}}</span> with an address &middot; <span class="num">{{.Page.Metrics.PhoneCoverage}}%</span> have a phone</p>
+        </a>
+        <a class="stat dash-kpi" href="/app/jobs" data-action="navigate" data-endpoint="/app/jobs">
+            <p class="stat-label"><span>Jobs running</span></p>
             <p class="stat-value num" data-number="{{.Page.Metrics.ActiveJobs}}">{{.Page.Metrics.ActiveJobs}}</p>
             <p class="stat-meta"><span class="num">{{.Page.Metrics.QueuedJobs}}</span> queued &middot; <span class="num">{{.Page.Metrics.PausedJobs}}</span> paused</p>
-        </article>
-        <article class="stat stat-compact">
-            <p class="stat-label"><span>Collection speed</span></p>
-            <p class="stat-value num">{{.Page.Metrics.PlacesPerMinute}}</p>
-            <p class="stat-meta">places/min &middot; {{.Page.Metrics.AverageDuration}} average run</p>
-        </article>
-        <article class="stat stat-compact">
-            <p class="stat-label"><span>Proxy health</span></p>
-            <p class="stat-value" data-metric="proxy-success-rate">{{.Page.Metrics.ProxySuccessRate}}</p>
-            <p class="stat-meta">success &middot; <span data-metric="proxy-block-rate">{{.Page.Metrics.ProxyBlockRate}}</span> blocked &middot; <span class="num" data-metric="healthy-proxies">{{.Page.Metrics.HealthyProxies}}</span>/<span class="num">{{.Page.Metrics.TotalProxies}}</span> healthy</p>
-        </article>
-        <article class="stat stat-compact">
-            <p class="stat-label"><span>Local storage</span></p>
-            <p class="stat-value">{{.Page.Metrics.DatabaseSize}}</p>
-            <p class="stat-meta">database &middot; {{.Page.Metrics.DiskFree}} free on disk</p>
-        </article>
+        </a>
     </section>
 
-    {{/* --- 2. Running now + attention ---------------------------------- */}}
-    <div class="split-pane dash-command" style="--aside-width: 26rem;">
-        <div class="dash-command-main">
-    <section class="card card-flush" aria-labelledby="running-heading">
+    {{/* --- 2. Needs attention: the next-best-action queue --------------- */}}
+    <section class="card card-flush dash-attention-card" aria-labelledby="attention-heading">
+        <header class="card-header">
+            <div>
+                <h2 class="card-title" id="attention-heading">Needs attention{{if .Page.Attention}} <span class="badge badge-warning num">{{len .Page.Attention}}</span>{{end}}</h2>
+                <p class="card-subtitle">Queues of real work measured from your local database. Each one opens the exact list it counts.</p>
+            </div>
+            <div class="card-actions"><a class="button button-sm" href="/app/jobs" data-action="navigate" data-endpoint="/app/jobs">All jobs</a></div>
+        </header>
+        <div class="card-body">
+            {{if .Page.Attention}}
+            <ul class="dash-attention">
+                {{range .Page.Attention}}
+                <li class="dash-attention-item" data-tone="{{.Tone}}">
+                    <a class="dash-attention-link" href="{{.URL}}" data-action="navigate" data-endpoint="{{.URL}}">
+                        <span class="dash-attention-count num">{{.Value}}</span>
+                        <span class="dash-attention-copy">
+                            <span class="dash-attention-label">{{.Label}}</span>
+                            <span class="dash-attention-detail">{{.Detail}}</span>
+                        </span>
+                        <span class="dash-attention-action">{{.Action}} <span class="dash-attention-chevron" aria-hidden="true">{{template "app/icon-chevron-down"}}</span></span>
+                    </a>
+                </li>
+                {{end}}
+            </ul>
+            {{else if .Page.Metrics.UniqueBusinesses}}
+            <div class="dash-idle dash-idle-clear">
+                <span class="dash-idle-icon" aria-hidden="true">{{template "app/icon-inbox"}}</span>
+                <div>
+                    <p class="dash-idle-title">Queue is clear</p>
+                    <p class="t-caption">No failed runs, unresolved duplicates, unchecked websites, or missing contact data.</p>
+                </div>
+                <a class="button button-sm" href="/app/results" data-action="navigate" data-endpoint="/app/results">Open Results</a>
+            </div>
+            {{else}}
+            <div class="dash-idle">
+                <span class="dash-idle-icon" aria-hidden="true">{{template "app/icon-inbox"}}</span>
+                <div>
+                    <p class="dash-idle-title">No data to review yet</p>
+                    <p class="t-caption">Once a scrape commits its first businesses, this panel lists exactly what to work on next.</p>
+                </div>
+                <a class="button button-sm" href="/app/onboarding" data-action="navigate" data-endpoint="/app/onboarding">Setup guide</a>
+            </div>
+            {{end}}
+        </div>
+    </section>
+
+    {{/* --- 3. Running now ---------------------------------------------- */}}
+    <section class="card card-flush dash-running" aria-labelledby="running-heading">
+        <header class="card-header">
+            <div>
+                <h2 class="card-title" id="running-heading">Running now</h2>
+                <p class="card-subtitle">Live, queued, and paused runs you can still steer.</p>
+            </div>
+            <div class="card-actions">
+                <a class="button button-sm" href="/app/jobs?state=running,starting,queued,paused" data-action="navigate" data-endpoint="/app/jobs?state=running,starting,queued,paused">Job queue</a>
+            </div>
+        </header>
+        <div class="card-body">
+            {{if .Page.RunningJobs}}
+            <div class="table-wrap overflow-safe" data-density="compact">
+                <table class="data-table">
+                    <caption class="sr-only">Jobs currently queued, running, or paused</caption>
+                    <thead>
+                        <tr>
+                            <th scope="col" class="dash-job-col">Job</th>
+                            <th scope="col">State</th>
+                            <th scope="col" class="dash-progress-col">Progress</th>
+                            <th scope="col" class="num">Unique</th>
+                            <th scope="col" class="num">Emails</th>
+                            <th scope="col">Running for</th>
+                            <th scope="col">Controls</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    {{range .Page.RunningJobs}}
+                        <tr>
+                            <td class="dash-job-col">
+                                <a class="dash-job-link" href="/app/jobs/{{.ID}}" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}">{{.Name}}</a>
+                                <small class="cell-subtitle">{{.Stage}}</small>
+                            </td>
+                            <td><span class="status status-{{.State}}">{{template "app/dash-state" .State}}</span></td>
+                            <td class="dash-progress-col">
+                                <div class="dash-progress">
+                                    <div class="progress" role="progressbar" aria-label="{{.Name}} progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{.Percent}}"><span class="progress-bar" style="--progress: {{.Percent}}%"></span></div>
+                                    <small class="num">{{.Percent}}%{{if .ETA}} &middot; {{.ETA}} left{{end}}</small>
+                                </div>
+                            </td>
+                            <td class="num">{{.UniqueRecords}}<small class="cell-subtitle num">{{.RawRecords}} raw</small></td>
+                            <td class="num">{{.Emails}}<small class="cell-subtitle num">{{template "app/dash-value" .EmailShare}}</small></td>
+                            <td><small class="dash-timestamp">{{template "app/dash-value" .Runtime}}</small></td>
+                            <td>
+                                <div class="table-actions">
+                                    {{if .CanPause}}<form action="/api/v1/jobs/{{.ID}}/pause" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-ghost" type="submit" data-action="pause-job" data-endpoint="/api/v1/jobs/{{.ID}}/pause">Pause</button></form>{{end}}
+                                    {{if .CanResume}}<form action="/api/v1/jobs/{{.ID}}/resume" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-primary" type="submit" data-action="resume-job" data-endpoint="/api/v1/jobs/{{.ID}}/resume">Resume</button></form>{{end}}
+                                    {{if .CanCancel}}<form action="/api/v1/jobs/{{.ID}}/cancel" method="post" data-confirm="Stop this job at its next safe checkpoint?"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-ghost" type="submit" data-action="cancel-job" data-endpoint="/api/v1/jobs/{{.ID}}/cancel">Stop</button></form>{{end}}
+                                    {{if .CanRetry}}<form action="/api/v1/jobs/{{.ID}}/retry" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-ghost" type="submit" data-action="retry-job" data-endpoint="/api/v1/jobs/{{.ID}}/retry">Retry failures</button></form>{{end}}
+                                    {{if .HasResults}}<a class="button button-sm button-ghost" href="/api/v1/jobs/{{.ID}}/download" download data-action="download-partial" data-endpoint="/api/v1/jobs/{{.ID}}/download">Partial CSV</a>{{end}}
+                                    {{if .CanDuplicate}}<form action="/api/v1/jobs/{{.ID}}/duplicate" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-ghost" type="submit" data-action="duplicate-job" data-endpoint="/api/v1/jobs/{{.ID}}/duplicate">Duplicate</button></form>{{end}}
+                                    <a class="button button-sm button-ghost" href="/app/jobs/{{.ID}}" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}">Open</a>
+                                </div>
+                            </td>
+                        </tr>
+                    {{end}}
+                    </tbody>
+                </table>
+            </div>
+            {{else}}
+            <div class="dash-idle">
+                <span class="dash-idle-icon" aria-hidden="true">{{template "app/icon-activity"}}</span>
+                <div>
+                    <p class="dash-idle-title">Nothing is running</p>
+                    <p class="t-caption">The worker pool is idle. Queue a scrape and this table fills with live progress, stage, and safe controls.</p>
+                </div>
+                <a class="button button-primary button-sm" href="/app/scrapes/new" data-action="navigate" data-endpoint="/app/scrapes/new">New scrape</a>
+            </div>
+            {{end}}
+        </div>
+    </section>
+
+    {{/* --- 4. Continue working + contact coverage ----------------------- */}}
+    <div class="split-pane dash-continue-row" style="--aside-width: 23rem;">
+        <section class="card card-flush dash-continue" aria-labelledby="campaigns-heading">
             <header class="card-header">
                 <div>
-                    <h2 class="card-title" id="running-heading">Running now</h2>
-                    <p class="card-subtitle">Live and queued runs you can still steer.</p>
+                    <h2 class="card-title" id="campaigns-heading">Continue working</h2>
+                    <p class="card-subtitle">Your most recent runs and what each one yielded. Pick up where you left off, or run the same configuration again.</p>
                 </div>
-                <div class="card-actions">
-                    <a class="button button-sm" href="/app/jobs?state=running,starting,queued,paused" data-action="navigate" data-endpoint="/app/jobs?state=running,starting,queued,paused">Job queue</a>
-                </div>
+                <div class="card-actions"><a class="button button-sm" href="/app/jobs" data-action="navigate" data-endpoint="/app/jobs">All jobs</a></div>
             </header>
-            <div class="card-body">
-                {{if .Page.RunningJobs}}
-                <div class="table-wrap overflow-safe" data-density="compact">
-                    <table class="data-table">
-                        <caption class="sr-only">Jobs currently queued, running, or paused</caption>
-                        <thead>
-                            <tr>
-                                <th scope="col">Job</th>
-                                <th scope="col">State</th>
-                                <th scope="col" class="dash-progress-col">Progress</th>
-                                <th scope="col" class="num">Unique</th>
-                                <th scope="col" class="num">Emails</th>
-                                <th scope="col">Runtime</th>
-                                <th scope="col">Controls</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                        {{range .Page.RunningJobs}}
-                            <tr>
-                                <td>
-                                    <a class="dash-job-link" href="/app/jobs/{{.ID}}" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}">{{.Name}}</a>
-                                    <small class="cell-subtitle">{{.Stage}}</small>
-                                </td>
-                                <td><span class="status status-{{.State}}">{{.State}}</span></td>
-                                <td class="dash-progress-col">
-                                    <div class="dash-progress">
-                                        <div class="progress" role="progressbar" aria-label="{{.Name}} progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{.Percent}}"><span class="progress-bar" style="--progress: {{.Percent}}%"></span></div>
-                                        <small class="num">{{.Percent}}%{{if .ETA}} &middot; ETA {{.ETA}}{{end}}</small>
-                                    </div>
-                                </td>
-                                <td class="num">{{.UniqueRecords}}<small class="cell-subtitle num">{{.RawRecords}} raw</small></td>
-                                <td class="num">{{.Emails}}<small class="cell-subtitle num">{{.EmailShare}}</small></td>
-                                <td><small class="dash-timestamp">{{.Runtime}}</small></td>
-                                <td>
-                                    <div class="table-actions">
-                                        {{if .CanPause}}<form action="/api/v1/jobs/{{.ID}}/pause" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-ghost" type="submit" data-action="pause-job" data-endpoint="/api/v1/jobs/{{.ID}}/pause">Pause</button></form>{{end}}
-                                        {{if .CanResume}}<form action="/api/v1/jobs/{{.ID}}/resume" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-ghost" type="submit" data-action="resume-job" data-endpoint="/api/v1/jobs/{{.ID}}/resume">Resume</button></form>{{end}}
-                                        {{if .CanCancel}}<form action="/api/v1/jobs/{{.ID}}/cancel" method="post" data-confirm="Stop this job at its next safe checkpoint?"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-ghost" type="submit" data-action="cancel-job" data-endpoint="/api/v1/jobs/{{.ID}}/cancel">Stop</button></form>{{end}}
-                                        {{if .CanRetry}}<form action="/api/v1/jobs/{{.ID}}/retry" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-ghost" type="submit" data-action="retry-job" data-endpoint="/api/v1/jobs/{{.ID}}/retry">Retry failures</button></form>{{end}}
-                                        {{if .HasResults}}<a class="button button-sm button-ghost" href="/api/v1/jobs/{{.ID}}/download" download data-action="download-partial" data-endpoint="/api/v1/jobs/{{.ID}}/download">Partial CSV</a>{{end}}
-                                        {{if .CanDuplicate}}<form action="/api/v1/jobs/{{.ID}}/duplicate" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-ghost" type="submit" data-action="duplicate-job" data-endpoint="/api/v1/jobs/{{.ID}}/duplicate">Duplicate</button></form>{{end}}
-                                        <a class="button button-sm button-ghost" href="/app/jobs/{{.ID}}" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}">Open</a>
-                                    </div>
-                                </td>
-                            </tr>
-                        {{end}}
-                        </tbody>
-                    </table>
-                </div>
-                {{else}}
-                <div class="dash-idle">
-                    <span class="dash-idle-icon" aria-hidden="true">{{template "app/icon-activity"}}</span>
-                    <div>
-                        <p class="dash-idle-title">Nothing is running</p>
-                        <p class="t-caption">The worker pool is idle. Queue a scrape and this table fills with live progress, stage, and safe controls.</p>
-                    </div>
-                    <a class="button button-primary button-sm" href="/app/scrapes/new" data-action="navigate" data-endpoint="/app/scrapes/new">New scrape</a>
-                </div>
-                {{end}}
+            {{if .Page.Campaigns}}
+            <div class="table-wrap overflow-safe" data-density="compact">
+                <table class="data-table">
+                    <caption class="sr-only">Finished scrape jobs, what they yielded, and how to continue them</caption>
+                    <thead>
+                        <tr>
+                            <th scope="col" class="dash-campaign-col">Run</th>
+                            <th scope="col">Outcome</th>
+                            <th scope="col" class="num">Unique</th>
+                            <th scope="col" class="num">Unique yield</th>
+                            <th scope="col" class="num">Email coverage</th>
+                            <th scope="col">Finished</th>
+                            <th scope="col" class="dash-continue-actions-col">Continue</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    {{range .Page.Campaigns}}
+                        <tr>
+                            <td class="dash-campaign-col">
+                                <a class="dash-job-link" href="/app/jobs/{{.ID}}" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}">{{.Name}}</a>
+                                <small class="cell-subtitle num">{{.RawRecords}} raw records &middot; ran for {{template "app/dash-value" .Runtime}}</small>
+                            </td>
+                            <td>
+                                <span class="status status-{{.State}}">{{template "app/dash-state" .State}}</span>
+                                {{if eq .State "partial"}}<small class="cell-subtitle">results kept</small>{{end}}
+                            </td>
+                            <td class="num">{{.UniqueRecords}}</td>
+                            <td class="num">{{template "app/dash-value" .UniqueYield}}{{if and (ne .DuplicateShare "—") (ne .DuplicateShare "not recorded")}}<small class="cell-subtitle num">{{.DuplicateShare}} duplicate</small>{{end}}</td>
+                            <td class="num">{{template "app/dash-value" .EmailShare}}</td>
+                            <td><small class="dash-timestamp">{{template "app/dash-value" .Finished}}</small></td>
+                            <td class="dash-continue-actions-col">
+                                <div class="table-actions">
+                                    {{if .HasResults}}<a class="button button-sm button-primary dash-results-link" href="/app/results?job_id={{.ID}}" data-action="navigate" data-endpoint="/app/results?job_id={{.ID}}">Results</a>{{end}}
+                                    {{if .CanResume}}<form action="/api/v1/jobs/{{.ID}}/resume" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm" type="submit" data-action="resume-job" data-endpoint="/api/v1/jobs/{{.ID}}/resume">Resume</button></form>{{end}}
+                                    {{if .CanRetry}}<form action="/api/v1/jobs/{{.ID}}/retry" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm" type="submit" data-action="retry-job" data-endpoint="/api/v1/jobs/{{.ID}}/retry">Retry &amp; merge</button></form>{{end}}
+                                    {{if .CanDuplicate}}<form action="/api/v1/jobs/{{.ID}}/duplicate" method="post"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="button button-sm button-ghost" type="submit" data-action="duplicate-job" data-endpoint="/api/v1/jobs/{{.ID}}/duplicate">Run again</button></form>{{end}}
+                                    {{if .HasBenchmark}}<a class="button button-sm button-ghost dash-benchmark-link" href="/app/jobs/{{.ID}}/benchmark" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}/benchmark">Benchmark</a>{{end}}
+                                    <a class="button button-sm button-ghost" href="/app/jobs/{{.ID}}" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}">Open</a>
+                                </div>
+                            </td>
+                        </tr>
+                    {{end}}
+                    </tbody>
+                </table>
             </div>
+            {{else}}
+            <div class="empty-state">
+                <span class="empty-state-icon" aria-hidden="true">{{template "app/icon-jobs"}}</span>
+                <p class="empty-state-title">No finished runs yet</p>
+                <p class="empty-state-body">When a run reaches the end, it lands here with its yield and one-click ways to reopen its results or run the same configuration again.</p>
+                <div class="empty-state-actions"><a class="button button-primary" href="/app/scrapes/new" data-action="navigate" data-endpoint="/app/scrapes/new">Configure a scrape</a></div>
+            </div>
+            {{end}}
+            {{if .Page.Yield.Jobs}}
+            <footer class="card-footer dash-yield-footer">
+                <div class="dash-yield-meters">
+                    <div class="meter-row">
+                        <p class="metric-label"><span>Unique per raw record</span><strong class="num">{{template "app/dash-value" .Page.Yield.UniqueYield}}</strong></p>
+                        <div class="meter-track"><span class="meter-fill" data-tone="success" style="--meter: {{.Page.Yield.UniquePercent}}%"></span></div>
+                    </div>
+                    <div class="meter-row">
+                        <p class="metric-label"><span>Duplicate work</span><strong class="num">{{template "app/dash-value" .Page.Yield.DuplicateShare}}</strong></p>
+                        <div class="meter-track"><span class="meter-fill" data-tone="warning" style="--meter: {{.Page.Yield.DuplicatePercent}}%"></span></div>
+                    </div>
+                    <div class="meter-row">
+                        <p class="metric-label"><span>Email coverage of unique</span><strong class="num">{{template "app/dash-value" .Page.Yield.EmailShare}}</strong></p>
+                        <div class="meter-track"><span class="meter-fill" style="--meter: {{.Page.Yield.EmailPercent}}%"></span></div>
+                    </div>
+                </div>
+                <p class="dash-yield-note t-caption">
+                    Coverage yield across the last {{.Page.Yield.Jobs}} productive job(s): <span class="num">{{.Page.Yield.RawRecords}}</span> raw &rarr; <span class="num">{{.Page.Yield.UniqueRecords}}</span> unique, {{.Page.Yield.UniqueYield}} unique yield, {{.Page.Yield.DuplicateShare}} duplicate work. A duplicate share above roughly 40% usually means the grid is re-sampling the same places.
+                    {{if .Page.Yield.BestJobName}} Best: <a href="/app/jobs/{{.Page.Yield.BestJobID}}" data-action="navigate" data-endpoint="/app/jobs/{{.Page.Yield.BestJobID}}">{{.Page.Yield.BestJobName}}</a> at {{.Page.Yield.BestJobYield}}.{{end}}
+                    {{if .Page.Yield.WorstJobName}} Thinnest: <a href="/app/jobs/{{.Page.Yield.WorstJobID}}" data-action="navigate" data-endpoint="/app/jobs/{{.Page.Yield.WorstJobID}}">{{.Page.Yield.WorstJobName}}</a> at {{.Page.Yield.WorstJobYield}}.{{end}}
+                </p>
+            </footer>
+            {{end}}
         </section>
 
-            <section class="card" aria-labelledby="availability-heading">
-                <header class="card-header">
-                    <div>
-                        <h2 class="card-title" id="availability-heading">Data availability</h2>
-                        <p class="card-subtitle">Share of unique businesses carrying each contact field.</p>
-                    </div>
-                </header>
-                <div class="card-body dash-availability">
-                    {{range .Page.Availability}}
-                    <div class="meter-row" data-availability="{{.Label}}">
-                        <p class="metric-label"><span>{{.Label}}</span><strong>{{.Percent}}%</strong></p>
-                        <div class="meter-track"><span class="meter-fill" style="--meter: {{.Percent}}%"></span></div>
-                        <p class="dash-availability-count t-caption"><span class="num">{{.Count}}</span> of <span class="num">{{.Total}}</span> businesses</p>
-                    </div>
-                    {{else}}
-                    <p class="empty-inline">Availability appears after the first result is saved.</p>
-                    {{end}}
+        {{/*
+        Contact coverage is the one signal "Needs attention" cannot express: a
+        backlog is a count, this is a ratio. It is compressed to a narrow
+        column and the reachability split is folded away, because the counts it
+        used to repeat now live in the attention queue above.
+        */}}
+        <section class="card dash-coverage" aria-labelledby="availability-heading">
+            <header class="card-header">
+                <div>
+                    <h2 class="card-title" id="availability-heading">Contact coverage</h2>
+                    <p class="card-subtitle">Share of unique businesses carrying each field.</p>
                 </div>
-                {{if gt .Page.Metrics.Websites 0}}
+            </header>
+            <div class="card-body dash-availability">
+                {{range .Page.Availability}}
+                <div class="meter-row" data-availability="{{.Label}}">
+                    <p class="metric-label"><span>{{.Label}}</span><strong>{{.Percent}}%</strong></p>
+                    <div class="meter-track"><span class="meter-fill" style="--meter: {{.Percent}}%"></span></div>
+                    <p class="dash-availability-count t-caption"><span class="num">{{.Count}}</span> of <span class="num">{{.Total}}</span> businesses</p>
+                </div>
+                {{else}}
+                <p class="empty-inline">Coverage appears after the first result is saved.</p>
+                {{end}}
+            </div>
+            {{if gt .Page.Metrics.Websites 0}}
+            <details class="dash-reach">
+                <summary class="dash-reach-summary"><span class="t-overline">Website active versus inactive</span></summary>
                 <div class="card-body dash-availability" aria-label="Website reachability">
-                    <h3 class="t-overline">Website active versus inactive</h3>
                     {{range .Page.WebsiteStatus}}
                     <div class="meter-row" data-website-status="{{.Label}}">
                         <p class="metric-label"><span>{{.Label}}</span><strong>{{.Percent}}%</strong></p>
@@ -166,143 +395,12 @@ static/css/views/dashboard.css; components come from app.css unchanged.
                     </div>
                     {{end}}
                 </div>
-                {{end}}
-                <footer class="card-footer dash-availability-footer">
-                    {{if .Page.Metrics.MissingEmail}}<a class="button button-sm" href="/app/results?filter_field=email&amp;filter_operator=empty&amp;filter_value=" data-action="navigate" data-endpoint="/app/results?filter_field=email&amp;filter_operator=empty&amp;filter_value=">{{.Page.Metrics.MissingEmail}} businesses without email</a>{{end}}
-                </footer>
-            </section>
-        </div>
-
-        <section class="card card-flush" aria-labelledby="attention-heading">
-            <header class="card-header">
-                <div>
-                    <h2 class="card-title" id="attention-heading">Needs attention</h2>
-                    <p class="card-subtitle">Backlogs measured from your local database.</p>
-                </div>
-            </header>
-            <div class="card-body">
-                {{if .Page.Attention}}
-                <ul class="dash-attention">
-                    {{range .Page.Attention}}
-                    <li class="dash-attention-item" data-tone="{{.Tone}}">
-                        <a class="dash-attention-link" href="{{.URL}}" data-action="navigate" data-endpoint="{{.URL}}">
-                            <span class="dash-attention-count num">{{.Value}}</span>
-                            <span class="dash-attention-copy">
-                                <span class="dash-attention-label">{{.Label}}</span>
-                                <span class="dash-attention-detail">{{.Detail}}</span>
-                            </span>
-                            <span class="dash-attention-action">{{.Action}} <span class="dash-attention-chevron" aria-hidden="true">{{template "app/icon-chevron-down"}}</span></span>
-                        </a>
-                    </li>
-                    {{end}}
-                </ul>
-                {{else if .Page.Metrics.UniqueBusinesses}}
-                <div class="dash-idle dash-idle-clear">
-                    <span class="dash-idle-icon" aria-hidden="true">{{template "app/icon-inbox"}}</span>
-                    <div>
-                        <p class="dash-idle-title">Queue is clear</p>
-                        <p class="t-caption">No failed runs, unresolved duplicates, unchecked websites, or missing contact data.</p>
-                    </div>
-                </div>
-                {{else}}
-                <div class="dash-idle">
-                    <span class="dash-idle-icon" aria-hidden="true">{{template "app/icon-inbox"}}</span>
-                    <div>
-                        <p class="dash-idle-title">No data to review yet</p>
-                        <p class="t-caption">Once a scrape commits its first businesses, this panel lists exactly what to work on next.</p>
-                    </div>
-                    <a class="button button-sm" href="/app/onboarding" data-action="navigate" data-endpoint="/app/onboarding">Setup guide</a>
-                </div>
-                {{end}}
-            </div>
+            </details>
+            {{end}}
         </section>
     </div>
 
-    {{/* --- 3. Recent campaigns ----------------------------------------- */}}
-    <section class="card card-flush" aria-labelledby="campaigns-heading">
-        <header class="card-header">
-            <div>
-                <h2 class="card-title" id="campaigns-heading">Recent campaigns</h2>
-                <p class="card-subtitle">What the last finished runs actually yielded. Duplicate share above roughly 40% usually means the grid is over-sampling.</p>
-            </div>
-            <div class="card-actions"><a class="button button-sm" href="/app/jobs" data-action="navigate" data-endpoint="/app/jobs">All jobs</a></div>
-        </header>
-        {{if .Page.Campaigns}}
-        <div class="table-wrap overflow-safe" data-density="compact">
-            <table class="data-table">
-                <caption class="sr-only">Finished scrape jobs and their collection yield</caption>
-                <thead>
-                    <tr>
-                        <th scope="col" class="dash-campaign-col">Campaign</th>
-                        <th scope="col">Outcome</th>
-                        <th scope="col" class="num">Unique</th>
-                        <th scope="col" class="num">Unique yield</th>
-                        <th scope="col" class="num">Duplicate share</th>
-                        <th scope="col" class="num">Email coverage</th>
-                        <th scope="col">Finished</th>
-                        <th scope="col"><span class="sr-only">Actions</span></th>
-                    </tr>
-                </thead>
-                <tbody>
-                {{range .Page.Campaigns}}
-                    <tr>
-                        <td class="dash-campaign-col">
-                            <a class="dash-job-link" href="/app/jobs/{{.ID}}" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}">{{.Name}}</a>
-                            <small class="cell-subtitle num">{{.RawRecords}} raw records &middot; {{.Runtime}}</small>
-                        </td>
-                        <td><span class="status status-{{.State}}">{{.State}}</span></td>
-                        <td class="num">{{.UniqueRecords}}</td>
-                        <td class="num">{{.UniqueYield}}</td>
-                        <td class="num">{{.DuplicateShare}}</td>
-                        <td class="num">{{.EmailShare}}</td>
-                        <td><small class="dash-timestamp">{{if .Finished}}{{.Finished}}{{else}}<span class="empty-inline">not recorded</span>{{end}}</small></td>
-                        <td>
-                            <div class="table-actions">
-                                <a class="button button-sm button-ghost" href="/app/jobs/{{.ID}}" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}">Monitor</a>
-                                {{if .HasBenchmark}}<a class="button button-sm button-ghost" href="/app/jobs/{{.ID}}/benchmark" data-action="navigate" data-endpoint="/app/jobs/{{.ID}}/benchmark">Benchmark</a>{{end}}
-                                {{if .HasResults}}<a class="button button-sm button-ghost dash-results-link" href="/app/results?job_id={{.ID}}" data-action="navigate" data-endpoint="/app/results?job_id={{.ID}}">Results</a>{{end}}
-                            </div>
-                        </td>
-                    </tr>
-                {{end}}
-                </tbody>
-            </table>
-        </div>
-        {{end}}
-        {{if not .Page.Campaigns}}
-        <div class="empty-state">
-            <span class="empty-state-icon" aria-hidden="true">{{template "app/icon-jobs"}}</span>
-            <p class="empty-state-title">No coverage evidence yet</p>
-            <p class="empty-state-body">Coverage yield is computed from jobs that have committed raw records. Run a scrape and this table reports unique yield, duplicate share, and email coverage per campaign.</p>
-            <div class="empty-state-actions"><a class="button button-primary" href="/app/scrapes/new" data-action="navigate" data-endpoint="/app/scrapes/new">Configure a scrape</a></div>
-        </div>
-        {{end}}
-        {{if .Page.Yield.Jobs}}
-        <footer class="card-footer dash-yield-footer">
-            <div class="dash-yield-meters">
-                <div class="meter-row">
-                    <p class="metric-label"><span>Unique per raw record</span><strong class="num">{{.Page.Yield.UniqueYield}}</strong></p>
-                    <div class="meter-track"><span class="meter-fill" data-tone="success" style="--meter: {{.Page.Yield.UniquePercent}}%"></span></div>
-                </div>
-                <div class="meter-row">
-                    <p class="metric-label"><span>Duplicate work</span><strong class="num">{{.Page.Yield.DuplicateShare}}</strong></p>
-                    <div class="meter-track"><span class="meter-fill" data-tone="warning" style="--meter: {{.Page.Yield.DuplicatePercent}}%"></span></div>
-                </div>
-                <div class="meter-row">
-                    <p class="metric-label"><span>Email coverage of unique</span><strong class="num">{{.Page.Yield.EmailShare}}</strong></p>
-                    <div class="meter-track"><span class="meter-fill" style="--meter: {{.Page.Yield.EmailPercent}}%"></span></div>
-                </div>
-            </div>
-            <p class="dash-yield-note t-caption">
-                Coverage yield across the last {{.Page.Yield.Jobs}} productive job(s): <span class="num">{{.Page.Yield.RawRecords}}</span> raw &rarr; <span class="num">{{.Page.Yield.UniqueRecords}}</span> unique, {{.Page.Yield.UniqueYield}} unique yield, {{.Page.Yield.DuplicateShare}} duplicate work.
-                {{if .Page.Yield.BestJobName}}Best: <a href="/app/jobs/{{.Page.Yield.BestJobID}}" data-action="navigate" data-endpoint="/app/jobs/{{.Page.Yield.BestJobID}}">{{.Page.Yield.BestJobName}}</a> at {{.Page.Yield.BestJobYield}}.{{end}}
-                {{if .Page.Yield.WorstJobName}} Thinnest: <a href="/app/jobs/{{.Page.Yield.WorstJobID}}" data-action="navigate" data-endpoint="/app/jobs/{{.Page.Yield.WorstJobID}}">{{.Page.Yield.WorstJobName}}</a> at {{.Page.Yield.WorstJobYield}} — a low share usually means the grid is over-sampling the same places.{{end}}
-            </p>
-        </footer>
-        {{end}}
-    </section>
-
-    {{/* --- 4. Prospect pipeline ---------------------------------------- */}}
+    {{/* --- 5. Prospect pipeline ---------------------------------------- */}}
     {{if .Page.Prospects.Supported}}
     <section class="card card-flush" aria-labelledby="prospecting-heading">
         <header class="card-header">
@@ -361,7 +459,7 @@ static/css/views/dashboard.css; components come from app.css unchanged.
     </section>
     {{end}}
 
-    {{/* --- 5. Collection trend ----------------------------------------- */}}
+    {{/* --- 6. Collection trend ----------------------------------------- */}}
     <section class="card" aria-labelledby="collection-heading">
         <header class="card-header">
             <div>
@@ -377,7 +475,7 @@ static/css/views/dashboard.css; components come from app.css unchanged.
             height as a custom property. The same numbers are repeated in a
             screen-reader table below so the picture is never the only copy.
             */}}
-            <div class="dash-chart overflow-safe" role="img" aria-label="Business records committed per day over the last 30 days; peak {{.Page.CollectionMax}} records">
+            <div class="dash-chart" role="img" aria-label="Business records committed per day over the last 30 days; peak {{.Page.CollectionMax}} records">
                 {{range .Page.CollectionByDate}}
                 <span class="dash-chart-col has-tooltip" data-tooltip="{{.Label}}: {{.Value}} records">
                     <span class="dash-chart-bar" style="--column: {{.Percent}}%"></span>
@@ -401,7 +499,7 @@ static/css/views/dashboard.css; components come from app.css unchanged.
         </div>
     </section>
 
-    {{/* --- 6. Breakdowns and operational trends ------------------------ */}}
+    {{/* --- 7. Breakdowns ------------------------------------------------ */}}
     <section class="card card-flush" aria-labelledby="breakdowns-heading">
         <header class="card-header">
             <div>
@@ -429,15 +527,79 @@ static/css/views/dashboard.css; components come from app.css unchanged.
         </div>
     </section>
 
+{{end}}
+
+    {{/*
+    --- 8. System health -----------------------------------------------
+    The facts that used to sit in prime KPI tiles while reading "not
+    recorded". They are real, they are just not what an operator acts on
+    first, so they live here as one quiet strip and each one is omitted
+    when the server has no value for it. It renders in both states: on a
+    brand-new workspace "database created, N GiB free" is reassurance, not
+    telemetry.
+    */}}
+    <section class="card card-quiet dash-system" aria-labelledby="system-heading">
+        <div class="card-body dash-system-body">
+            <div class="dash-system-head">
+                <h2 class="t-overline" id="system-heading">System health</h2>
+                {{if .Features.System}}<a class="button button-sm" href="/app/system" data-action="navigate" data-endpoint="/app/system">Open system health</a>{{end}}
+            </div>
+            <dl class="dash-system-facts">
+                <div class="dash-fact">
+                    <dt>Local database</dt>
+                    <dd>{{template "app/dash-value" .Page.Metrics.DatabaseSize}}</dd>
+                </div>
+                <div class="dash-fact">
+                    <dt>Free disk</dt>
+                    <dd>{{template "app/dash-value" .Page.Metrics.DiskFree}}</dd>
+                </div>
+                {{/*
+                A fact with no value is dropped, not printed as a dash: this
+                strip is a list of what the workspace knows, and the server
+                signals "nothing measured yet" with an em dash of its own.
+                */}}
+                {{if and (ne .Page.Metrics.PlacesPerMinute "—") (ne .Page.Metrics.PlacesPerMinute "not recorded")}}
+                <div class="dash-fact">
+                    <dt>Collection speed</dt>
+                    <dd>{{.Page.Metrics.PlacesPerMinute}} <span class="dash-fact-unit">places/min</span></dd>
+                </div>
+                {{end}}
+                {{if and (ne .Page.Metrics.AverageDuration "—") (ne .Page.Metrics.AverageDuration "not recorded")}}
+                <div class="dash-fact">
+                    <dt>Average run</dt>
+                    <dd>{{.Page.Metrics.AverageDuration}}</dd>
+                </div>
+                {{end}}
+                {{if .Page.Metrics.TotalProxies}}
+                <div class="dash-fact">
+                    <dt>Healthy proxies</dt>
+                    <dd><span class="num" data-metric="healthy-proxies">{{.Page.Metrics.HealthyProxies}}</span> of <span class="num">{{.Page.Metrics.TotalProxies}}</span></dd>
+                </div>
+                {{if and (ne .Page.Metrics.ProxySuccessRate "—") (ne .Page.Metrics.ProxySuccessRate "not recorded")}}
+                <div class="dash-fact">
+                    <dt>Proxy success</dt>
+                    <dd data-metric="proxy-success-rate">{{.Page.Metrics.ProxySuccessRate}}</dd>
+                </div>
+                <div class="dash-fact">
+                    <dt>Proxy blocked</dt>
+                    <dd data-metric="proxy-block-rate">{{.Page.Metrics.ProxyBlockRate}}</dd>
+                </div>
+                {{end}}
+                {{end}}
+            </dl>
+        </div>
+    </section>
+
+{{if not $empty}}
     <details class="card dash-ops">
         <summary class="dash-ops-summary">
             <span class="t-section">Operational telemetry</span>
-            <span class="t-caption">Job outcomes over time, throughput and warnings, proxy latency and pool reliability</span>
+            <span class="t-caption">Job outcomes over time, throughput and warnings, proxy latency, storage and pool reliability</span>
         </summary>
         <div class="card-body dash-breakdowns">
             <div class="dash-breakdown">
                 <h3 class="t-overline">Job outcomes by day</h3>
-                {{if .Page.JobTrends}}<div class="table-wrap overflow-safe" data-density="compact"><table class="data-table"><thead><tr><th scope="col">Date</th><th scope="col" class="num">Done</th><th scope="col" class="num">Partial</th><th scope="col" class="num">Failed</th><th scope="col" class="num">Cancelled</th></tr></thead><tbody>{{range .Page.JobTrends}}<tr><td class="dash-date">{{.Label}}</td><td class="num">{{.Completed}}</td><td class="num">{{.Partial}}</td><td class="num">{{.Failed}}</td><td class="num">{{.Cancelled}}</td></tr>{{end}}</tbody></table></div>{{else}}<p class="empty-inline">No terminal job history in the last 30 days.</p>{{end}}
+                {{if .Page.JobTrends}}<div class="table-wrap overflow-safe" data-density="compact"><table class="data-table"><thead><tr><th scope="col">Date</th><th scope="col" class="num">Done</th><th scope="col" class="num">Stopped early</th><th scope="col" class="num">Failed</th><th scope="col" class="num">Cancelled</th></tr></thead><tbody>{{range .Page.JobTrends}}<tr><td class="dash-date">{{.Label}}</td><td class="num">{{.Completed}}</td><td class="num">{{.Partial}}</td><td class="num">{{.Failed}}</td><td class="num">{{.Cancelled}}</td></tr>{{end}}</tbody></table></div>{{else}}<p class="empty-inline">No terminal job history in the last 30 days.</p>{{end}}
             </div>
             <div class="dash-breakdown">
                 <h3 class="t-overline">Scraping speed and block rate</h3>
@@ -453,11 +615,11 @@ static/css/views/dashboard.css; components come from app.css unchanged.
                     <caption class="sr-only">Local storage used by the workspace and the disk capacity left</caption>
                     <thead><tr><th scope="col">Location</th><th scope="col" class="num">Size</th></tr></thead>
                     <tbody>
-                        <tr><td>Local database</td><td class="num" data-storage="database">{{.Page.Metrics.DatabaseSize}}</td></tr>
-                        <tr><td>Export files</td><td class="num" data-storage="exports">{{if .Page.Metrics.ExportStorage}}{{.Page.Metrics.ExportStorage}}{{else}}<span class="empty-inline">not created</span>{{end}}</td></tr>
-                        <tr><td>Screenshots</td><td class="num" data-storage="screenshots">{{if .Page.Metrics.ScreenshotStorage}}{{.Page.Metrics.ScreenshotStorage}}{{else}}<span class="empty-inline">not created</span>{{end}}</td></tr>
-                        <tr><td>Job logs</td><td class="num" data-storage="logs">{{if .Page.Metrics.LogStorage}}{{.Page.Metrics.LogStorage}}{{else}}<span class="empty-inline">not created</span>{{end}}</td></tr>
-                        <tr><td>Remaining disk capacity</td><td class="num" data-storage="disk-free">{{.Page.Metrics.DiskFree}}</td></tr>
+                        <tr><td>Local database</td><td class="num" data-storage="database">{{template "app/dash-value" .Page.Metrics.DatabaseSize}}</td></tr>
+                        <tr><td>Export files</td><td class="num" data-storage="exports">{{template "app/dash-value" .Page.Metrics.ExportStorage}}</td></tr>
+                        <tr><td>Screenshots</td><td class="num" data-storage="screenshots">{{template "app/dash-value" .Page.Metrics.ScreenshotStorage}}</td></tr>
+                        <tr><td>Job logs</td><td class="num" data-storage="logs">{{template "app/dash-value" .Page.Metrics.LogStorage}}</td></tr>
+                        <tr><td>Remaining disk capacity</td><td class="num" data-storage="disk-free">{{template "app/dash-value" .Page.Metrics.DiskFree}}</td></tr>
                     </tbody>
                 </table></div>
                 {{if .Features.System}}<p class="t-caption"><a href="/app/system" data-action="navigate" data-endpoint="/app/system">System health</a> holds retention and cleanup actions.</p>{{end}}
@@ -468,5 +630,6 @@ static/css/views/dashboard.css; components come from app.css unchanged.
             </div>
         </div>
     </details>
+{{end}}
 </div>
 {{end}}

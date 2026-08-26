@@ -19,6 +19,7 @@ var viewStylesheets = []string{
 	"/static/css/views/monitor.css",
 	"/static/css/views/discovery.css",
 	"/static/css/views/system.css",
+	"/static/css/views/wizard.css",
 }
 
 // renderShell renders one app page with zero-value page data so shell markup

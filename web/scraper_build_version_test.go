@@ -13,7 +13,7 @@ func TestScraperVersionAlwaysReportsAnExactIdentity(t *testing.T) {
 	if strings.TrimSpace(version) == "" {
 		t.Fatal("ScraperVersion() is empty; the monitor would print a blank identity")
 	}
-	if version == "not recorded" {
+	if version == "not recorded" || version == "—" {
 		t.Fatal("ScraperVersion() returned the UI placeholder instead of a build identity")
 	}
 }

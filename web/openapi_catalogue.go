@@ -150,6 +150,7 @@ func localAPICatalogue() []localAPIOperation {
 		{Group: "Templates", Method: "POST", Path: "/api/v1/keyword-sets/{id}/delete", Summary: "Delete a keyword set"},
 		{Group: "Templates", Method: "POST", Path: "/api/v1/keyword-sets/{id}/use", Summary: "Record use of a keyword set"},
 		{Group: "Templates", Method: "GET", Path: "/api/v1/scrape-fields", Summary: "List the fields a scrape can collect"},
+		{Group: "Templates", Method: "GET", Path: "/api/v1/templates", Summary: "List reusable scrape templates"},
 		{Group: "Templates", Method: "POST", Path: "/api/v1/templates/import", Summary: "Import a scrape template"},
 		{Group: "Templates", Method: "POST", Path: "/api/v1/templates/parameters/preview", Summary: "Preview the queries a parameterised template expands to"},
 		{Group: "Templates", Method: "POST", Path: "/api/v1/templates/{id}/delete", Summary: "Delete a scrape template"},

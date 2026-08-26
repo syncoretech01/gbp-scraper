@@ -919,7 +919,7 @@ func (s *Server) loadAppBusinessDetail(r *http.Request) (appBusinessDetail, int,
 	for _, item := range detail.Websites {
 		page.Websites = append(page.Websites, appWebsiteView{
 			WebsiteView:     item,
-			HTTPStatusLabel: optionalIntLabel(item.HTTPStatus, "not recorded"),
+			HTTPStatusLabel: optionalIntLabel(item.HTTPStatus, "—"),
 			HTTPSLabel:      optionalBoolLabel(item.HTTPS, "not checked"),
 			TLSLabel:        optionalBoolLabel(item.TLSValid, "not checked"),
 			ResponseLabel:   optionalDurationLabel(item.ResponseTimeMS),
@@ -997,7 +997,7 @@ func optionalDurationLabel(value *int64) string {
 
 func resultOptionalTimeLabel(value *time.Time) string {
 	if value == nil {
-		return "not recorded"
+		return "—"
 	}
 	return appResultTime(*value)
 }
@@ -1028,7 +1028,7 @@ func newAppResultRow(result BusinessResult) appResultRow {
 	if result.Latitude != nil && result.Longitude != nil {
 		coordinates = fmt.Sprintf("%.6f, %.6f", *result.Latitude, *result.Longitude)
 	}
-	claimed := "not recorded"
+	claimed := "—"
 	if result.Claimed {
 		claimed = "claimed"
 	}
@@ -1170,7 +1170,7 @@ func newAppIdentityDetail(detail BusinessDetail) appIdentityDetail {
 	if method == "" {
 		return appIdentityDetail{}
 	}
-	confidence := "not recorded"
+	confidence := "—"
 	if detail.IdentityConfidence != nil {
 		confidence = fmt.Sprintf("%.0f%%", *detail.IdentityConfidence*100)
 	}
@@ -1393,7 +1393,7 @@ func intPercentage(value, total int64) int {
 
 func appResultTime(value time.Time) string {
 	if value.IsZero() || value.Unix() <= 0 {
-		return "not recorded"
+		return "—"
 	}
 
 	return value.Local().Format("Jan 2, 2006 15:04")

@@ -70,8 +70,8 @@ type dashboardPageData struct {
 	// WebsiteStatus splits the discovered websites into reachable, unreachable,
 	// and never-checked. It is deliberately separate from Availability: one
 	// answers "does the business have a website", the other "did ours load".
-	WebsiteStatus []dashboardAvailability
-	Cities        []dashboardChartPoint
+	WebsiteStatus    []dashboardAvailability
+	Cities           []dashboardChartPoint
 	Categories       []dashboardChartPoint
 	Statuses         []dashboardChartPoint
 	RatingBands      []dashboardChartPoint
@@ -465,7 +465,7 @@ func (s *Server) newScrapePage(w http.ResponseWriter, r *http.Request) {
 	}
 	s.renderAppPage(w, "new_scrape", appPageData{
 		Title:     "New scrape",
-		Subtitle:  "Configure a complete, local business-research job in seven guided steps.",
+		Subtitle:  "Set up a local business-research job. Basic asks for the search, the area, and nothing else.",
 		ActiveNav: "new-scrape",
 		Theme:     "system",
 		CSRFToken: s.csrfToken,
@@ -641,15 +641,15 @@ func (s *Server) buildDashboard(r *http.Request) (dashboardPageData, appActivity
 
 	page.Metrics.ActiveJobs = activity.Running
 	page.Metrics.QueuedJobs = activity.Queued
-	page.Metrics.PlacesPerMinute = "not recorded"
-	page.Metrics.AverageDuration = "not recorded"
+	page.Metrics.PlacesPerMinute = "—"
+	page.Metrics.AverageDuration = "—"
 	if totalRuntime > 0 {
 		page.Metrics.PlacesPerMinute = fmt.Sprintf("%.1f", float64(rateRecords)/totalRuntime.Minutes())
 	}
 	if runtimeJobs > 0 {
 		page.Metrics.AverageDuration = humanDuration(totalRuntime / time.Duration(runtimeJobs))
 	}
-	page.Metrics.DiskFree = "not available"
+	page.Metrics.DiskFree = "—"
 	if overview, overviewErr := s.svc.ResultOverview(r.Context()); overviewErr == nil {
 		page.Metrics.RawRecords = int(overview.RawRecords)
 		page.Metrics.UniqueBusinesses = int(overview.UniqueBusinesses)
@@ -691,7 +691,7 @@ func (s *Server) buildDashboard(r *http.Request) (dashboardPageData, appActivity
 		if analytics.Proxy.Total > 0 {
 			page.Metrics.ProxyLatency = fmt.Sprintf("%.0f ms", analytics.Proxy.AverageLatencyMS)
 		} else {
-			page.Metrics.ProxyLatency = "not configured"
+			page.Metrics.ProxyLatency = "—"
 		}
 	}
 
@@ -772,7 +772,7 @@ func (s *Server) buildDashboard(r *http.Request) (dashboardPageData, appActivity
 		page.Metrics.DatabaseSize = humanBytes(snapshot.DatabaseBytes)
 	}
 	if page.Metrics.DatabaseSize == "" {
-		page.Metrics.DatabaseSize = "not created"
+		page.Metrics.DatabaseSize = "—"
 	}
 	if storage, storageErr := s.workspaceStorageUsage(r.Context()); storageErr == nil {
 		page.Metrics.ExportStorage = humanBytes(storage.ExportsBytes)
@@ -1074,7 +1074,7 @@ func dashboardPoints(points []DashboardCountPoint) []dashboardChartPoint {
 
 func ratioLabel(numerator, denominator int64) string {
 	if denominator <= 0 {
-		return "not recorded"
+		return "—"
 	}
 
 	return fmt.Sprintf("%.1f%%", 100*float64(numerator)/float64(denominator))
@@ -1152,10 +1152,10 @@ func humanStage(stage jobruntime.Stage) string {
 func runtimeLabel(runtime JobRuntime) string {
 	if runtime.StartedAt == nil {
 		if runtime.State.Terminal() {
-			return "not recorded"
+			return "—"
 		}
 
-		return "not started"
+		return "—"
 	}
 
 	end := time.Now().UTC()
@@ -1165,7 +1165,7 @@ func runtimeLabel(runtime JobRuntime) string {
 
 	duration := end.Sub(*runtime.StartedAt)
 	if duration < 0 {
-		return "unknown"
+		return "—"
 	}
 
 	return duration.Round(time.Second).String()
@@ -1193,4 +1193,23 @@ func humanBytes(value int64) string {
 	}
 
 	return fmt.Sprintf("%.1f %ciB", float64(value)/float64(divisor), "KMGTPE"[exponent])
+}
+
+// appNotFoundPage renders an unknown /app address inside the shell.
+//
+// The Go mux's default answer is bare "404 page not found" text with no
+// styling, no navigation, and no way back — the one screen in the product that
+// abandoned the operator. This keeps the sidebar, the theme, and three ways to
+// continue, and still answers 404 so links and crawlers see the truth.
+func (s *Server) appNotFoundPage(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotFound)
+
+	s.renderAppPage(w, "not_found", appPageData{
+		Title:     "Page not found",
+		Subtitle:  "This address is not part of the workspace.",
+		ActiveNav: "",
+		Theme:     "system",
+		CSRFToken: s.csrfToken,
+		Page:      struct{ Path string }{Path: r.URL.Path},
+	})
 }

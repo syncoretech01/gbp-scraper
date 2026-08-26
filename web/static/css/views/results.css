@@ -214,9 +214,17 @@
    horizontal scrollbar even when the operator hid most columns. This view
    claims that rule: the table sizes to its visible columns and only scrolls
    once the chosen columns genuinely need more room. */
-.results-workspace .results-table { min-width: 52rem; }
+.results-workspace .results-table { min-width: 0; }
 
+/* The table owns its horizontal overflow, and `position: relative` is what
+   makes that true rather than merely intended. Without a positioned scroll
+   container the table's layout overflow propagates past the scroller all the
+   way to the document, which is how a 1280px window ended up reporting
+   scrollWidth 1359 against clientWidth 1265 and scrolling the whole shell
+   sideways. Positioning the wrapper stops the propagation at the scroller: the
+   table scrolls inside its own box and the shell never moves. */
 .results-workspace .results-table-wrap {
+    position: relative;
     max-height: max(22rem, calc(100dvh - 25rem));
     scrollbar-gutter: stable;
 }
@@ -250,12 +258,22 @@
 .results-workspace .results-table td,
 .results-workspace .results-table th { padding-inline: var(--space-3); }
 
-/* Column sizing. The business name is the only elastic column, so spare width
-   lands on the field the operator reads first instead of pooling in a dead
-   zone beside the badges. Every other column is capped and its cell truncates.
+/* Column sizing. app.css floors every data cell at 7rem, which quietly made
+   the narrow columns (tier, score, rating) 112px wide whatever this file
+   asked for and pushed the table past the window. The results table sets its
+   own floor and then states each column's width explicitly. */
+.results-workspace .results-table th,
+.results-workspace .results-table td { min-width: 0; }
+
+/* The business name is the only column left to size itself, so the width the
+   fixed columns do not claim lands on the field the operator reads first
+   instead of pooling into the unnamed gap that used to sit between the
+   contact badges and the row actions. A percentage here would be worse than
+   auto: a percentage column is satisfied first and starves every other column
+   down to its text. Every other column is capped and its cell truncates.
    Widths are declared on the header so a hidden column releases its share. */
 .results-workspace .results-table th[data-column="name"],
-.results-workspace .results-table td[data-column="name"] { width: 30%; min-width: 10rem; max-width: 21rem; }
+.results-workspace .results-table td[data-column="name"] { width: auto; min-width: 11rem; }
 .results-workspace .results-table th[data-column="category"],
 .results-workspace .results-table td[data-column="category"] { width: 10rem; max-width: 11rem; }
 .results-workspace .results-table th[data-column="location"],
@@ -263,38 +281,73 @@
 .results-workspace .results-table th[data-column="address"],
 .results-workspace .results-table td[data-column="address"] { width: 14rem; max-width: 16rem; }
 .results-workspace .results-table th[data-column="website"],
-.results-workspace .results-table td[data-column="website"] { width: 12rem; max-width: 13rem; }
+.results-workspace .results-table td[data-column="website"] { width: 13rem; max-width: 14rem; }
+/* One judgement cell: tier badge, website signal, score. It replaces three
+   columns, so it is allowed the width all three used to take. */
 .results-workspace .results-table th[data-column="prospect"],
-.results-workspace .results-table td[data-column="prospect"] { width: 7.5rem; max-width: 9rem; }
+.results-workspace .results-table td[data-column="prospect"] { width: 12rem; max-width: 13rem; }
 .results-workspace .results-table th[data-column="tier"],
-.results-workspace .results-table td[data-column="tier"] { width: 5rem; max-width: 6rem; }
+.results-workspace .results-table td[data-column="tier"] { width: 6rem; }
 .results-workspace .results-table th[data-column="score"],
-.results-workspace .results-table td[data-column="score"] { width: 4.5rem; max-width: 5.5rem; }
+.results-workspace .results-table td[data-column="score"] { width: 6rem; }
 .results-workspace .results-table th[data-column="contacts"],
-.results-workspace .results-table td[data-column="contacts"] { width: 8.5rem; max-width: 10rem; }
+.results-workspace .results-table td[data-column="contacts"] { width: 8rem; max-width: 9rem; }
 .results-workspace .results-table th[data-column="rating"],
-.results-workspace .results-table td[data-column="rating"] { width: 4.5rem; }
+.results-workspace .results-table td[data-column="rating"] { width: 4rem; }
 .results-workspace .results-table th[data-column="reviews"],
-.results-workspace .results-table td[data-column="reviews"] { width: 5rem; }
+.results-workspace .results-table td[data-column="reviews"] { width: 4.5rem; }
 .results-workspace .results-table th[data-column="quality"],
-.results-workspace .results-table td[data-column="quality"] { width: 5rem; }
+.results-workspace .results-table td[data-column="quality"] { width: 6rem; }
 .results-workspace .results-table th[data-column="workflow"],
-.results-workspace .results-table td[data-column="workflow"] { width: 6rem; }
+.results-workspace .results-table td[data-column="workflow"] { width: 5.5rem; }
 .results-workspace .results-table th[data-column="source"],
 .results-workspace .results-table td[data-column="source"] { width: 12rem; max-width: 14rem; }
 .results-workspace .results-table th[data-column="updated"],
 .results-workspace .results-table td[data-column="updated"] { width: 9rem; max-width: 10rem; }
 .results-workspace .results-table th[data-column="select"],
 .results-workspace .results-table td[data-column="select"] { width: 2.25rem; }
+/* Shrink-to-fit: the action cluster takes exactly the room its three controls
+   need, so nothing is left over to read as a blank column before them. */
 .results-workspace .results-table th[data-column="actions"],
-.results-workspace .results-table td[data-column="actions"] { width: 9rem; }
+.results-workspace .results-table td[data-column="actions"] { width: 1%; white-space: nowrap; }
+/* The columns behind the Columns dialog are sized too, so switching to the
+   Everything profile widens the table by a predictable amount instead of
+   letting one long description decide the layout. */
+.results-workspace .results-table th[data-column="description"],
+.results-workspace .results-table td[data-column="description"] { width: 16rem; max-width: 18rem; }
+.results-workspace .results-table th[data-column="street"],
+.results-workspace .results-table td[data-column="street"] { width: 11rem; max-width: 13rem; }
+.results-workspace .results-table th[data-column="emails"],
+.results-workspace .results-table td[data-column="emails"] { width: 13rem; max-width: 15rem; }
+.results-workspace .results-table th[data-column="coords"],
+.results-workspace .results-table td[data-column="coords"] { width: 10rem; max-width: 11rem; }
+.results-workspace .results-table th[data-column="identifiers"],
+.results-workspace .results-table td[data-column="identifiers"] { width: 11rem; max-width: 12rem; }
+.results-workspace .results-table th[data-column="technology"],
+.results-workspace .results-table td[data-column="technology"] { width: 11rem; max-width: 13rem; }
+.results-workspace .results-table th[data-column="ratings"],
+.results-workspace .results-table td[data-column="ratings"] { width: 11rem; max-width: 13rem; }
+.results-workspace .results-table th[data-column="notes"],
+.results-workspace .results-table td[data-column="notes"] { width: 11rem; max-width: 13rem; }
+.results-workspace .results-table th[data-column="checked"],
+.results-workspace .results-table td[data-column="checked"] { width: 9rem; }
+.results-workspace .results-table th[data-column="seen"],
+.results-workspace .results-table td[data-column="seen"] { width: 9rem; }
 
 .results-workspace .results-table .cell-clip { min-width: 0; overflow: hidden; }
 .results-workspace .results-table .cell-clip > .truncate { display: block; max-width: 100%; }
 
+/* `width: 0; min-width: 100%` is what makes the name column elastic in both
+   directions. Without it the column's minimum is the longest business name on
+   the page — 440px for one San Francisco dental practice — so the table could
+   never be narrower than its widest row and pushed a horizontal scrollbar into
+   a 1280px window. Contributing zero to the minimum and then filling whatever
+   the column is given lets the name take the spare width on a wide screen and
+   ellipsize on a narrow one. */
 .results-name {
     display: block;
-    max-width: 100%;
+    width: 0;
+    min-width: 100%;
     overflow: hidden;
     color: var(--text);
     font-weight: var(--weight-semibold);
@@ -310,6 +363,53 @@
 .cell-chips { display: inline-flex; align-items: center; gap: var(--space-1); }
 .cell-chips .badge { text-decoration: none; }
 .cell-chips a.badge:hover { text-decoration: underline; }
+
+/* The website cell leads with the domain — the fact — and carries the audit
+   state as a quiet suffix, so a set that has never been audited reads as a
+   list of domains rather than a column of "unknown". */
+.results-workspace .results-domain { flex: 0 1 auto; min-width: 0; }
+.results-cell-note {
+    flex: 0 0 auto;
+    color: var(--text-faint);
+    font-size: var(--text-2xs);
+    white-space: nowrap;
+}
+
+/* One prospect cell in place of Signal + Tier + Score: worth-calling tier,
+   the website signal behind it, and the score out of 100. */
+.results-prospect { display: inline-flex; align-items: center; gap: var(--space-1); max-width: 100%; min-width: 0; }
+.results-prospect .prospect-badge { overflow: hidden; text-overflow: ellipsis; }
+.results-prospect-score {
+    flex: 0 0 auto;
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+}
+
+/* Details, map pin, and open-site read as one control group rather than three
+   scattered buttons, and the group hugs the right edge of its own column. */
+.results-workspace .results-row-actions { flex-wrap: nowrap; gap: 1px; }
+.results-workspace .results-row-actions .button { border-radius: 0; }
+.results-workspace .results-row-actions > :first-child { border-start-start-radius: var(--radius-sm); border-end-start-radius: var(--radius-sm); }
+.results-workspace .results-row-actions > :last-child { border-start-end-radius: var(--radius-sm); border-end-end-radius: var(--radius-sm); }
+.results-workspace .results-row-actions .button-icon { padding-inline: var(--space-2); }
+
+/* The missing analysis, named once and offered as an action, instead of
+   "Not scored" repeated down three columns. */
+.results-score-cta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2) var(--space-4);
+    padding: var(--space-2) var(--space-4);
+    border: 1px solid var(--primary-border);
+    border-radius: var(--radius-md);
+    background: var(--primary-soft);
+}
+
+.results-score-cta-copy { display: grid; gap: .1rem; flex: 1 1 20rem; min-width: 0; }
+.results-score-cta-copy strong { color: var(--text); font-size: var(--text-sm); }
+.results-score-cta-copy span { color: var(--text-muted); font-size: var(--text-xs); }
 
 /* ---------------------------------------------------------------------------
    Detail drawer location card — the drawer frames Map Explorer rather than
@@ -514,29 +614,42 @@
 /* ---------------------------------------------------------------------------
    Responsive
    --------------------------------------------------------------------------- */
+/* On a wide screen the spare width is spent on the columns that carry data
+   rather than pooled entirely into the name, which is elastic and would
+   otherwise take all of it. */
+@media (min-width: 100rem) {
+    .results-workspace .results-table th[data-column="category"],
+    .results-workspace .results-table td[data-column="category"] { width: 12rem; max-width: 13rem; }
+    .results-workspace .results-table th[data-column="location"],
+    .results-workspace .results-table td[data-column="location"] { width: 11rem; max-width: 12rem; }
+    .results-workspace .results-table th[data-column="website"],
+    .results-workspace .results-table td[data-column="website"] { width: 16rem; max-width: 17rem; }
+    .results-workspace .results-table th[data-column="contacts"],
+    .results-workspace .results-table td[data-column="contacts"] { width: 10rem; max-width: 11rem; }
+    .results-workspace .results-table th[data-column="prospect"],
+    .results-workspace .results-table td[data-column="prospect"] { width: 14rem; max-width: 15rem; }
+}
+
 @media (max-width: 90rem) {
     .results-command-chips .chip-static { max-width: 16rem; }
     .results-select { max-width: 9.5rem; }
 
-    /* Trim the padded columns first so the default prospecting profile still
-       fits a 1280px window without the actions column falling off the edge. */
-    .results-workspace .results-table { min-width: 44rem; }
+    /* Trim the padded columns first so the default working set still fits a
+       1280px window without the actions column falling off the edge. The name
+       column stays elastic: it gives back width here rather than being
+       capped, because it is the column worth reading. */
     .results-workspace .results-table th[data-column="name"],
-    .results-workspace .results-table td[data-column="name"] { min-width: 9rem; max-width: 13.5rem; }
+    .results-workspace .results-table td[data-column="name"] { min-width: 10rem; }
+    .results-workspace .results-table th[data-column="category"],
+    .results-workspace .results-table td[data-column="category"] { width: 8rem; max-width: 9rem; }
     .results-workspace .results-table th[data-column="location"],
     .results-workspace .results-table td[data-column="location"] { width: 7.5rem; max-width: 8.5rem; }
     .results-workspace .results-table th[data-column="website"],
-    .results-workspace .results-table td[data-column="website"] { width: 9rem; max-width: 10rem; }
+    .results-workspace .results-table td[data-column="website"] { width: 10.5rem; max-width: 11.5rem; }
     .results-workspace .results-table th[data-column="prospect"],
-    .results-workspace .results-table td[data-column="prospect"] { width: 7rem; max-width: 8rem; }
-    .results-workspace .results-table th[data-column="tier"],
-    .results-workspace .results-table td[data-column="tier"] { width: 4.5rem; }
-    .results-workspace .results-table th[data-column="score"],
-    .results-workspace .results-table td[data-column="score"] { width: 4rem; }
+    .results-workspace .results-table td[data-column="prospect"] { width: 10.5rem; max-width: 11.5rem; }
     .results-workspace .results-table th[data-column="contacts"],
     .results-workspace .results-table td[data-column="contacts"] { width: 7rem; }
-    .results-workspace .results-table th[data-column="actions"],
-    .results-workspace .results-table td[data-column="actions"] { width: 8rem; }
 }
 
 @media (max-width: 75rem) {

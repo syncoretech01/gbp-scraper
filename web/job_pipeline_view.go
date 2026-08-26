@@ -11,7 +11,7 @@ import (
 // notReported is the single phrase the pipeline uses for evidence the worker
 // has not published yet. Keeping it in one place is what lets app-monitor.js
 // style every such value as an empty state instead of as data.
-const notReported = "not reported yet"
+const notReported = "—"
 
 // jobPipelineMetric is one named measurement inside a pipeline stage. Label is
 // the specification's own wording so an operator can match the console to the

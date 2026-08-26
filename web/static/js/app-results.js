@@ -7,6 +7,13 @@
     const currentLayoutKey = "gmaps-results-layout-v1";
     const namedLayoutsKey = "gmaps-results-layouts-v1";
     const columnProfileKey = "gmaps-results-profile-v1";
+    // The stored working set carries a schema version. It moved to 2 when the
+    // three prospect columns collapsed into one: a layout saved before that
+    // pins the old "Signal / Tier / Score" trio, which is exactly the empty
+    // analysis this view stopped opening on. An older stamp is dropped in
+    // favour of the current default; named layouts are untouched, so nothing
+    // the operator deliberately saved is lost.
+    const layoutSchemaVersion = 2;
     const maximumNamedLayouts = 12;
     const maximumStorageBytes = 64 * 1024;
     const maximumClipboardBytes = 1024 * 1024;
@@ -56,14 +63,24 @@
     // machinery. "select", "name", and "actions" are implicit in every profile
     // because a row is unusable without them.
     const alwaysVisibleColumns = ["select", "name", "actions"];
+    // The prospect column carries tier, website signal, and score in one cell,
+    // so the prospecting profile no longer needs the separate "tier" and
+    // "score" columns to say the same thing three times. Both stay one click
+    // away in the Columns dialog, and both stay sortable.
     const columnProfiles = [
-        { id: "prospecting", label: "Prospecting", columns: ["location", "website", "prospect", "tier", "score", "contacts"] },
+        { id: "leads", label: "Lead review", columns: ["category", "location", "website", "contacts", "rating"] },
+        { id: "prospecting", label: "Prospecting", columns: ["location", "website", "prospect", "contacts", "rating"] },
         { id: "contact", label: "Contact", columns: ["category", "location", "contacts", "website", "workflow"] },
         { id: "quality", label: "Quality", columns: ["category", "rating", "reviews", "quality", "workflow", "source", "updated"] },
         { id: "geo", label: "Geography", columns: ["category", "location", "address", "source", "updated"] },
         { id: "everything", label: "Everything", columns: knownColumnKeys.slice() }
     ];
-    const defaultProfileID = "prospecting";
+    // A column that reads "Not scored" on every row is a column of nothing, so
+    // the prospect judgement only leads the default view once at least one
+    // business on the page has actually been scored. The server states that in
+    // the markup; nothing here has to scan the table for it.
+    const hasProspectScores = explorer.dataset.hasProspectScores === "true";
+    const defaultProfileID = hasProspectScores ? "prospecting" : "leads";
 
     function profileColumns(id) {
         const profile = columnProfiles.find((candidate) => candidate.id === id);
@@ -84,11 +101,20 @@
     // A saved view may carry its own visible columns and grouping. When the
     // URL supplies them they win over whatever this browser last stored, so
     // opening a shared view shows the table the view was saved with.
+    // readCurrentLayout returns this browser's stored working set only while it
+    // still describes the current column model.
+    function readCurrentLayout() {
+        const stored = readStoredJSON(currentLayoutKey);
+        if (!stored || Number(stored.version) !== layoutSchemaVersion) return null;
+
+        return stored;
+    }
+
     function savedViewLayout() {
         const columns = String(explorer.dataset.viewColumns || "").split(",").filter(Boolean);
         const group = String(explorer.dataset.viewGroup || "").trim();
         if (!columns.length && !group) return null;
-        const base = readStoredJSON(currentLayoutKey) || defaultLayout;
+        const base = readCurrentLayout() || defaultLayout;
         const seeded = Object.assign({}, base);
         if (columns.length) {
             seeded.order = columns.concat(knownColumnKeys.filter((key) => !columns.includes(key)));
@@ -98,7 +124,7 @@
         return seeded;
     }
 
-    let layout = normalizeLayout(savedViewLayout() || readStoredJSON(currentLayoutKey) || defaultLayout);
+    let layout = normalizeLayout(savedViewLayout() || readCurrentLayout() || defaultLayout);
     let activeLayoutName = "";
 
     resultRows().forEach((row, index) => { row.dataset.originalIndex = String(index); });
@@ -174,6 +200,7 @@
 
     function serializeLayout(value) {
         return {
+            version: layoutSchemaVersion,
             order: value.order.slice(),
             visible: value.visible.slice(),
             frozen: value.frozen.slice(),
@@ -354,7 +381,7 @@
     }
 
     function restoreStoredProfile() {
-        if (readStoredJSON(currentLayoutKey)) return;
+        if (readCurrentLayout()) return;
         const stored = readStorage(columnProfileKey);
         const id = columnProfiles.some((profile) => profile.id === stored) ? stored : defaultProfileID;
         layout.visible = profileColumns(id);
@@ -1299,15 +1326,31 @@
             cell.dataset.copyValue = value;
             if (row) row.dataset.groupCategory = value;
         } else if (field === "website") {
+            // The cell leads with the domain and carries the audit state as a
+            // suffix, so a correction rewrites the domain in place and keeps
+            // the "No website" placeholder in step with whether one exists.
             const host = hostOf(value);
-            const stack = cell.querySelector(".cell-stack");
-            let target = stack ? stack.querySelector(".text-muted") : null;
-            if (stack && !target) {
+            const stack = cell.querySelector(".cell-stack") || cell;
+            let target = stack.querySelector(".results-domain");
+            if (!target) {
                 target = document.createElement("span");
-                target.className = "truncate text-muted";
-                stack.appendChild(target);
+                target.className = "truncate results-domain";
+                stack.insertBefore(target, stack.firstChild);
             }
-            if (target) target.textContent = host;
+            target.textContent = host;
+            target.hidden = !host;
+            const placeholder = stack.querySelector(".results-website-empty");
+            if (placeholder) placeholder.hidden = Boolean(host);
+            else if (!host) {
+                const missing = document.createElement("span");
+                missing.className = "empty-inline results-website-empty";
+                missing.textContent = "No website";
+                // The placeholder stands where the domain stood, ahead of the
+                // audit chip, so a cleared website still reads left to right.
+                stack.insertBefore(missing, target.nextSibling);
+            }
+            const note = stack.querySelector(".results-cell-note");
+            if (note) note.hidden = !host;
             cell.dataset.copyValue = host;
             if (row) { row.dataset.website = value; row.dataset.domain = host; }
         } else if (field === "phone") {
@@ -1513,6 +1556,51 @@
         }
     }
 
+    // scoreProspects fills in the analysis the table is missing rather than
+    // printing "Not scored" down three columns. A tier is decided from website
+    // evidence, so where the workspace can audit websites this queues the same
+    // bounded homepage check the bulk toolbar runs — each stored audit
+    // reclassifies its business — and otherwise it rescores from the evidence
+    // already stored. Both are existing routes with existing payload shapes.
+    async function scoreProspects(trigger) {
+        const ids = resultRows().map((row) => row.dataset.businessId).filter(Boolean);
+        if (!ids.length) return;
+        const enrich = trigger.dataset.mode === "enrich";
+        const endpoint = enrich ? "/api/v1/results/enrich" : "/api/v1/prospects/recompute";
+        const body = enrich ? { ids: ids, options: { preclassify: true } } : { ids: ids };
+        const csrf = explorer.querySelector('[name="csrf_token"]');
+        trigger.disabled = true;
+        announce((enrich ? "Checking " : "Scoring ") + ids.length + " business" + (ids.length === 1 ? "" : "es") + "…", "info");
+        try {
+            const response = await fetch(endpoint, {
+                method: "POST",
+                credentials: "same-origin",
+                headers: {
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "X-CSRF-Token": csrf ? csrf.value : ""
+                },
+                body: JSON.stringify(body)
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error((payload.error && payload.error.message) || payload.message || "Could not rank these businesses.");
+            if (enrich) {
+                const queued = Number(payload.meta && payload.meta.queued) || ids.length;
+                announce("Website checks queued for " + queued + " business" + (queued === 1 ? "" : "es") +
+                    ". Tiers appear as each check finishes; this page refreshes in a moment.");
+                window.setTimeout(() => window.location.reload(), 6500);
+
+                return;
+            }
+            const processed = Number(payload.data && payload.data.processed) || 0;
+            announce("Scored " + processed + " business" + (processed === 1 ? "" : "es") + ". Reloading the table.");
+            window.setTimeout(() => window.location.reload(), 800);
+        } catch (error) {
+            trigger.disabled = false;
+            announce(error.message || "Could not rank these businesses.", "error");
+        }
+    }
+
     explorer.addEventListener("change", (event) => {
         if (event.target.matches("[data-select-all]")) {
             selectionCheckboxes.forEach((item) => { item.checked = event.target.checked; });
@@ -1627,6 +1715,9 @@
         } else if (action === "preclassify-selected") {
             event.preventDefault();
             preclassifySelected(trigger);
+        } else if (action === "score-prospects") {
+            event.preventDefault();
+            scoreProspects(trigger);
         } else if (action === "export-selected") {
             event.preventDefault();
             exportSelected();

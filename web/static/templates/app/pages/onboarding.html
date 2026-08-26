@@ -1,3 +1,12 @@
+{{/*
+Setup and help — the first page a new workspace sends people to, and the page
+the Dashboard's first-run state links out to.
+
+It answers three questions in order: is this machine ready, how does the whole
+loop work, and what should the very first run look like. Every class here comes
+from app.css or the onboarding rules in views/discovery.css; this page adds no
+stylesheet of its own.
+*/}}
 {{define "app/page/onboarding"}}{{template "app/layout" .}}{{end}}
 
 {{define "app/page-actions"}}<div class="page-actions"><form action="/api/v1/onboarding/self-test" method="post"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button" type="submit">Run live self-test</button></form>{{if .Page.Complete}}<a class="button button-primary" href="/app/dashboard">Dashboard</a>{{else}}<form action="/api/v1/onboarding/complete" method="post"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button button-primary" type="submit">Finish setup</button></form>{{end}}</div>{{end}}
@@ -28,21 +37,34 @@
         </div>
     </section>
 
-    <section class="grid grid-3" id="scrape-help">
-        <article class="card"><div class="card-body"><h2 class="t-section">San Francisco coverage</h2><p class="t-caption">Use centre 37.7749, -122.4194, 10,000 m extent, zoom 12, and 2.5 km grid cells. Grid mode covers an area; Fast Mode applies a strict radius and returns fewer fields.</p><p><a href="/app/scrapes/new">Open the configured wizard</a></p></div></article>
-        <article class="card"><div class="card-body"><h2 class="t-section">Why a job is Partial</h2><p class="t-caption">The runtime limit, user pause, shutdown recovery, or incomplete tasks can stop work safely. Committed CSV and SQLite rows remain downloadable and retries merge with earlier output.</p><p><a href="/app/jobs">Inspect jobs</a></p></div></article>
-        <article class="card"><div class="card-body"><h2 class="t-section">Data ownership</h2><p class="t-caption">The database, compatible CSVs, exports, backups, logs, and encrypted proxy records stay under the mounted local data directory.</p><p><a href="/app/system">Inspect storage and backups</a></p></div></article>
+    <section class="card" id="scrape-help">
+        <div class="card-header"><div><h2>How a scrape works</h2><p>Five stages, start to finish. Nothing leaves this machine at any point.</p></div></div>
+        <div class="card-body">
+            <ol class="onboarding-steps">
+                <li><span><strong>Create the search.</strong> Name it, say where to look, and choose how thoroughly to cover the area. <a href="/app/scrapes/new">Open the wizard</a>.</span></li>
+                <li><span><strong>Run it here.</strong> The job joins a local queue and starts when a worker is free. You can close the browser; the run keeps going.</span></li>
+                <li><span><strong>Watch and steer.</strong> Live progress per stage, with pause, stop, and download-partial-CSV available at any moment. <a href="/app/jobs">Inspect jobs</a>.</span></li>
+                <li><span><strong>Work the results.</strong> Filter, de-duplicate, and open any business for its contacts, website audit, and provenance. <a href="/app/results">Open Results</a>.</span></li>
+                <li><span><strong>Export what you keep.</strong> Send a filtered selection to CSV or XLSX, written into your local data folder. <a href="/app/exports">Open Exports</a>.</span></li>
+            </ol>
+        </div>
+    </section>
+
+    <section class="grid grid-3">
+        <article class="card"><div class="card-body"><h2 class="t-section">Fast mode or Thorough mode</h2><p class="t-caption"><strong>Fast mode</strong> is quick and uses no map grid: one pass per query inside a radius, fewer fields, and far less time. <strong>Thorough mode</strong> walks a grid of areas across the whole region for full map coverage, which is slower but finds places a single pass misses. Start with Fast mode.</p><p><a href="/app/scrapes/new">Choose a mode</a></p></div></article>
+        <article class="card"><div class="card-body"><h2 class="t-section">&ldquo;Stopped early&rdquo; is not data loss</h2><p class="t-caption">A run can stop early because it hit the <strong>Stop after</strong> limit, because you paused it, because the app shut down, or because some searches did not finish. Every committed row is already on disk: the CSV and the database rows stay downloadable, and a retry merges into the same output rather than replacing it.</p><p><a href="/app/jobs">Inspect jobs</a></p></div></article>
+        <article class="card"><div class="card-body"><h2 class="t-section">Your data stays yours</h2><p class="t-caption">The database, compatible CSVs, exports, backups, logs, and encrypted proxy records all live under the mounted local data directory. Back it up like any other folder; nothing is synced anywhere.</p><p><a href="/app/system">Inspect storage and backups</a></p></div></article>
     </section>
 
     <section class="card">
-        <div class="card-header"><div><h2>Practical first run</h2><p>Collect broadly before enabling website crawling.</p></div></div>
+        <div class="card-header"><div><h2>What a good first run looks like</h2><p>Collect broadly first. Enrichment is cheap to add later and expensive to wait for now.</p></div></div>
         <div class="card-body">
             <ol class="onboarding-steps">
-                <li><span>Keep the San Francisco dentist preset and normal grid mode.</span></li>
-                <li><span>Leave email extraction off for the first pass.</span></li>
-                <li><span>Use a 60-90 minute maximum runtime.</span></li>
-                <li><span>Watch the live job monitor and download partial CSV at any time.</span></li>
-                <li><span>Filter and export normalized records from Results.</span></li>
+                <li><span>Keep the example search and leave it in <strong>Fast mode</strong> for the first pass.</span></li>
+                <li><span>Leave website crawling and email extraction off until you have seen the raw list.</span></li>
+                <li><span>Set <strong>Stop after</strong> to 60&ndash;90 minutes so the first run cannot surprise you.</span></li>
+                <li><span>Watch the live monitor and download the partial CSV whenever you want a look.</span></li>
+                <li><span>Filter and export the normalized records from Results.</span></li>
             </ol>
         </div>
     </section>
