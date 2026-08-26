@@ -8,6 +8,7 @@ import (
 	"io"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -348,20 +349,37 @@ func TestWorkerContinuesToPollJobsAfterScheduleFailure(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	repository := &scheduleFailureRepo{cancelAfterSelect: cancel}
+	defer cancel()
+
+	repository := &scheduleFailureRepo{}
 	worker := &webrunner{
-		svc: web.NewService(repository, t.TempDir()),
-		cfg: &runner.Config{DataFolder: t.TempDir(), Concurrency: 1},
+		svc:          web.NewService(repository, t.TempDir()),
+		cfg:          &runner.Config{DataFolder: t.TempDir(), Concurrency: 1},
+		containment:  newEngineContainment(),
+		pollInterval: 5 * time.Millisecond,
 	}
 
-	if err := worker.work(ctx); err != nil {
-		t.Fatalf("work() error = %v", err)
+	// Housekeeping (which hits the failing schedule store) and job dispatch
+	// now run in separate loops; a schedule failure must not stop job polls.
+	done := make(chan struct{}, 2)
+	go func() { _ = worker.housekeepingLoop(ctx); done <- struct{}{} }()
+	go func() { _ = worker.jobLoop(ctx); done <- struct{}{} }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) &&
+		(repository.schedulePolls.Load() < 1 || repository.jobPolls.Load() < 1) {
+		time.Sleep(5 * time.Millisecond)
 	}
-	if repository.schedulePolls != 1 {
-		t.Fatalf("schedule polls = %d, want 1", repository.schedulePolls)
+
+	cancel()
+	<-done
+	<-done
+
+	if repository.schedulePolls.Load() < 1 {
+		t.Fatalf("schedule polls = %d, want at least 1", repository.schedulePolls.Load())
 	}
-	if repository.jobPolls != 1 {
-		t.Fatalf("job polls = %d, want 1 after the schedule error", repository.jobPolls)
+	if repository.jobPolls.Load() < 1 {
+		t.Fatalf("job polls = %d, want at least 1 despite the schedule error", repository.jobPolls.Load())
 	}
 }
 
@@ -449,16 +467,12 @@ type memoryJobRepo struct {
 
 type scheduleFailureRepo struct {
 	memoryJobRepo
-	cancelAfterSelect context.CancelFunc
-	schedulePolls     int
-	jobPolls          int
+	schedulePolls atomic.Int32
+	jobPolls      atomic.Int32
 }
 
 func (r *scheduleFailureRepo) Select(context.Context, web.SelectParams) ([]web.Job, error) {
-	r.jobPolls++
-	if r.cancelAfterSelect != nil {
-		r.cancelAfterSelect()
-	}
+	r.jobPolls.Add(1)
 
 	return nil, nil
 }
@@ -488,7 +502,7 @@ func (r *scheduleFailureRepo) RunScheduleNow(context.Context, string, time.Time)
 }
 
 func (r *scheduleFailureRepo) StartDueSchedules(context.Context, time.Time, int) ([]web.Job, error) {
-	r.schedulePolls++
+	r.schedulePolls.Add(1)
 
 	return nil, errors.New("synthetic schedule failure")
 }

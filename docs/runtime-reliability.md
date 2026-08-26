@@ -154,6 +154,149 @@ bounded at deadline + 90s, instead of unbounded.
    two-worker browser job reported one browser, and Fast mode, which launches no
    browser at all, reported one.
 
+## The runtime-safety closure pass
+
+A final focused pass audited five loose ends the acceptance work exposed. Every
+item below was independently audited with file-level evidence, fixed, and
+covered by deterministic tests.
+
+### 1. The browser budget is now denominated in browsers
+
+**Confirmed defect.** The memory mechanism above capped WORKERS (3GiB per
+worker) while the cost is per BROWSER: each worker's engine derives its pool as
+ceil(concurrency/pages), so with pool and pages unset the browser total equals
+the concurrency budget no matter how few workers carry it. The matrix measured
+it: requested concurrency 4 planned as 2x2 and as 1x4 — four browsers either
+way. The worker cap redistributed browsers; it could not reduce them.
+
+The fix budgets the unit that costs memory. `browserProcessBudget` computes
+
+```
+budget = (available_memory - 1.5GiB reserve) / 600MiB per browser, floor 1
+```
+
+(600MiB is the live per-browser band's midpoint; the synthetic floor was
+~300MB). `planTaskPool` then enforces `workers x per-worker-pool <= budget` by
+setting the per-task browser pool explicitly — the engine honours it verbatim,
+and concurrency above the pool queues harmlessly on the engine's slot channel
+instead of launching browsers. When the pool is clamped, pages-per-browser is
+raised (soft cap 4) so the requested Maps-operation concurrency is preserved.
+There is no arbitrary upper constant: a large host earns a large budget and is
+clamped by demand. Inside a memory-limited container the sample now reads the
+cgroup limit (v2 and v1) instead of the host's rosy `/proc/meminfo`. The cap
+lowers explicit operator values too — an OOM kill loses the whole run no matter
+who chose the number — but doing so records a `capacity-capped` event naming
+requested vs granted and the full arithmetic. The task-pool announcement event
+now carries workers, per-task concurrency, per-task pool, pages, planned
+browsers, and the budget inputs, and the progress row's requested/effective
+pair are both concurrency, like for like.
+
+### 2. Engine-shutdown containment: abandoned resources are reclaimed
+
+**Upstream limitation, now safely contained.** `awaitEngine` (above) bounds the
+WAIT on a wedged teardown; this pass bounds the ACCUMULATION. One abandoned
+engine strands its Chromium processes (~300MB each), its Playwright Node
+driver, a CSV file handle and a few parked goroutines — and the stranded
+browsers inflate the browser census, which vetoes adaptive recovery for later
+jobs. The audit proved the unwedge lever: killing the engine's Node driver
+closes the driver transport, playwright-go aborts every pending protocol call,
+and the whole teardown chain finally returns.
+
+Containment has three parts, and the vocabulary is deliberate:
+
+- **engine-shutdown-timeout** (existing event) is the upstream failure.
+- **engine-abandoned** marks OUR containment action: the leftovers are
+  registered in a containment registry, watched by a detached monitor, and
+  counted (`worker-recycle-recommended` fires at two or more).
+- **engine-killed / engine-reclaimed**: at the next safe point — no engine
+  legitimately active — the janitor scans the process table for orphaned
+  `run-driver` Node processes and browser processes whose parent chain reaches
+  this process, kills the drivers first (the unwedge trigger), waits briefly,
+  kills surviving browsers (reaping them when running as PID 1), and the
+  monitor then closes the file handle and deletes the orphaned run file.
+
+An operator's own Chrome or Node is never a candidate: selection requires the
+parent chain to reach the scraper process. Two adjacent upstream leaks found in
+passing (a signal-wait goroutine per engine start, and an unclosed proxy-auth
+listener per credentialed-proxy task) are unfixable from this repo and recorded
+in `docs/technical-limitations.md`.
+
+### 3. Task finishes now verify lease ownership
+
+**Confirmed defect.** The lease protocol's invariant comment promised that
+"finishing verifies ownership", but `finishJobTask`'s UPDATE matched only
+`state='running'` — no owner predicate. A stale worker whose lease expired and
+was reclaimed could mark the new owner's task completed (with a stale
+checkpoint) or flip it back to pending, letting a third worker run it
+concurrently. Proven RED->GREEN: with the guard removed, the stale-owner test
+observes the silent overwrite. Completion and failure now go through
+`CompleteJobTaskAs` / `FailJobTaskAs`, the UPDATE carries `AND lease_owner=?`,
+a refused write rolls the whole transaction back and returns
+`ErrCheckpointLeaseLost`, and the pool records a `task-lease-lost` event and
+discards the stale output instead of overwriting the new owner's state. Success
+is counted for the adaptive window only after the commit lands.
+
+### 4. Expired-lease reclaim is wired into every lifecycle path
+
+**Confirmed defect (dead code).** `ReclaimExpiredJobTasks` had no production
+caller: reclaim ran only inside the claim path, which stops exactly when the
+pool stops claiming. A `running` row with an expired lease on a paused, partial
+or cancelled job was reclaimed by NOTHING — a phantom running task forever.
+Reclaim now runs in four places: the pool supervisor every 30s (a healthy
+worker heartbeats every 20s against a 90s lease and can never be reclaimed),
+an end-of-pool sweep after the plan drains, a startup sweep
+(`ReclaimStaleJobTasks`) covering jobs outside `RecoverAbandonedJobs`' active
+filter, and the claim path as before. Terminal task writes also get a bounded
+retry so a transient storage error no longer strands the row in the first
+place. Double-claim safety was proven under concurrent reclaim+claim: the
+single serialized SQLite connection plus the conditional UPDATE admit exactly
+one owner.
+
+### 5. The scheduler no longer serializes behind a job
+
+**Confirmed defect.** One goroutine ran heartbeat, schedule materialization,
+job execution and the enrichment pump in sequence, so during EVERY job run the
+scheduler heartbeat went stale (the System page said so), due schedules did not
+materialize (skip-policy schedules recorded bogus "missed" entries after a
+minute), and a transient job-select error killed the whole application via the
+errgroup. Housekeeping and job execution are now separate loops: heartbeat and
+schedules tick through any job, however long; the job loop remains the single
+execution slot (single-job-at-a-time is the product's documented invariant, and
+its single-threadedness is the duplicate-launch guard); a transient select
+error logs and retries instead of killing the app. The enrichment pump stays at
+the job loop's tail so enrichment browsers never overlap scrape browsers. A
+deterministic test blocks a job forever and watches schedules keep flowing.
+
+### 6. Enrichment's discovery deficit: cause found
+
+**Confirmed behaviour, with two real defects fixed.** The observed 51-vs-66/64
+deficit was NOT run-to-run variance. Controlled interleaved repetitions of the
+identical 4-cell workload measured:
+
+| Arm | Unique businesses | Wall | Tasks | Final |
+| --- | --- | --- | --- | --- |
+| OFF | 66 / 64 / 65 / 65 | 272-315s | 4/4 each | completed |
+| ON | 51 / 50 / 56 | 712 / 903 / 912s | 4/4, 2/4, 3/4 | completed, then partial (runtime_limit) twice |
+
+The OFF arm is tight to within +/-1; the ON arm is short every time. The code
+path explains it: with enrichment on, every place with a website has its CSV
+row DEFERRED behind an arbitrary-site email fetch (the row is written only when
+the email job finishes), the per-place job count roughly doubles, and the wall
+time inflates ~3x — so bounded runtime windows close on unfinished work, and a
+cancellation that lands between a place's discovery and its deferred write
+loses the row. Worse, two silent-loss paths recorded truncated tasks as
+successes. Fixed in this pass: the default runtime window now models
+enrichment's doubled per-seed cost (an explicit MaxTime still overrides); a
+task cancelled with found places uncommitted now fails resumably as
+`task-truncated` instead of completing silently short; and `task-truncated` /
+`cell-empty` events make both loss shapes first-class evidence. What is NOT
+changed: email-job priority (deliberately high, to drain the deferred-row
+backlog first) and the identity model (emails never affect merge identity —
+proven, so the deficit could not have come from import). The residual truth an
+operator must know: **enrichment trades wall time for emails, and under a hard
+MaxTime that trade can cost coverage — the job now says so honestly instead of
+completing short in silence.**
+
 ## Fast mode vs browser mode
 
 **Fast mode** is a pure-HTTP stealth fetcher — no browser at all. It cannot

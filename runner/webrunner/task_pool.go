@@ -98,19 +98,49 @@ type taskPoolPlan struct {
 	Workers            int
 	PerTaskConcurrency int
 	PerTaskBrowserPool int
+	// PerTaskPages is the pages-per-browser each worker's app runs with. It is
+	// raised above the job's configured value only when the browser budget
+	// clamped the pool, so the concurrency the operator asked for still fits
+	// into fewer browsers instead of being cut.
+	PerTaskPages int
+	// BrowserBudgetTotal echoes the memory-derived browser budget the plan was
+	// bounded by (zero in Fast mode), so events can show the arithmetic.
+	BrowserBudgetTotal int
+	// CappedExplicit is true when a physical cap lowered a value the operator
+	// set explicitly (TaskWorkers or BrowserPool); the caller records it.
+	CappedExplicit bool
+}
+
+// PlannedBrowsers is the number of Chromium processes this plan launches:
+// every worker runs its own app whose pool is PerTaskBrowserPool when set,
+// else derived by the engine as ceil(concurrency/pages), never below one.
+func (p taskPoolPlan) PlannedBrowsers() int {
+	perWorker := p.PerTaskBrowserPool
+	if perWorker <= 0 {
+		pages := max(1, p.PerTaskPages)
+		perWorker = (p.PerTaskConcurrency + pages - 1) / pages
+	}
+
+	return p.Workers * max(1, perWorker)
 }
 
 // planTaskPool resolves the worker/concurrency/browser split for one run.
 //
-// browserWorkerBudget caps the DEFAULT worker count for browser-mode jobs to
-// what the host's measured memory can support (see browserModeWorkerBudget). It
-// applies only when the job leaves TaskWorkers unset: an explicit choice is
-// preserved exactly, and Fast mode passes zero so its pure-HTTP throughput is
-// never penalised for the browser problem.
-func planTaskPool(job *web.Job, effectiveConcurrency, pendingTasks, browserWorkerBudget int) taskPoolPlan {
+// browserWorkerBudget caps the worker count for browser-mode jobs to what the
+// host's measured memory can support (see browserModeWorkerBudget); it lowers
+// an explicit TaskWorkers too, because the memory ceiling is physical.
+// browserBudgetTotal bounds the browser TOTAL (workers x per-worker pool) to
+// the memory-derived browser-process budget (see browserProcessBudget). Fast
+// mode passes zero for both so its pure-HTTP throughput is never penalised for
+// the browser problem. The enforced invariant, tested by the pool tests:
+//
+//	FastMode || Workers * browsersPerWorker <= max(browserBudgetTotal, 1)
+func planTaskPool(job *web.Job, effectiveConcurrency, pendingTasks, browserWorkerBudget, browserBudgetTotal int) taskPoolPlan {
 	if effectiveConcurrency < 1 {
 		effectiveConcurrency = 1
 	}
+
+	cappedExplicit := false
 
 	workers := job.Data.TaskWorkers
 	if workers <= 0 {
@@ -136,6 +166,17 @@ func planTaskPool(job *web.Job, effectiveConcurrency, pendingTasks, browserWorke
 		// lowers an explicit value, never raises it, and Fast mode passes zero
 		// here so its higher fan-out is untouched.
 		workers = browserWorkerBudget
+		cappedExplicit = true
+	}
+
+	// The browser budget bounds the browser TOTAL, so it also bounds workers:
+	// each worker holds at least one browser open.
+	if browserBudgetTotal > 0 && workers > browserBudgetTotal {
+		if job.Data.TaskWorkers > browserBudgetTotal {
+			cappedExplicit = true
+		}
+
+		workers = browserBudgetTotal
 	}
 
 	if workers > web.MaximumJobTaskWorkers {
@@ -153,14 +194,65 @@ func planTaskPool(job *web.Job, effectiveConcurrency, pendingTasks, browserWorke
 	plan := taskPoolPlan{
 		Workers:            workers,
 		PerTaskConcurrency: max(1, effectiveConcurrency/workers),
+		PerTaskPages:       job.Data.PagesBrowser,
+		BrowserBudgetTotal: browserBudgetTotal,
+		CappedExplicit:     cappedExplicit,
 	}
 
 	if job.Data.BrowserPool > 0 {
 		plan.PerTaskBrowserPool = max(1, job.Data.BrowserPool/workers)
 	}
 
+	// Browser mode: bound the browser TOTAL, not just the worker count. Each
+	// worker's app derives its pool as ceil(concurrency/pages) when no explicit
+	// pool is set, so with defaults the browser total equals the concurrency
+	// budget no matter how few workers carry it — the incident class the two
+	// live 2x2=4 and 1x4=4 observations proved. Setting PerTaskBrowserPool
+	// explicitly is the enforcement seam: the engine honours it verbatim, and
+	// fetch workers beyond the pool block on the slot channel instead of
+	// launching browsers. When the budget is ample the explicit pool equals
+	// what the engine would derive anyway, so healthy hosts are unchanged.
+	if browserBudgetTotal > 0 {
+		pages := max(1, plan.PerTaskPages)
+		engineDerived := (plan.PerTaskConcurrency + pages - 1) / pages
+
+		pool := engineDerived
+		if plan.PerTaskBrowserPool > 0 && plan.PerTaskBrowserPool < pool {
+			pool = plan.PerTaskBrowserPool
+		}
+
+		perWorkerCap := max(1, browserBudgetTotal/workers)
+		if pool > perWorkerCap {
+			pool = perWorkerCap
+
+			if job.Data.BrowserPool > 0 && job.Data.BrowserPool/workers > perWorkerCap {
+				plan.CappedExplicit = true
+			}
+
+			// The pool was clamped by memory: raise pages-per-browser so the
+			// requested Maps-operation concurrency still fits into the fewer
+			// browsers instead of being cut. Pages are soft-capped because the
+			// per-page incremental cost is unmeasured; beyond the cap the
+			// surplus concurrency queues harmlessly on the engine's slot
+			// channel.
+			needPages := (plan.PerTaskConcurrency + pool - 1) / pool
+			if needPages > pages {
+				plan.PerTaskPages = min(needPages, maxCompensationPagesPerBrowser)
+			}
+		}
+
+		plan.PerTaskBrowserPool = pool
+	}
+
 	return plan
 }
+
+// maxCompensationPagesPerBrowser bounds how far pages-per-browser is raised to
+// compensate for a memory-clamped browser pool. Four keeps the blast radius of
+// one crashed --single-process browser at four in-flight operations; the
+// per-page incremental memory cost is unmeasured, which is why the surplus
+// beyond it queues instead of packing more pages.
+const maxCompensationPagesPerBrowser = 4
 
 // taskPoolRun is the shared state of one concurrent checkpoint run.
 type taskPoolRun struct {
@@ -330,7 +422,7 @@ func (w *webrunner) runTaskPool(
 		dedup:            extras.dedup,
 		extraReviews:     extras.extraReviews,
 		baselineBrowsers: plan.PerTaskBrowserPool,
-		baselinePages:    job.Data.PagesBrowser,
+		baselinePages:    plan.PerTaskPages,
 	}
 	run.desiredConcurrency.Store(int64(desiredConcurrency))
 	run.effectiveConcurrency.Store(int64(plan.PerTaskConcurrency * plan.Workers))
@@ -338,7 +430,7 @@ func (w *webrunner) runTaskPool(
 	run.failureBudget.Store(int64(desiredConcurrency))
 	run.blockBudget.Store(int64(desiredConcurrency))
 	run.browserBudget.Store(int64(plan.PerTaskBrowserPool))
-	run.pagesBudget.Store(int64(job.Data.PagesBrowser))
+	run.pagesBudget.Store(int64(plan.PerTaskPages))
 
 	if extras.proxyPlan != nil {
 		run.live.setProxyPlan(extras.proxyPlan, false)
@@ -484,8 +576,8 @@ func (w *webrunner) runTaskWorker(
 					buildErr = fmt.Errorf("checkpoint task %q has no current seed", task.Key)
 				}
 
-				_ = w.svc.FailJobTask(
-					context.Background(), job.ID, task.Key, buildErr, false,
+				_ = w.svc.FailJobTaskAs(
+					context.Background(), job.ID, task.Key, owner, buildErr, false,
 					web.JobTaskCheckpoint{},
 				)
 				run.taskFailures.Add(1)
@@ -608,13 +700,38 @@ func (w *webrunner) executeLeasedTask(
 	}()
 
 	taskStartedAt := time.Now()
-	runPath, taskErr := w.runCheckpointTask(taskCtx, &taskJob, seed, exitMonitor)
+	runPath, taskCounters, taskErr := w.runCheckpointTask(taskCtx, &taskJob, seed, exitMonitor)
 	taskDuration := time.Since(taskStartedAt)
 
 	run.live.unregisterTaskCancel(task.Key)
 	cancelTask()
 	stopHeartbeat()
 	<-heartbeatDone
+
+	// Truncation and empty cells used to be silent: a task that ended with
+	// found places uncommitted, or a seed that walked a cell and found
+	// nothing, both looked exactly like a healthy completion. Both are now
+	// first-class evidence on the job's event log, whatever the exit status.
+	switch {
+	case taskCounters.PlacesFound > taskCounters.PlacesCompleted:
+		_ = w.svc.RecordJobWorkerEvent(
+			context.Background(), job.ID, "task-truncated", "warning",
+			fmt.Sprintf("Task ended with %d of %d found places committed",
+				taskCounters.PlacesCompleted, taskCounters.PlacesFound),
+			map[string]any{
+				"task_key":         task.Key,
+				"places_found":     taskCounters.PlacesFound,
+				"places_completed": taskCounters.PlacesCompleted,
+				"seeds_completed":  taskCounters.SeedsCompleted,
+			},
+		)
+	case taskCounters.SeedsCompleted > 0 && taskCounters.PlacesFound == 0:
+		_ = w.svc.RecordJobWorkerEvent(
+			context.Background(), job.ID, "cell-empty", "warning",
+			"Task completed its walk but found zero places; the cell is either genuinely empty or was served an empty page",
+			map[string]any{"task_key": task.Key},
+		)
+	}
 
 	if runPath != "" {
 		defer func() { _ = os.Remove(runPath) }()
@@ -662,7 +779,7 @@ func (w *webrunner) executeLeasedTask(
 		}
 
 		w.recordProxyTaskOutcome(run, assignment, false, taskDuration, taskErr)
-		w.failLeasedTask(run, task, taskErr, web.JobTaskCheckpoint{})
+		w.failLeasedTask(run, owner, task, taskErr, web.JobTaskCheckpoint{})
 		w.deferFailedTask(run.job.ID, task, classifyTaskFailure(taskErr))
 
 		return true
@@ -673,21 +790,49 @@ func (w *webrunner) executeLeasedTask(
 		mergeErr = fmt.Errorf("merge checkpoint task results: %w", mergeErr)
 
 		w.recordProxyTaskOutcome(run, assignment, false, taskDuration, mergeErr)
-		w.failLeasedTask(run, task, mergeErr, checkpoint)
+		w.failLeasedTask(run, owner, task, mergeErr, checkpoint)
 		w.deferFailedTask(run.job.ID, task, classifyTaskFailure(mergeErr))
 
 		return true
 	}
 
 	if taskErr == nil {
-		run.windowSuccesses.Add(1)
 		w.recordProxyTaskOutcome(run, assignment, true, taskDuration, nil)
 
 		// The task reached a durable boundary: persist the listing identities
 		// discovered since the last one so a restart does not re-visit them.
 		flushListingKeys(context.Background(), run.dedup)
 
-		if completeErr := w.svc.CompleteJobTask(context.Background(), job.ID, task.Key, checkpoint); completeErr != nil {
+		var completeErr error
+
+		retryFinishWrite(func() error {
+			completeErr = w.svc.CompleteJobTaskAs(context.Background(), job.ID, task.Key, owner, checkpoint)
+			if errors.Is(completeErr, web.ErrCheckpointLeaseLost) {
+				return nil // not transient; retrying cannot regain a lost lease
+			}
+
+			return completeErr
+		})
+
+		if errors.Is(completeErr, web.ErrCheckpointLeaseLost) {
+			// Another worker owns this task now: our completion is stale and
+			// was refused by the ownership guard. Discard it — the new
+			// owner's run produces the authoritative result — and do not
+			// count it as a success for the adaptive window.
+			_ = w.svc.RecordJobWorkerEvent(
+				context.Background(), job.ID, "task-lease-lost", "warning",
+				"A stale worker tried to complete a task another worker now owns; the stale write was discarded",
+				map[string]any{"task_key": task.Key, "owner": owner},
+			)
+
+			return true
+		}
+
+		// The success only counts once it is durably committed; counting it
+		// earlier skews the adaptive window when the commit is refused.
+		run.windowSuccesses.Add(1)
+
+		if completeErr != nil {
 			_ = w.svc.RecordJobWorkerEvent(
 				context.Background(), job.ID, "task-commit-failed", "error",
 				"Could not commit a completed task checkpoint",
@@ -753,7 +898,7 @@ func (w *webrunner) executeLeasedTask(
 		}
 	}
 
-	w.failLeasedTask(run, task, taskErr, checkpoint)
+	w.failLeasedTask(run, owner, task, taskErr, checkpoint)
 	w.deferFailedTask(job.ID, task, failureKind)
 
 	if job.Data.RetryDelay > 0 {
@@ -800,16 +945,41 @@ func (w *webrunner) concludeInterruptedTask(
 		run.requestStop(reason)
 	}
 
-	_ = w.svc.ReleaseJobTask(
-		context.Background(), job.ID, task.Key, owner,
-		fmt.Sprintf("Interrupted by %s; the task resumes from its plan entry", reason),
-	)
+	// The release is the write that keeps this task resumable; swallowing a
+	// transient failure here is what used to strand a phantom "running" row
+	// past the end of the run, so it gets a bounded retry before giving up to
+	// the reclaim sweeps.
+	retryFinishWrite(func() error {
+		return w.svc.ReleaseJobTask(
+			context.Background(), job.ID, task.Key, owner,
+			fmt.Sprintf("Interrupted by %s; the task resumes from its plan entry", reason),
+		)
+	})
 
 	return false
 }
 
+// retryFinishWrite retries a terminal task write a few times with a short
+// backoff. Terminal writes run on context.Background — a cancelled run must
+// still conclude its rows — so the only failures seen here are transient
+// storage errors, and giving up leaves the row to the lease-reclaim sweeps.
+func retryFinishWrite(write func() error) {
+	const attempts = 3
+
+	for attempt := range attempts {
+		if err := write(); err == nil {
+			return
+		}
+
+		if attempt < attempts-1 {
+			time.Sleep(time.Duration(attempt+1) * 250 * time.Millisecond)
+		}
+	}
+}
+
 func (w *webrunner) failLeasedTask(
 	run *taskPoolRun,
+	owner string,
 	task web.JobTask,
 	taskErr error,
 	checkpoint web.JobTaskCheckpoint,
@@ -818,9 +988,33 @@ func (w *webrunner) failLeasedTask(
 
 	retryable := task.Attempts < task.MaxAttempts
 
-	if failErr := w.svc.FailJobTask(
-		context.Background(), run.job.ID, task.Key, taskErr, retryable, checkpoint,
-	); failErr != nil {
+	var failErr error
+
+	retryFinishWrite(func() error {
+		failErr = w.svc.FailJobTaskAs(
+			context.Background(), run.job.ID, task.Key, owner, taskErr, retryable, checkpoint,
+		)
+		if errors.Is(failErr, web.ErrCheckpointLeaseLost) {
+			return nil // not transient; retrying cannot regain a lost lease
+		}
+
+		return failErr
+	})
+
+	if errors.Is(failErr, web.ErrCheckpointLeaseLost) {
+		// Another worker owns this task now; its attempt governs. Recording
+		// our stale failure would corrupt the new owner's state, so it is
+		// discarded — visibly.
+		_ = w.svc.RecordJobWorkerEvent(
+			context.Background(), run.job.ID, "task-lease-lost", "warning",
+			"A stale worker tried to fail a task another worker now owns; the stale write was discarded",
+			map[string]any{"task_key": task.Key, "owner": owner},
+		)
+
+		return
+	}
+
+	if failErr != nil {
 		_ = w.svc.RecordJobWorkerEvent(
 			context.Background(), run.job.ID, "task-commit-failed", "error",
 			"Could not commit a failed task checkpoint",
@@ -980,14 +1174,19 @@ func (w *webrunner) superviseTaskPool(
 	// was making progress.
 	checkpointInterval := job.Data.CheckpointInterval()
 	lastCheckpoint := time.Now()
+	lastReclaim := time.Now()
 
 	for {
 		sample, err := w.sampleWorkerResources(ctx)
 		if err == nil {
 			snapshot := exiter.SnapshotOf(exitMonitor)
-			workers := run.workers.Load()
 			browsers, pages := run.liveBrowserFootprint()
 
+			// DesiredWorkers and EffectiveWorkers are BOTH concurrency
+			// (requested and adaptive-effective Maps operations), so the pair
+			// the operator sees compares like with like. The task worker count
+			// is in the task-pool announcement event; the real browser
+			// footprint is BrowserCount.
 			_ = w.svc.UpdateJobWorkerProgress(context.Background(), job.ID, web.JobWorkerProgress{
 				Stage:            jobruntime.StageSearchingMaps,
 				ActiveTasks:      run.activeTasks.Load(),
@@ -999,7 +1198,7 @@ func (w *webrunner) superviseTaskPool(
 				DiskFreeBytes:    sample.DiskFreeBytes,
 				DatabaseWrites:   run.committedWrites.Load(),
 				DesiredWorkers:   run.desiredConcurrency.Load(),
-				EffectiveWorkers: max(1, workers),
+				EffectiveWorkers: max(1, run.effectiveConcurrency.Load()),
 				UpdatedAt:        time.Now().UTC(),
 			})
 
@@ -1028,6 +1227,24 @@ func (w *webrunner) superviseTaskPool(
 			lastCheckpoint = time.Now()
 
 			w.recordIntervalCheckpoint(run, checkpointInterval)
+		}
+
+		// Reclaim expired leases on the supervisor's own cadence. A healthy
+		// worker heartbeats every 20s against a 90s lease, so it can never be
+		// reclaimed; a worker that died without a terminal write is what this
+		// recovers, bounding a phantom "running" task to lease + cadence. The
+		// claim path also reclaims, but only while somebody is still claiming —
+		// this tick covers the window when every worker is busy or gone.
+		if time.Since(lastReclaim) >= taskLeaseDuration/3 {
+			lastReclaim = time.Now()
+
+			if reclaimed, reclaimErr := w.svc.ReclaimExpiredJobTasks(context.Background(), job.ID); reclaimErr == nil && reclaimed > 0 {
+				_ = w.svc.RecordJobWorkerEvent(
+					context.Background(), job.ID, "task-lease-reclaimed", "warning",
+					fmt.Sprintf("%d expired task lease(s) were returned to the queue", reclaimed),
+					map[string]any{"reclaimed": reclaimed},
+				)
+			}
 		}
 
 		w.pollLiveControls(run, runCancel)

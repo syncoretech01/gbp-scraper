@@ -77,14 +77,30 @@ func (r *monitorSpecRepository) ReclaimExpiredJobTasks(context.Context, string) 
 	return 0, nil
 }
 
+func (r *monitorSpecRepository) ReclaimStaleJobTasks(context.Context) (int, error) {
+	return 0, nil
+}
+
 func (r *monitorSpecRepository) CompleteJobTask(
 	context.Context, string, string, JobTaskCheckpoint,
 ) error {
 	return nil
 }
 
+func (r *monitorSpecRepository) CompleteJobTaskAs(
+	context.Context, string, string, string, JobTaskCheckpoint,
+) error {
+	return nil
+}
+
 func (r *monitorSpecRepository) FailJobTask(
 	context.Context, string, string, error, bool, JobTaskCheckpoint,
+) error {
+	return nil
+}
+
+func (r *monitorSpecRepository) FailJobTaskAs(
+	context.Context, string, string, string, error, bool, JobTaskCheckpoint,
 ) error {
 	return nil
 }

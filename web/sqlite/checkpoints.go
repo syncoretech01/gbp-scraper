@@ -30,8 +30,11 @@ var _ interface {
 	HeartbeatJobTask(context.Context, string, string, string, time.Duration) error
 	ReleaseJobTask(context.Context, string, string, string, string) error
 	ReclaimExpiredJobTasks(context.Context, string) (int, error)
+	ReclaimStaleJobTasks(context.Context) (int, error)
 	CompleteJobTask(context.Context, string, string, web.JobTaskCheckpoint) error
+	CompleteJobTaskAs(context.Context, string, string, string, web.JobTaskCheckpoint) error
 	FailJobTask(context.Context, string, string, error, bool, web.JobTaskCheckpoint) error
+	FailJobTaskAs(context.Context, string, string, string, error, bool, web.JobTaskCheckpoint) error
 	UpdateJobWorkerProgress(context.Context, string, web.JobWorkerProgress) error
 	RecordJobWorkerEvent(context.Context, string, string, string, string, map[string]any) error
 	GetJobExecution(context.Context, string) (web.JobExecutionSnapshot, error)
@@ -189,20 +192,49 @@ func (repo *repo) StartJobTask(ctx context.Context, jobID, taskKey string) (web.
 }
 
 // CompleteJobTask records that the corresponding run CSV was merged before
-// advancing the safe resume boundary.
+// advancing the safe resume boundary. The empty owner matches only lease-less
+// rows, i.e. rows put into the running state by StartJobTask, which stores an
+// empty lease_owner; tasks claimed by lease must finish via CompleteJobTaskAs.
 func (repo *repo) CompleteJobTask(
 	ctx context.Context,
 	jobID, taskKey string,
 	checkpoint web.JobTaskCheckpoint,
 ) error {
-	return repo.finishJobTask(ctx, jobID, taskKey, nil, false, checkpoint)
+	return repo.CompleteJobTaskAs(ctx, jobID, taskKey, "", checkpoint)
+}
+
+// CompleteJobTaskAs records that the corresponding run CSV was merged before
+// advancing the safe resume boundary, but only while owner still holds the
+// task. Once the lease was reclaimed it persists nothing and reports
+// web.ErrCheckpointLeaseLost.
+func (repo *repo) CompleteJobTaskAs(
+	ctx context.Context,
+	jobID, taskKey, owner string,
+	checkpoint web.JobTaskCheckpoint,
+) error {
+	return repo.finishJobTask(ctx, jobID, taskKey, owner, nil, false, checkpoint)
 }
 
 // FailJobTask returns interrupted/retryable work to pending, or records an
-// exhausted task as failed.
+// exhausted task as failed. The empty owner matches only lease-less rows (see
+// CompleteJobTask); tasks claimed by lease must finish via FailJobTaskAs.
 func (repo *repo) FailJobTask(
 	ctx context.Context,
 	jobID, taskKey string,
+	runErr error,
+	retryable bool,
+	checkpoint web.JobTaskCheckpoint,
+) error {
+	return repo.FailJobTaskAs(ctx, jobID, taskKey, "", runErr, retryable, checkpoint)
+}
+
+// FailJobTaskAs returns interrupted/retryable work to pending, or records an
+// exhausted task as failed, but only while owner still holds the task. Once
+// the lease was reclaimed it persists nothing and reports
+// web.ErrCheckpointLeaseLost.
+func (repo *repo) FailJobTaskAs(
+	ctx context.Context,
+	jobID, taskKey, owner string,
 	runErr error,
 	retryable bool,
 	checkpoint web.JobTaskCheckpoint,
@@ -211,12 +243,12 @@ func (repo *repo) FailJobTask(
 		runErr = errors.New("task attempt failed")
 	}
 
-	return repo.finishJobTask(ctx, jobID, taskKey, runErr, retryable, checkpoint)
+	return repo.finishJobTask(ctx, jobID, taskKey, owner, runErr, retryable, checkpoint)
 }
 
 func (repo *repo) finishJobTask(
 	ctx context.Context,
-	jobID, taskKey string,
+	jobID, taskKey, owner string,
 	runErr error,
 	retryable bool,
 	checkpoint web.JobTaskCheckpoint,
@@ -267,7 +299,7 @@ func (repo *repo) finishJobTask(
 		`UPDATE job_tasks SET state = ?, last_error = ?, checkpoint = ?,
 			lease_owner = '', lease_expires_at = NULL,
 			finished_at = ?, updated_at = ?
-		WHERE job_id = ? AND task_key = ? AND state = 'running'`,
+		WHERE job_id = ? AND task_key = ? AND state = 'running' AND lease_owner = ?`,
 		state,
 		lastError,
 		string(payload),
@@ -275,12 +307,21 @@ func (repo *repo) finishJobTask(
 		now,
 		jobID,
 		taskKey,
+		owner,
 	)
 	if err != nil {
 		return fmt.Errorf("finish task %q: %w", taskKey, err)
 	}
-	if err := requireCASUpdate(result); err != nil {
+	affected, err := result.RowsAffected()
+	if err != nil {
 		return fmt.Errorf("finish task %q: %w", taskKey, err)
+	}
+	if affected != 1 {
+		// The pre-read in this transaction saw the task running, so the only
+		// way the guarded update can miss is an ownership mismatch: the lease
+		// was reclaimed and possibly handed to another worker. The deferred
+		// rollback discards the transaction, so nothing below ever persisted.
+		return fmt.Errorf("%w: %s", web.ErrCheckpointLeaseLost, taskKey)
 	}
 	if _, err := tx.ExecContext(
 		ctx,

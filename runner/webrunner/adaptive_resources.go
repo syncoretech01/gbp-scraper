@@ -74,6 +74,19 @@ const (
 	// measurement is available. It is the proven-safe single-app topology.
 	safeBrowserWorkerFallback = 1
 
+	// perBrowserPlanningCostBytes is the planning cost of ONE --single-process
+	// Chromium browser. The synthetic measurement was ~300MB steady RSS, linear
+	// in the browser count; a live Maps tab carries tiles, consent frames and
+	// network buffers and lands in a 450-750MB band. 600MiB is the live band's
+	// midpoint: the tail above it is absorbed by browserBudgetReserveBytes plus
+	// the adaptive pressure ladder, while a flat worst-case figure would
+	// under-commit healthy hosts for no measured benefit.
+	perBrowserPlanningCostBytes uint64 = 600 << 20
+	// browserBudgetReserveBytes is memory the browser budget must never touch:
+	// the Go service, SQLite and its WAL, the Playwright node driver, the OS
+	// page cache and whatever /dev/shm is actually holding.
+	browserBudgetReserveBytes uint64 = 1536 << 20
+
 	// adaptiveFailureBurst is the smallest number of failed attempts in one
 	// adaptation window that, forming a majority, is decisive evidence to halve
 	// the failure budget. Two corroborating failures rule out a single
@@ -321,9 +334,14 @@ func recoveryHasHeadroom(sample workerResourceSample, blocks, allowedBrowsers in
 //
 // The result is floored at one (a browser job always runs), capped at
 // maxDefaultBrowserWorkers, and falls back to the single-app topology when no
-// memory reading is available. It is advisory: a job that sets TaskWorkers
-// explicitly keeps exactly the value it asked for, and Fast mode (pure HTTP, no
-// browser) never consults this budget at all.
+// memory reading is available. It is a hard ceiling: planTaskPool lowers an
+// explicitly configured TaskWorkers past it too, because launching more
+// browsers than RAM holds crashes them regardless of who chose the number.
+// Fast mode (pure HTTP, no browser) never consults this budget at all.
+//
+// This bounds the WORKER count. The browser TOTAL — workers multiplied by each
+// worker's derived pool — is bounded separately by browserProcessBudget, which
+// is denominated in browsers rather than workers.
 func browserModeWorkerBudget(sample workerResourceSample) int {
 	available := sample.MemoryAvailableBytes
 	if available == 0 {
@@ -337,6 +355,37 @@ func browserModeWorkerBudget(sample workerResourceSample) int {
 
 	if budget > maxDefaultBrowserWorkers {
 		budget = maxDefaultBrowserWorkers
+	}
+
+	return budget
+}
+
+// browserProcessBudget derives how many simultaneous Chromium processes the
+// measured memory can hold: (available - reserve) / per-browser cost, floored
+// at one so a browser job always runs.
+//
+// This exists because the worker budget alone cannot bound browsers. Each
+// worker's scrapemate app derives its own pool as ceil(concurrency / pages),
+// so with pool and pages unset the browser total equals the concurrency budget
+// REGARDLESS of how few workers carry it — the two live acceptance runs proved
+// it: requested concurrency 4 planned as 2x2 and as 1x4, four browsers either
+// way. The budget is therefore denominated in the unit that actually costs
+// memory, and planTaskPool enforces workers x per-worker-pool <= this value.
+//
+// There is deliberately no upper constant: a large host earns a large budget
+// and is then clamped by actual demand, instead of being pinned to a number
+// sized for the smallest machine. Fast mode never consults this.
+func browserProcessBudget(sample workerResourceSample) int {
+	available := sample.MemoryAvailableBytes
+	if available == 0 {
+		return 1
+	}
+
+	usable := available - min(available, browserBudgetReserveBytes)
+
+	budget := int(usable / perBrowserPlanningCostBytes)
+	if budget < 1 {
+		budget = 1
 	}
 
 	return budget

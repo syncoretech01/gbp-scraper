@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -233,7 +235,7 @@ func (w *webrunner) scrapeJobCheckpointed(
 		exitMonitor.SetSeedCount(len(pending))
 	}
 
-	allowedSeconds := max(60, len(pending)*10*job.Data.Depth/50+120)
+	allowedSeconds := defaultAllowedSeconds(len(pending), job.Data.Depth, job.Data.Email)
 	if job.Data.MaxTime > 0 {
 		if job.Data.MaxTime.Seconds() < 180 {
 			allowedSeconds = 180
@@ -316,6 +318,9 @@ func (w *webrunner) scrapeJobCheckpointed(
 
 	effectiveConcurrency := desiredConcurrency
 	browserWorkerBudget := 0
+	browserBudgetTotal := 0
+
+	var budgetMemoryAvailable uint64
 
 	// A browser-mode job fans out one scrapemate app — and therefore one
 	// browser pool that never drops below a single browser — per task worker.
@@ -334,25 +339,56 @@ func (w *webrunner) scrapeJobCheckpointed(
 
 		if !job.Data.FastMode {
 			browserWorkerBudget = browserModeWorkerBudget(resourceSample)
+			browserBudgetTotal = browserProcessBudget(resourceSample)
+			budgetMemoryAvailable = resourceSample.MemoryAvailableBytes
 		}
 	}
 
 	// Tasks run side by side, but the browser budget is divided between them, so
 	// parallelism buys resume granularity rather than extra load. In browser
-	// mode the default worker count is additionally capped to the memory-derived
-	// browser budget, because each worker is a separate browser pool.
-	plan := planTaskPool(job, effectiveConcurrency, len(pending), browserWorkerBudget)
+	// mode the worker count is capped to the memory-derived worker budget and
+	// the browser TOTAL (workers x per-worker pool) is capped to the
+	// memory-derived browser-process budget, because browsers — not workers —
+	// are what cost memory.
+	plan := planTaskPool(job, effectiveConcurrency, len(pending), browserWorkerBudget, browserBudgetTotal)
 
 	_ = w.svc.RecordJobWorkerEvent(
 		context.Background(), job.ID, "task-pool", "information",
-		fmt.Sprintf("Running %d task(s) in parallel with %d worker concurrency each", plan.Workers, plan.PerTaskConcurrency),
+		fmt.Sprintf("Running %d task(s) in parallel with %d worker concurrency each (%d browser(s) planned)",
+			plan.Workers, plan.PerTaskConcurrency, plan.PlannedBrowsers()),
 		map[string]any{
 			"task_workers": plan.Workers, "per_task_concurrency": plan.PerTaskConcurrency,
-			"per_task_browser_pool": plan.PerTaskBrowserPool,
-			"desired_concurrency":   desiredConcurrency, "effective_concurrency": effectiveConcurrency,
-			"pending_tasks": len(pending),
+			"per_task_browser_pool": plan.PerTaskBrowserPool, "per_task_pages": plan.PerTaskPages,
+			"desired_concurrency": desiredConcurrency, "effective_concurrency": effectiveConcurrency,
+			"pending_tasks":          len(pending),
+			"planned_browsers":       plan.PlannedBrowsers(),
+			"browser_budget_total":   browserBudgetTotal,
+			"browser_worker_budget":  browserWorkerBudget,
+			"memory_available_bytes": budgetMemoryAvailable,
+			"per_browser_cost_bytes": uint64(perBrowserPlanningCostBytes),
+			"budget_reserve_bytes":   uint64(browserBudgetReserveBytes),
 		},
 	)
+
+	if plan.CappedExplicit {
+		// The operator asked for more than the machine can physically hold.
+		// The cap is not negotiable — an OOM kill loses the whole run — but
+		// overriding an explicit setting must never be silent.
+		_ = w.svc.RecordJobWorkerEvent(
+			context.Background(), job.ID, "capacity-capped", "warning",
+			fmt.Sprintf(
+				"Requested workers/browsers exceed what available memory can hold; running %d worker(s) with %d browser(s) instead",
+				plan.Workers, plan.PlannedBrowsers()),
+			map[string]any{
+				"requested_task_workers": job.Data.TaskWorkers,
+				"requested_browser_pool": job.Data.BrowserPool,
+				"granted_workers":        plan.Workers,
+				"granted_browsers":       plan.PlannedBrowsers(),
+				"browser_budget_total":   browserBudgetTotal,
+				"memory_available_bytes": budgetMemoryAvailable,
+			},
+		)
+	}
 
 	stopReason := w.runTaskPool(
 		ctx, runCtx, runCancel, job, outpath, seedsByKey, exitMonitor,
@@ -373,6 +409,19 @@ func (w *webrunner) scrapeJobCheckpointed(
 		default:
 			stopReason = jobruntime.StopReasonCompleted
 		}
+	}
+
+	// End-of-pool sweep: a finish write that failed and was swallowed can
+	// leave a task row "running" with nobody to conclude it — and once the
+	// pool stops claiming, the claim-side reclaim never runs again. One
+	// reclaim here returns any already-expired lease; a not-yet-expired
+	// orphan is caught by the startup sweep or the next resume.
+	if reclaimed, reclaimErr := w.svc.ReclaimExpiredJobTasks(context.Background(), job.ID); reclaimErr == nil && reclaimed > 0 {
+		_ = w.svc.RecordJobWorkerEvent(
+			context.Background(), job.ID, "task-lease-reclaimed", "warning",
+			fmt.Sprintf("%d expired task lease(s) were returned to the queue after the pool drained", reclaimed),
+			map[string]any{"reclaimed": reclaimed},
+		)
 	}
 
 	execution, executionErr := w.svc.GetJobExecution(context.Background(), job.ID)
@@ -418,6 +467,24 @@ func (w *webrunner) scrapeJobCheckpointed(
 	return nil
 }
 
+// defaultAllowedSeconds models the default runtime window for a run of seed
+// tasks. The base rate covers the listing walk alone; enrichment roughly
+// doubles the job count per place — every place with a website spawns an
+// arbitrary-site email fetch, and the place's CSV row is deferred behind it —
+// so an email run under the walk-only window gets truncated exactly where the
+// deferred rows are still at risk. The controlled variance runs measured it:
+// the identical 4-cell workload took ~290s without enrichment and 712-903s
+// with it, the latter hitting the operator cap with tasks unfinished. An
+// explicit MaxTime still overrides this default entirely.
+func defaultAllowedSeconds(pending, depth int, email bool) int {
+	perSeedRate := 10
+	if email {
+		perSeedRate = 20
+	}
+
+	return max(60, pending*perSeedRate*depth/50+120)
+}
+
 // engineShutdownGrace bounds how long the scrape engine may take to return
 // after this task's context has already been cancelled.
 //
@@ -448,9 +515,15 @@ var errEngineShutdownTimeout = errors.New("scrape engine did not shut down withi
 // — and once ctx is done it waits at most grace longer. It reports fn's error
 // and whether fn actually returned.
 func awaitEngine(ctx context.Context, grace time.Duration, fn func() error) (error, bool) {
-	// Buffered so a late goroutine can finish and exit instead of leaking on
-	// the send.
-	done := make(chan error, 1)
+	return awaitEngineOn(ctx, grace, make(chan error, 1), fn)
+}
+
+// awaitEngineOn is awaitEngine with a caller-owned done channel (capacity >= 1
+// so a late goroutine can finish and exit instead of leaking on the send).
+// Owning the channel lets the caller hand a timed-out engine to the
+// containment registry, whose detached monitor keeps listening for the late
+// return that a janitor driver-kill eventually forces.
+func awaitEngineOn(ctx context.Context, grace time.Duration, done chan error, fn func() error) (error, bool) {
 	go func() { done <- fn() }()
 
 	select {
@@ -470,6 +543,54 @@ func awaitEngine(ctx context.Context, grace time.Duration, fn func() error) (err
 	}
 }
 
+// adoptWedgedEngine hands a wedged engine's leftovers to the containment
+// registry and records the containment action on the job, distinct from the
+// engine-shutdown-timeout failure the task itself reports.
+func (w *webrunner) adoptWedgedEngine(
+	jobID string,
+	seed scrapemate.IJob,
+	runPath string,
+	outfile *os.File,
+	done <-chan error,
+) {
+	if w.containment == nil {
+		return
+	}
+
+	taskKey := ""
+	if key, err := checkpointSeedID(seed); err == nil {
+		taskKey = key
+	}
+
+	w.containment.adopt(jobID, taskKey, runPath, outfile, done,
+		func(engine abandonedEngine, wedgedFor time.Duration) {
+			_ = w.svc.RecordJobWorkerEvent(
+				context.Background(), engine.jobID, "engine-reclaimed", "information",
+				fmt.Sprintf("An abandoned engine returned after %s; its file handle and goroutine were released", wedgedFor.Round(time.Second)),
+				map[string]any{"task_key": engine.taskKey, "wedged_for": wedgedFor.Round(time.Second).String()},
+			)
+		})
+
+	abandoned := w.containment.AbandonedNow()
+
+	_ = w.svc.RecordJobWorkerEvent(
+		context.Background(), jobID, "engine-abandoned", "warning",
+		fmt.Sprintf("A wedged engine was placed under containment (%d currently abandoned); its processes will be reclaimed at the next safe point", abandoned),
+		map[string]any{"task_key": taskKey, "abandoned_now": abandoned},
+	)
+
+	// Two abandoned engines is a full default browser-worker budget stranded:
+	// recommend a recycle so an operator watching the log knows the service
+	// would benefit from one even before the janitor's next safe point.
+	if abandoned >= 2 {
+		_ = w.svc.RecordJobWorkerEvent(
+			context.Background(), jobID, "worker-recycle-recommended", "warning",
+			"Multiple abandoned engines are being contained; a worker recycle (or container restart) would reclaim them immediately",
+			map[string]any{"abandoned_now": abandoned},
+		)
+	}
+}
+
 // runCheckpointTask executes exactly one seed into its own temporary CSV. Live
 // progress reporting belongs to the pool supervisor, so the task itself only
 // runs the scraper and hands back a file to merge.
@@ -483,10 +604,10 @@ func (w *webrunner) runCheckpointTask(
 	job *web.Job,
 	seed scrapemate.IJob,
 	exitMonitor exiter.Exiter,
-) (string, error) {
+) (string, exiter.Snapshot, error) {
 	outfile, err := os.CreateTemp(w.cfg.DataFolder, job.ID+".run-checkpoint-*.csv")
 	if err != nil {
-		return "", fmt.Errorf("create checkpoint task result file: %w", err)
+		return "", exiter.Snapshot{}, fmt.Errorf("create checkpoint task result file: %w", err)
 	}
 	runPath := outfile.Name()
 	keepRun := false
@@ -509,7 +630,7 @@ func (w *webrunner) runCheckpointTask(
 	}
 	mate, err := setupMate(ctx, outfile, job)
 	if err != nil {
-		return "", err
+		return "", exiter.Snapshot{}, err
 	}
 	closed := false
 	defer func() {
@@ -526,7 +647,12 @@ func (w *webrunner) runCheckpointTask(
 
 	go taskMonitor.Run(taskCtx)
 
-	runErr, returned := awaitEngine(taskCtx, engineShutdownGrace, func() error {
+	if w.containment != nil {
+		w.containment.engineStarted()
+	}
+
+	engineDone := make(chan error, 1)
+	runErr, returned := awaitEngineOn(taskCtx, engineShutdownGrace, engineDone, func() error {
 		return mate.Start(taskCtx, seedWithExitMonitor(seed, taskMonitor))
 	})
 	// Only this task's own counters can say whether its seed finished; the
@@ -537,33 +663,44 @@ func (w *webrunner) runCheckpointTask(
 		// The engine did not come back within the grace period after its
 		// context was cancelled. Keep whatever it already wrote and hand the
 		// task back to the pool: waiting longer is what wedged the job.
+		// closed is set so the deferred mate.Close cannot re-touch the wedged
+		// engine synchronously on the way out.
 		engineWedged = true
 		keepRun = true
+		closed = true
+		w.adoptWedgedEngine(job.ID, seed, runPath, outfile, engineDone)
 
-		return runPath, errEngineShutdownTimeout
+		return runPath, after, errEngineShutdownTimeout
 	}
 
-	if closeErr, closeReturned := awaitEngine(taskCtx, engineShutdownGrace, mate.Close); !closeReturned {
+	closeDone := make(chan error, 1)
+	if closeErr, closeReturned := awaitEngineOn(taskCtx, engineShutdownGrace, closeDone, mate.Close); !closeReturned {
 		engineWedged = true
 		keepRun = true
+		closed = true
+		w.adoptWedgedEngine(job.ID, seed, runPath, outfile, closeDone)
 
-		return runPath, errors.Join(runErr, errEngineShutdownTimeout)
+		return runPath, after, errors.Join(runErr, errEngineShutdownTimeout)
 	} else if closeErr != nil {
 		runErr = errors.Join(runErr, fmt.Errorf("close checkpoint worker: %w", closeErr))
 	}
 	closed = true
+
+	if w.containment != nil {
+		w.containment.engineFinished()
+	}
 	if headerErr := ensureCheckpointCSV(outfile); headerErr != nil {
-		return "", errors.Join(runErr, headerErr)
+		return "", after, errors.Join(runErr, headerErr)
 	}
 	if syncErr := outfile.Sync(); syncErr != nil {
-		return "", errors.Join(runErr, fmt.Errorf("flush checkpoint result CSV: %w", syncErr))
+		return "", after, errors.Join(runErr, fmt.Errorf("flush checkpoint result CSV: %w", syncErr))
 	}
 	if closeErr := outfile.Close(); closeErr != nil {
-		return "", errors.Join(runErr, fmt.Errorf("close checkpoint result CSV: %w", closeErr))
+		return "", after, errors.Join(runErr, fmt.Errorf("close checkpoint result CSV: %w", closeErr))
 	}
 	keepRun = true
 
-	return runPath, normalizeCheckpointRunError(taskCtx, runErr, after.SeedsCompleted > 0)
+	return runPath, after, normalizeCheckpointRunError(taskCtx, runErr, after)
 }
 
 func ensureCheckpointCSV(outfile *os.File) error {
@@ -586,12 +723,37 @@ func ensureCheckpointCSV(outfile *os.File) error {
 	return nil
 }
 
-func normalizeCheckpointRunError(ctx context.Context, runErr error, seedCompleted bool) error {
+// errTaskTruncated marks a task cancelled while places it had already found
+// were still uncommitted. Before this existed such a task was normalized to
+// SUCCESS, which silently recorded a short cell as complete — with enrichment
+// on, the loss is worse, because every place with a website has its CSV row
+// deferred behind the email fetch. The task stays failed-and-resumable instead.
+var errTaskTruncated = errors.New("task cancelled before all found places were committed")
+
+func normalizeCheckpointRunError(ctx context.Context, runErr error, after exiter.Snapshot) error {
 	if runErr == nil {
 		return nil
 	}
-	if errors.Is(runErr, context.Canceled) && (ctx.Err() == nil || seedCompleted) {
-		return nil
+
+	if errors.Is(runErr, context.Canceled) {
+		// No context cancellation reached the engine: the Canceled came from
+		// an internal engine path, which the legacy behaviour treated as a
+		// clean finish. Preserved.
+		if ctx.Err() == nil {
+			return nil
+		}
+
+		// The task's own exiter cancels when its seed AND every listing that
+		// seed found are done — that is the normal end of a healthy task and
+		// stays a success. A cancellation that arrives EARLIER leaves found
+		// places uncommitted, and calling that success is how short cells were
+		// silently recorded as complete.
+		if after.SeedsCompleted > 0 && after.PlacesCompleted >= after.PlacesFound {
+			return nil
+		}
+
+		return fmt.Errorf("%w: %d of %d found places committed",
+			errTaskTruncated, after.PlacesCompleted, after.PlacesFound)
 	}
 
 	return runErr
@@ -635,10 +797,73 @@ func defaultWorkerResourceSample(ctx context.Context, dataFolder string) (worker
 		cpuPercent = percentages[0]
 	}
 
+	available := memory.Available
+	// Inside a memory-limited container /proc/meminfo still shows the HOST,
+	// which is exactly the over-estimate that let the incident's browsers run
+	// into the cgroup ceiling. When a cgroup limit is readable and tighter,
+	// it wins; when no cgroup file exists (native Windows, unlimited Linux)
+	// the host figure stands.
+	if cgAvailable, ok := cgroupAvailableBytes(cgroupRoot); ok && cgAvailable < available {
+		available = cgAvailable
+	}
+
 	return workerResourceSample{
 		CPUPercent: cpuPercent, MemoryUsedBytes: memory.Used,
-		MemoryAvailableBytes: memory.Available, DiskFreeBytes: diskUsage.Free,
+		MemoryAvailableBytes: available, DiskFreeBytes: diskUsage.Free,
 	}, nil
+}
+
+// cgroupRoot is where the container's own cgroup controllers are mounted.
+const cgroupRoot = "/sys/fs/cgroup"
+
+// cgroupAvailableBytes reads the container's memory headroom — limit minus
+// current usage — from cgroup v2 (memory.max / memory.current) or cgroup v1
+// (memory/memory.limit_in_bytes / memory.usage_in_bytes). The second return is
+// false when no readable, finite limit exists: absent files (not a container,
+// or Windows), the v2 literal "max", or a limit so large it is plainly "no
+// limit" (>1TiB, the kernel's PAGE_COUNTER_MAX idiom).
+func cgroupAvailableBytes(root string) (uint64, bool) {
+	type pair struct{ limitFile, usageFile string }
+
+	candidates := []pair{
+		{filepath.Join(root, "memory.max"), filepath.Join(root, "memory.current")},
+		{filepath.Join(root, "memory", "memory.limit_in_bytes"), filepath.Join(root, "memory", "memory.usage_in_bytes")},
+	}
+
+	const noLimitThreshold = uint64(1) << 40
+
+	for _, c := range candidates {
+		rawLimit, err := os.ReadFile(c.limitFile)
+		if err != nil {
+			continue
+		}
+
+		limitText := strings.TrimSpace(string(rawLimit))
+		if limitText == "max" || limitText == "" {
+			continue
+		}
+
+		limit, err := strconv.ParseUint(limitText, 10, 64)
+		if err != nil || limit == 0 || limit > noLimitThreshold {
+			continue
+		}
+
+		var usage uint64
+		if rawUsage, usageErr := os.ReadFile(c.usageFile); usageErr == nil {
+			usage, _ = strconv.ParseUint(strings.TrimSpace(string(rawUsage)), 10, 64)
+		}
+
+		if usage >= limit {
+			// Exhausted headroom must read as "almost nothing", not as "no
+			// measurement": one byte keeps the severe low-memory reductions
+			// armed instead of falling back to the host's rosy figure.
+			return 1, true
+		}
+
+		return limit - usage, true
+	}
+
+	return 0, false
 }
 
 // adaptiveWorkerConcurrency caps the worker concurrency a run may take from

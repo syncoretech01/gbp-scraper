@@ -151,8 +151,11 @@ type checkpointRepository interface {
 	HeartbeatJobTask(context.Context, string, string, string, time.Duration) error
 	ReleaseJobTask(context.Context, string, string, string, string) error
 	ReclaimExpiredJobTasks(context.Context, string) (int, error)
+	ReclaimStaleJobTasks(context.Context) (int, error)
 	CompleteJobTask(context.Context, string, string, JobTaskCheckpoint) error
+	CompleteJobTaskAs(context.Context, string, string, string, JobTaskCheckpoint) error
 	FailJobTask(context.Context, string, string, error, bool, JobTaskCheckpoint) error
+	FailJobTaskAs(context.Context, string, string, string, error, bool, JobTaskCheckpoint) error
 	UpdateJobWorkerProgress(context.Context, string, JobWorkerProgress) error
 	RecordJobWorkerEvent(context.Context, string, string, string, string, map[string]any) error
 	GetJobExecution(context.Context, string) (JobExecutionSnapshot, error)
@@ -278,10 +281,39 @@ func (s *Service) ReclaimExpiredJobTasks(ctx context.Context, jobID string) (int
 	return repository.ReclaimExpiredJobTasks(ctx, jobID)
 }
 
-// CompleteJobTask commits a safe resume boundary.
+// ReclaimStaleJobTasks returns every running task whose lease has expired to
+// the pending queue, across all jobs regardless of their lifecycle state. It
+// complements RecoverAbandonedJobs, which only resets tasks of jobs left in an
+// active state, and is intended to be called once at process startup next to
+// it so a stale lease on a paused, partial, or cancelled job cannot linger.
+func (s *Service) ReclaimStaleJobTasks(ctx context.Context) (int, error) {
+	repository, ok := s.repo.(checkpointRepository)
+	if !ok {
+		return 0, ErrCheckpointUnsupported
+	}
+
+	return repository.ReclaimStaleJobTasks(ctx)
+}
+
+// CompleteJobTask commits a safe resume boundary for a task finished outside
+// the lease protocol. It delegates to CompleteJobTaskAs with an empty owner,
+// which matches only lease-less rows: StartJobTask stores an empty
+// lease_owner, while ClaimNextJobTask always records a non-empty worker owner.
+// A worker that claimed its task by lease must finish through the As variant.
 func (s *Service) CompleteJobTask(
 	ctx context.Context,
 	jobID, taskKey string,
+	checkpoint JobTaskCheckpoint,
+) error {
+	return s.CompleteJobTaskAs(ctx, jobID, taskKey, "", checkpoint)
+}
+
+// CompleteJobTaskAs commits a safe resume boundary after verifying that owner
+// still holds the task. It returns ErrCheckpointLeaseLost, and persists
+// nothing, once another worker has reclaimed the task's lease.
+func (s *Service) CompleteJobTaskAs(
+	ctx context.Context,
+	jobID, taskKey, owner string,
 	checkpoint JobTaskCheckpoint,
 ) error {
 	repository, ok := s.repo.(checkpointRepository)
@@ -289,14 +321,29 @@ func (s *Service) CompleteJobTask(
 		return ErrCheckpointUnsupported
 	}
 
-	return repository.CompleteJobTask(ctx, jobID, taskKey, checkpoint)
+	return repository.CompleteJobTaskAs(ctx, jobID, taskKey, owner, checkpoint)
 }
 
-// FailJobTask records a failed or interrupted attempt. retryable tasks return
-// to pending so a restart can safely execute them again.
+// FailJobTask records a failed or interrupted attempt for a task finished
+// outside the lease protocol. It delegates to FailJobTaskAs with an empty
+// owner, which matches only lease-less rows (see CompleteJobTask).
 func (s *Service) FailJobTask(
 	ctx context.Context,
 	jobID, taskKey string,
+	runErr error,
+	retryable bool,
+	checkpoint JobTaskCheckpoint,
+) error {
+	return s.FailJobTaskAs(ctx, jobID, taskKey, "", runErr, retryable, checkpoint)
+}
+
+// FailJobTaskAs records a failed or interrupted attempt after verifying that
+// owner still holds the task. Retryable tasks return to pending so a restart
+// can safely execute them again. It returns ErrCheckpointLeaseLost, and
+// persists nothing, once another worker has reclaimed the task's lease.
+func (s *Service) FailJobTaskAs(
+	ctx context.Context,
+	jobID, taskKey, owner string,
 	runErr error,
 	retryable bool,
 	checkpoint JobTaskCheckpoint,
@@ -306,7 +353,7 @@ func (s *Service) FailJobTask(
 		return ErrCheckpointUnsupported
 	}
 
-	return repository.FailJobTask(ctx, jobID, taskKey, runErr, retryable, checkpoint)
+	return repository.FailJobTaskAs(ctx, jobID, taskKey, owner, runErr, retryable, checkpoint)
 }
 
 // UpdateJobWorkerProgress persists a replaceable live resource sample.

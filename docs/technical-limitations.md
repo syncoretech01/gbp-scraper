@@ -569,3 +569,27 @@ Known test gaps that keep otherwise-working features unchecked in
 `update-info`), the template JSON import/export routes, the enrichment change
 and discovery records, the adaptive memory branch, the map keyword-group
 assignment action, and the export-preset repository methods.
+
+## Upstream engine leaks that cannot be fixed from this repository
+
+The scrape engine (`scrapemate` v1.3.0) and its Playwright driver are read-only
+dependencies this repository deliberately does not fork. Three leaks live
+inside them; the runtime-safety pass bounded their blast radius from our side
+but cannot remove them:
+
+- **Unbounded browser teardown.** `jsFetch.Close` -> `browserContext.Close` ->
+  `protocolCallback.waitResult` takes neither a context nor a timeout, so a
+  browser that stops answering wedges the teardown forever. Contained: the task
+  abandons the engine after a 90s post-cancel grace, the containment registry
+  watches the leftovers, and the janitor kills the orphaned driver/browser
+  processes at the next safe point, which unwedges the parked goroutine and
+  releases everything Go-side. The upstream call itself remains unbounded.
+- **One signal-wait goroutine per engine start.** `ScrapeMate.Start` registers
+  `signal.Notify` and never calls `signal.Stop`, leaking one small goroutine
+  and registration per task. Harmless at realistic task counts; not fixable
+  here.
+- **Proxy-auth listener per credentialed-proxy task.** `jsFetch.Close` never
+  closes its `ProxyPool`, so each browser-mode task using a credentialed proxy
+  leaks one loopback listener and HTTP server goroutine. Only affects
+  credentialed-proxy browser runs; recorded so an operator running large
+  proxy-heavy batches knows to recycle the worker periodically.

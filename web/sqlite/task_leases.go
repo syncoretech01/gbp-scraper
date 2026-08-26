@@ -269,6 +269,107 @@ func (repo *repo) ReclaimExpiredJobTasks(ctx context.Context, jobID string) (int
 	return recovered, nil
 }
 
+// ReclaimStaleJobTasks returns every running task whose lease has lapsed to
+// the pending queue, across all jobs regardless of their lifecycle state, and
+// reports how many were recovered. It closes the gap left by the implicit
+// reclaim inside ClaimNextJobTask (which only runs while a job's plan is being
+// worked) and by RecoverAbandonedJobs (which only touches jobs left in
+// starting, running, or cancelling): a stale lease on a paused, partial, or
+// cancelled job is otherwise never reclaimed. It is intended to be called once
+// at process startup, next to RecoverAbandonedJobs.
+func (repo *repo) ReclaimStaleJobTasks(ctx context.Context) (int, error) {
+	tx, err := repo.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin stale task reclaim transaction: %w", err)
+	}
+
+	defer func() { _ = tx.Rollback() }()
+
+	now := time.Now().UTC().Unix()
+
+	rows, err := tx.QueryContext(
+		ctx,
+		`SELECT job_id, COUNT(*) FROM job_tasks
+		WHERE state = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?
+		GROUP BY job_id ORDER BY job_id`,
+		now,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("find stale task leases: %w", err)
+	}
+
+	type staleJob struct {
+		id    string
+		count int
+	}
+
+	stale := make([]staleJob, 0)
+
+	for rows.Next() {
+		var job staleJob
+		if err := rows.Scan(&job.id, &job.count); err != nil {
+			_ = rows.Close()
+
+			return 0, fmt.Errorf("scan stale task lease: %w", err)
+		}
+
+		stale = append(stale, job)
+	}
+
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("close stale task leases: %w", err)
+	}
+
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate stale task leases: %w", err)
+	}
+
+	if len(stale) == 0 {
+		return 0, tx.Commit()
+	}
+
+	result, err := tx.ExecContext(
+		ctx,
+		`UPDATE job_tasks SET
+			state = 'pending', attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END,
+			last_error = 'Worker lease expired before the task reported progress',
+			lease_owner = '', lease_expires_at = NULL, started_at = NULL, updated_at = ?
+		WHERE state = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?`,
+		now,
+		now,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("reclaim stale task leases: %w", err)
+	}
+
+	reclaimed, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("reclaim stale task leases: %w", err)
+	}
+
+	for _, job := range stale {
+		if err := updateTaskAggregates(ctx, tx, job.id, now); err != nil {
+			return 0, err
+		}
+
+		if err := insertJobEvent(ctx, tx, jobEventInput{
+			jobID: job.id, typeName: "task-lease-expired", severity: "warning",
+			stage:     jobruntime.StageSearchingMaps,
+			message:   fmt.Sprintf("Reclaimed %d stale task lease(s) left by a stopped worker", job.count),
+			context:   map[string]any{"reclaimed": job.count, "startup_sweep": true},
+			createdAt: now,
+		}); err != nil {
+			return 0, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit stale task reclaim: %w", err)
+	}
+
+	return int(reclaimed), nil
+}
+
 // reclaimExpiredTasks is the shared statement. The attempt consumed by the lost
 // lease is returned so a reclaimed task is not penalised for a worker crash.
 func reclaimExpiredTasks(ctx context.Context, tx *sql.Tx, jobID string, now int64) (int, error) {

@@ -230,7 +230,7 @@ func TestTaskPoolPlanDividesTheBudgetInsteadOfMultiplyingIt(t *testing.T) {
 
 	// A zero browser-worker budget is "no cap": an explicit TaskWorkers choice
 	// is always preserved, so this exercises the division math on its own.
-	plan := planTaskPool(&job, 8, 32, 0)
+	plan := planTaskPool(&job, 8, 32, 0, 0)
 
 	if plan.Workers != 4 {
 		t.Fatalf("workers = %d, want 4", plan.Workers)
@@ -247,21 +247,21 @@ func TestTaskPoolPlanDividesTheBudgetInsteadOfMultiplyingIt(t *testing.T) {
 	}
 
 	// A plan never spawns more workers than there is work for.
-	if narrow := planTaskPool(&job, 8, 2, 0); narrow.Workers != 2 {
+	if narrow := planTaskPool(&job, 8, 2, 0, 0); narrow.Workers != 2 {
 		t.Fatalf("workers for two pending tasks = %d, want 2", narrow.Workers)
 	}
 
 	// An unset value still yields a usable, bounded default.
 	job.Data.TaskWorkers = 0
 
-	if fallback := planTaskPool(&job, 8, 32, 0); fallback.Workers < 1 || fallback.Workers > defaultTaskWorkers {
+	if fallback := planTaskPool(&job, 8, 32, 0, 0); fallback.Workers < 1 || fallback.Workers > defaultTaskWorkers {
 		t.Fatalf("default workers = %d, want 1..%d", fallback.Workers, defaultTaskWorkers)
 	}
 
 	// The bound is enforced even if a job asks for more.
 	job.Data.TaskWorkers = web.MaximumJobTaskWorkers + 50
 
-	if capped := planTaskPool(&job, 64, 1000, 0); capped.Workers != web.MaximumJobTaskWorkers {
+	if capped := planTaskPool(&job, 64, 1000, 0, 0); capped.Workers != web.MaximumJobTaskWorkers {
 		t.Fatalf("capped workers = %d, want %d", capped.Workers, web.MaximumJobTaskWorkers)
 	}
 }
@@ -300,7 +300,7 @@ func TestPlanTaskPoolSimultaneousBrowsers(t *testing.T) {
 	incident.Data.BrowserPool = 2
 	incident.Data.PagesBrowser = 2
 
-	uncapped := planTaskPool(&incident, 4, 48, 0)
+	uncapped := planTaskPool(&incident, 4, 48, 0, 0)
 	if uncapped.Workers != defaultTaskWorkers || uncapped.PerTaskConcurrency != 1 {
 		t.Fatalf("uncapped plan = %+v, want %d workers at 1 concurrency each",
 			uncapped, defaultTaskWorkers)
@@ -319,7 +319,7 @@ func TestPlanTaskPoolSimultaneousBrowsers(t *testing.T) {
 	// independent single-process browsers. Two workers pack two apps of one
 	// browser; one worker packs four pages into one app's pool of two.
 	for _, budget := range []int{1, 2} {
-		capped := planTaskPool(&incident, 4, 48, budget)
+		capped := planTaskPool(&incident, 4, 48, budget, 0)
 		if capped.Workers > budget {
 			t.Fatalf("budget %d: workers = %d, want at most the budget", budget, capped.Workers)
 		}
@@ -339,7 +339,7 @@ func TestPlanTaskPoolSimultaneousBrowsers(t *testing.T) {
 		job.Data.BrowserPool = 0
 		job.Data.PagesBrowser = 8
 
-		plan := planTaskPool(&job, 1, 48, 0)
+		plan := planTaskPool(&job, 1, 48, 0, 0)
 		if got := plan.Workers * browsersPerWorker(plan, job.Data.PagesBrowser); got < plan.Workers {
 			t.Fatalf("workers=%d: simultaneous browsers %d fell below the worker floor %d",
 				workers, got, plan.Workers)
@@ -359,12 +359,12 @@ func TestPlanTaskPoolCapsBrowserModeDefaultFanout(t *testing.T) {
 
 	// Unset workers, browser mode, memory budget of two: the default fan-out of
 	// four is capped to two.
-	if plan := planTaskPool(&browser, 8, 48, 2); plan.Workers != 2 {
+	if plan := planTaskPool(&browser, 8, 48, 2, 0); plan.Workers != 2 {
 		t.Fatalf("capped default workers = %d, want 2", plan.Workers)
 	}
 
 	// A tighter budget of one pins it to the single-app topology.
-	if plan := planTaskPool(&browser, 8, 48, 1); plan.Workers != 1 {
+	if plan := planTaskPool(&browser, 8, 48, 1, 0); plan.Workers != 1 {
 		t.Fatalf("budget-one workers = %d, want 1", plan.Workers)
 	}
 
@@ -374,12 +374,12 @@ func TestPlanTaskPoolCapsBrowserModeDefaultFanout(t *testing.T) {
 	// browsers than RAM holds is what OOM-killed the incident run regardless of
 	// who chose the number.
 	browser.Data.TaskWorkers = 4
-	if plan := planTaskPool(&browser, 8, 48, 1); plan.Workers != 1 {
+	if plan := planTaskPool(&browser, 8, 48, 1, 0); plan.Workers != 1 {
 		t.Fatalf("explicit workers over the memory budget = %d, want it lowered to 1", plan.Workers)
 	}
 
 	// With ample memory budget the explicit choice is preserved untouched.
-	if plan := planTaskPool(&browser, 8, 48, 8); plan.Workers != 4 {
+	if plan := planTaskPool(&browser, 8, 48, 8, 0); plan.Workers != 4 {
 		t.Fatalf("explicit workers within budget = %d, want the operator's 4 preserved", plan.Workers)
 	}
 
@@ -387,7 +387,7 @@ func TestPlanTaskPoolCapsBrowserModeDefaultFanout(t *testing.T) {
 	fast := gridScrapeJob("fast", 0)
 	fast.Data.FastMode = true
 	fast.Data.Concurrency = 8
-	if plan := planTaskPool(&fast, 8, 48, 0); plan.Workers != defaultTaskWorkers {
+	if plan := planTaskPool(&fast, 8, 48, 0, 0); plan.Workers != defaultTaskWorkers {
 		t.Fatalf("fast-mode workers = %d, want the full default %d", plan.Workers, defaultTaskWorkers)
 	}
 }
@@ -891,8 +891,8 @@ func TestConcurrentClaimsNeverHandOutTheSameTaskTwice(t *testing.T) {
 				claimed[task.Key] = owner
 				mu.Unlock()
 
-				if err := service.CompleteJobTask(
-					context.Background(), job.ID, task.Key, web.JobTaskCheckpoint{},
+				if err := service.CompleteJobTaskAs(
+					context.Background(), job.ID, task.Key, owner, web.JobTaskCheckpoint{},
 				); err != nil {
 					t.Errorf("complete %q: %v", task.Key, err)
 
@@ -1159,7 +1159,7 @@ func TestLiveBrowserFootprintReportsRealBrowsers(t *testing.T) {
 	incident.Data.BrowserPool = 2
 	incident.Data.PagesBrowser = 2
 
-	plan := planTaskPool(&incident, 4, 48, 0)
+	plan := planTaskPool(&incident, 4, 48, 0, 0)
 	want := int64(plan.Workers * browsersPerWorker(plan, incident.Data.PagesBrowser))
 
 	browsers, pages := newRun(&incident, plan).liveBrowserFootprint()
@@ -1178,7 +1178,7 @@ func TestLiveBrowserFootprintReportsRealBrowsers(t *testing.T) {
 	derived.Data.BrowserPool = 0
 	derived.Data.PagesBrowser = 8
 
-	derivedPlan := planTaskPool(&derived, 2, 48, 0)
+	derivedPlan := planTaskPool(&derived, 2, 48, 0, 0)
 
 	browsers, _ = newRun(&derived, derivedPlan).liveBrowserFootprint()
 	if browsers < int64(derivedPlan.Workers) {
@@ -1189,7 +1189,7 @@ func TestLiveBrowserFootprintReportsRealBrowsers(t *testing.T) {
 	fast := gridScrapeJob("fast", 2)
 	fast.Data.FastMode = true
 
-	browsers, pages = newRun(&fast, planTaskPool(&fast, 4, 48, 0)).liveBrowserFootprint()
+	browsers, pages = newRun(&fast, planTaskPool(&fast, 4, 48, 0, 0)).liveBrowserFootprint()
 	if browsers != 0 || pages != 0 {
 		t.Fatalf("Fast mode reported %d browser(s) and %d page(s), want 0 and 0", browsers, pages)
 	}

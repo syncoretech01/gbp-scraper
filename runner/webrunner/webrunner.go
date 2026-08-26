@@ -43,6 +43,13 @@ type webrunner struct {
 	// browsers caches the local browser-process census that adaptive
 	// performance reads before it lets a run take capacity back.
 	browsers browserCensus
+	// containment tracks engines abandoned by awaitEngine so their leaked
+	// goroutines, processes and file handles are watched, reported, and
+	// reclaimed by the janitor at the next safe point.
+	containment *engineContainment
+	// pollInterval overrides the loop cadence (default one second); it is
+	// write-once before Run so the loops read it without synchronization.
+	pollInterval time.Duration
 }
 
 type mateRunner interface {
@@ -76,10 +83,11 @@ func New(cfg *runner.Config) (runner.Runner, error) {
 	}
 
 	ans := webrunner{
-		srv:       srv,
-		svc:       svc,
-		cfg:       cfg,
-		setupMate: defaultSetupMate(cfg),
+		srv:         srv,
+		svc:         svc,
+		cfg:         cfg,
+		setupMate:   defaultSetupMate(cfg),
+		containment: newEngineContainment(),
 	}
 
 	return &ans, nil
@@ -143,10 +151,29 @@ func (w *webrunner) Run(ctx context.Context) error {
 		log.Printf("recovered %d abandoned active jobs at their last safe checkpoints", recovered)
 	}
 
+	// RecoverAbandonedJobs only touches jobs that looked ACTIVE. A running
+	// task row with an expired lease on a paused, partial or cancelled job is
+	// outside its filter and, before this sweep, was reclaimed by nothing: the
+	// operator saw a phantom running task forever. Startup is the safe moment —
+	// no worker of this process holds any lease yet, and leases of a previous
+	// process died with it.
+	if reclaimed, err := w.svc.ReclaimStaleJobTasks(ctx); err != nil &&
+		!errors.Is(err, web.ErrCheckpointUnsupported) {
+		log.Printf("warning: stale task leases could not be reclaimed: %v", err)
+	} else if reclaimed > 0 {
+		log.Printf("reclaimed %d stale task lease(s) left behind by earlier runs", reclaimed)
+	}
+
 	egroup, ctx := errgroup.WithContext(ctx)
 
+	// Housekeeping (heartbeat, schedules) and job execution run in separate
+	// goroutines so one wedged or slow job can never freeze the scheduler.
 	egroup.Go(func() error {
-		return w.work(ctx)
+		return w.housekeepingLoop(ctx)
+	})
+
+	egroup.Go(func() error {
+		return w.jobLoop(ctx)
 	})
 
 	egroup.Go(func() error {
@@ -160,8 +187,16 @@ func (w *webrunner) Close(context.Context) error {
 	return nil
 }
 
-func (w *webrunner) work(ctx context.Context) error {
-	ticker := time.NewTicker(time.Second)
+// housekeepingLoop owns everything that must keep ticking while a job runs:
+// the scheduler heartbeat and due-schedule materialization. Before this loop
+// existed, one goroutine serialized housekeeping WITH job execution, so a
+// single slow or wedged job froze the heartbeat (the System page read "stale"
+// during every run), stopped schedules from materializing, and — with a
+// skip-policy schedule — recorded bogus "missed" skips. Nothing here may ever
+// run a job, and nothing here may return a non-context error: housekeeping
+// dying must not take the web server down with it.
+func (w *webrunner) housekeepingLoop(ctx context.Context) error {
+	ticker := time.NewTicker(w.tickInterval())
 	defer ticker.Stop()
 
 	for {
@@ -171,16 +206,43 @@ func (w *webrunner) work(ctx context.Context) error {
 		case <-ticker.C:
 			now := time.Now().UTC()
 			w.svc.RecordSchedulerHeartbeat(now)
+
 			scheduled, scheduleErr := w.svc.StartDueSchedules(ctx, now, 10)
 			if scheduleErr != nil && !errors.Is(scheduleErr, web.ErrScheduleStoreUnsupported) {
 				log.Printf("schedule polling failed; the worker will retry: %s", jobruntime.RedactString(scheduleErr.Error()))
 			}
+
 			if len(scheduled) > 0 {
 				log.Printf("queued %d due scheduled jobs", len(scheduled))
 			}
+		}
+	}
+}
+
+// jobLoop is the single job-execution slot. Exactly one goroutine runs it, and
+// that single-threadedness IS the duplicate-launch guard: SelectPending orders
+// the queue durably, scrapeJob immediately flips the picked job to working
+// (removing it from the next SelectPending), and no second dispatcher exists.
+// Do not spawn a second jobLoop without first adding a CAS claim on the job
+// row. The enrichment pump stays at the tail of this loop on purpose, so
+// enrichment browser work never overlaps scrape browser work.
+func (w *webrunner) jobLoop(ctx context.Context) error {
+	ticker := time.NewTicker(w.tickInterval())
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
 			jobs, err := w.svc.SelectPending(ctx)
 			if err != nil {
-				return err
+				// A transient read error (a busy SQLite moment) must not kill
+				// the whole application — before this split it did, taking the
+				// web UI down with it. Log and retry on the next tick.
+				log.Printf("selecting pending jobs failed; the worker will retry: %s", jobruntime.RedactString(err.Error()))
+
+				continue
 			}
 
 			for i := range jobs {
@@ -188,31 +250,15 @@ func (w *webrunner) work(ctx context.Context) error {
 				case <-ctx.Done():
 					return nil
 				default:
-					t0 := time.Now().UTC()
-					if err := w.scrapeJob(ctx, &jobs[i]); err != nil {
-						params := map[string]any{
-							"job_count": len(jobs[i].Data.Keywords),
-							"duration":  time.Now().UTC().Sub(t0).String(),
-							"error":     err.Error(),
-						}
-
-						evt := tlmt.NewEvent("web_runner", params)
-
-						_ = runner.Telemetry().Send(ctx, evt)
-
-						log.Printf("error scraping job %s: %v", jobs[i].ID, err)
-					} else {
-						params := map[string]any{
-							"job_count": len(jobs[i].Data.Keywords),
-							"duration":  time.Now().UTC().Sub(t0).String(),
-						}
-
-						_ = runner.Telemetry().Send(ctx, tlmt.NewEvent("web_runner", params))
-
-						log.Printf("job %s scraped successfully", jobs[i].ID)
-					}
+					w.runQueuedJob(ctx, &jobs[i])
 				}
 			}
+
+			// Reclaim any processes abandoned engines left behind. This is a
+			// safe point by construction: the job (and its engines) finished
+			// above, and enrichment has not started yet.
+			w.sweepAbandonedEngines(ctx)
+
 			processed, enrichmentErr := w.svc.ProcessEnrichmentQueue(ctx, 1)
 			if enrichmentErr != nil && !errors.Is(enrichmentErr, web.ErrEnrichmentUnsupported) {
 				log.Printf("website enrichment task failed; the worker will continue: %s",
@@ -222,6 +268,43 @@ func (w *webrunner) work(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// runQueuedJob executes one job with the telemetry the old loop emitted.
+func (w *webrunner) runQueuedJob(ctx context.Context, job *web.Job) {
+	t0 := time.Now().UTC()
+
+	if err := w.scrapeJob(ctx, job); err != nil {
+		params := map[string]any{
+			"job_count": len(job.Data.Keywords),
+			"duration":  time.Now().UTC().Sub(t0).String(),
+			"error":     err.Error(),
+		}
+
+		_ = runner.Telemetry().Send(ctx, tlmt.NewEvent("web_runner", params))
+
+		log.Printf("error scraping job %s: %v", job.ID, err)
+
+		return
+	}
+
+	params := map[string]any{
+		"job_count": len(job.Data.Keywords),
+		"duration":  time.Now().UTC().Sub(t0).String(),
+	}
+
+	_ = runner.Telemetry().Send(ctx, tlmt.NewEvent("web_runner", params))
+
+	log.Printf("job %s scraped successfully", job.ID)
+}
+
+// tickInterval is the loop cadence; tests may shorten it before Run starts.
+func (w *webrunner) tickInterval() time.Duration {
+	if w.pollInterval > 0 {
+		return w.pollInterval
+	}
+
+	return time.Second
 }
 
 func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) error {
@@ -418,7 +501,7 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) error {
 		// checkpoint pool needs is therefore not required on this path.
 		exitMonitor.SetSeedCount(len(seedJobs))
 
-		allowedSeconds := max(60, len(seedJobs)*10*job.Data.Depth/50+120)
+		allowedSeconds := defaultAllowedSeconds(len(seedJobs), job.Data.Depth, job.Data.Email)
 
 		if job.Data.MaxTime > 0 {
 			if job.Data.MaxTime.Seconds() < 180 {
@@ -438,7 +521,17 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) error {
 		go exitMonitor.Run(mateCtx)
 		go w.watchRequestedStop(mateCtx, job.ID, cancel, stopReason)
 
-		err = mate.Start(mateCtx, seedJobs...)
+		// Bounded exactly like the checkpoint path: the upstream teardown
+		// inside Start can wedge on a dead browser, and this branch used to be
+		// the last place that would wait on it forever.
+		var startReturned bool
+		err, startReturned = awaitEngine(mateCtx, engineShutdownGrace, func() error {
+			return mate.Start(mateCtx, seedJobs...)
+		})
+		if !startReturned {
+			mateClosed = true // abandoned; nothing may synchronously touch it again
+			err = errEngineShutdownTimeout
+		}
 		removeRunOnReturn = false
 		runContextErr := mateCtx.Err()
 		cancel()
@@ -484,10 +577,12 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) error {
 		return err
 	}
 
-	if err := mate.Close(); err != nil {
-		return fmt.Errorf("close scrape worker: %w", err)
+	if !mateClosed {
+		if err := mate.Close(); err != nil {
+			return fmt.Errorf("close scrape worker: %w", err)
+		}
+		mateClosed = true
 	}
-	mateClosed = true
 	if info, statErr := outfile.Stat(); statErr != nil {
 		return fmt.Errorf("inspect result CSV: %w", statErr)
 	} else if info.Size() == 0 {

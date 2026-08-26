@@ -42,6 +42,10 @@ const (
 	// blocks on a browser that has stopped answering. The task abandons the
 	// engine rather than waiting, keeping its rows and staying resumable.
 	FailureKindEngineShutdownTimeout = "engine-shutdown-timeout"
+	// FailureKindTaskTruncated is a task cancelled while places it had already
+	// found were still uncommitted. It used to be normalized to success, which
+	// recorded short cells as complete; now it fails resumably and honestly.
+	FailureKindTaskTruncated = "task-truncated"
 	// FailureKindNavigationFailure is a page navigation that failed for a
 	// reason that is not a timeout and not a recognised network fault
 	// (net::ERR_ABORTED, net::ERR_FAILED, a detached frame).
@@ -159,6 +163,8 @@ func coarseForKind(fine string) string {
 		return coarseBlocked
 	case FailureKindBrowserCrash, FailureKindBrowserContextFailure, FailureKindEngineShutdownTimeout:
 		return coarseBrowserFailure
+	case FailureKindTaskTruncated:
+		return coarseTaskFailed
 	case FailureKindProxyConnect, FailureKindProxyAuth:
 		return coarseProxyFailure
 	case FailureKindNavigationTimeout:
@@ -191,6 +197,14 @@ func classifyFailureKind(err error) failureClassification {
 			Coarse: coarseBrowserFailure,
 			Fine:   FailureKindEngineShutdownTimeout,
 			Signal: "browser-teardown-blocked",
+		}
+	}
+
+	if errors.Is(err, errTaskTruncated) {
+		return failureClassification{
+			Coarse: coarseTaskFailed,
+			Fine:   FailureKindTaskTruncated,
+			Signal: "cancelled-with-places-owed",
 		}
 	}
 
