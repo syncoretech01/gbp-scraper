@@ -30,7 +30,12 @@ services:
     # evidence they are being hit.
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8080/"]
+      # Probe the readiness endpoint, not the root page: "/" renders the full
+      # dashboard, which on a large bind-mounted workspace legitimately takes
+      # longer than the 5 s probe timeout and left a working container marked
+      # unhealthy. The health route answers in milliseconds regardless of
+      # workspace size and still proves the server and database are up.
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8080/api/v1/system/health"]
       interval: 10s
       timeout: 5s
       retries: 12

@@ -1057,3 +1057,11 @@ architecture decision for the operator, not something this phase makes.
 The Docker healthcheck (5 s timeout) also reported `unhealthy` for the first
 minutes after this deploy while the pre-migration backup of the 86 MB database
 and migration 19 ran; it recovered on its own once the app answered.
+
+The compose healthcheck probed `/`, which renders the whole dashboard; on the
+bind-mounted 372-business workspace that takes 6–7 s against a 5 s probe
+timeout, so Docker marked a working container `unhealthy` indefinitely. The
+probe now targets `/api/v1/system/health` (26 ms), which proves the server and
+database are up without rendering a page. The dashboard's own render time on
+the bind mount (native: 1.6 s on the same data) is recorded as a known cost of
+the Windows file-sharing layer, not as a defect closed here.
