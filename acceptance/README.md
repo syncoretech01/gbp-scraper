@@ -96,8 +96,68 @@ The catalog holds two families:
   (default 1) over three area densities, to compare yield and quality across
   market types.
 
+- **W width ladder** — the same 48-task workload run at a rising number of
+  parallel task WORKERS (`W1`, `W2`, `W4`, `W6`) with per-task concurrency, the
+  browser pool and pages-per-browser all pinned so that **one rung = N workers =
+  N Maps operations = N browser processes**.
+
 There is also a `fast` reference experiment (pure-HTTP, no browser) matching the
 lead's fast-mode control.
+
+### Why the W ladder exists alongside A..E
+
+The A..E ladder varies **concurrency**, which the engine may spend either on
+more browsers or on more pages inside one browser depending on
+`pages_per_browser`. That makes it the right ladder for finding the load at
+which browser mode breaks, and the wrong one for finding how wide the pool may
+safely be: two rungs with the same concurrency can hold very different numbers
+of browser processes.
+
+Each task worker runs its **own** scrapemate app and therefore its **own**
+browser pool, which never drops below one browser. Workers — not concurrency —
+are what multiply Chromium processes and consume the memory budget. The W ladder
+varies exactly that dimension and holds everything else fixed, so a rung's block
+rate, browser-failure rate and peak memory are attributable to the width alone.
+
+Run the rungs **in ascending order**, one job at a time, and stop at the first
+rung whose `block_rate` or `browser_failure_rate` rises above the rung below it.
+That rung is the live knee for this host and this target; the rung below it is
+the safe width. Throughput bought past the knee is bought with platform
+refusals, which is not throughput.
+
+Auto capacity is left **on** for the ladder. A rung whose recorded
+`final_effective_concurrency` or measured browser count comes back below its
+label means the host could not afford that width — which is itself the answer,
+not a failed run.
+
+```
+go run ./acceptance/cmd/harness -base http://127.0.0.1:8099 -experiment W1 -out ./acc
+go run ./acceptance/cmd/harness -base http://127.0.0.1:8099 -experiment W2 -out ./acc
+go run ./acceptance/cmd/harness -base http://127.0.0.1:8099 -experiment W4 -out ./acc
+go run ./acceptance/cmd/harness -base http://127.0.0.1:8099 -experiment W6 -out ./acc
+# or the whole ladder in order: -experiment widths
+```
+
+### The offline scheduler benchmark
+
+The W ladder costs live Google traffic. The question "how much of a run's wall
+time is the scheduler's, and how does that change with width" does not, and is
+answered by `TestSchedulerThroughputBenchmark` in
+`runner/webrunner/schedbench_test.go`. It drives the real pool — the real
+durable plan, the real lease/claim protocol, the real CSV merge, the real SQLite
+writes, the real supervisor — and replaces only the scraping engine, which
+sleeps for the measured duration of each of the 180 tasks of acceptance job
+`7100e95b`.
+
+```
+GMS_SCHEDBENCH=1 GMS_SCHEDBENCH_SCALE=50 GMS_SCHEDBENCH_WIDTHS=1,2,3,4,6,8 \
+  go test -run TestSchedulerThroughputBenchmark -timeout 30m ./runner/webrunner/
+```
+
+Everything it reports about scheduling, contention, duplicate work and write
+latency is **measured**. The per-task durations it replays are **modelled** from
+one real run. It cannot say anything about the platform's block rate at width —
+that is what the W ladder is for.
 
 The default workload coordinates (Austin, TX; and the market placeholders) are
 **placeholders**. Replace them with your real targets via `-queries`,

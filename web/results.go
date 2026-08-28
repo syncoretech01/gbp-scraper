@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gosom/google-maps-scraper/web/enrichment"
+	"github.com/gosom/google-maps-scraper/web/prospect"
 )
 
 var (
@@ -141,6 +142,55 @@ type BusinessResult struct {
 	LastCheckedAt    *time.Time     `json:"last_checked_at,omitempty"`
 	FirstSeenAt      time.Time      `json:"first_seen_at,omitzero"`
 	LastSeenAt       time.Time      `json:"last_seen_at,omitzero"`
+	// The fields below are additive, machine-usable evidence columns. Each one
+	// is either a stored value or nil/zero when nothing has been observed, so a
+	// consumer never has to parse a rendered chip to learn what happened.
+	//
+	// Website audit evidence comes from the newest stored website row.
+	WebsiteAuditStatus  string   `json:"website_audit_status,omitempty"`
+	WebsiteFinalURL     string   `json:"website_final_url,omitempty"`
+	WebsiteHTTPStatus   *int64   `json:"website_http_status,omitempty"`
+	WebsiteHTTPS        *bool    `json:"website_https,omitempty"`
+	WebsiteTLSValid     *bool    `json:"website_tls_valid,omitempty"`
+	WebsiteErrorReason  string   `json:"website_error_reason,omitempty"`
+	WebsiteParked       bool     `json:"website_parked,omitempty"`
+	WebsiteComingSoon   bool     `json:"website_coming_soon,omitempty"`
+	WebsitePlaceholder  bool     `json:"website_placeholder,omitempty"`
+	WebsiteMixedContent bool     `json:"website_mixed_content,omitempty"`
+	WebsitePagesChecked int      `json:"website_pages_checked,omitempty"`
+	WebsiteBrokenLinks  int      `json:"website_broken_internal_links,omitempty"`
+	WebsiteConfidence   *float64 `json:"website_confidence,omitempty"`
+	// Website state evidence. These are the exact inputs ResolveWebsiteState
+	// reads, carried on the row so a state can be resolved for a whole page
+	// without a second query per business.
+	WebsiteTaskState        string     `json:"website_task_state,omitempty"`
+	WebsiteAuditCompleted   bool       `json:"website_audit_completed,omitempty"`
+	WebsiteAuditReachable   bool       `json:"website_audit_reachable,omitempty"`
+	WebsiteAuditStatusCode  int        `json:"website_audit_status_code,omitempty"`
+	WebsiteAuditError       string     `json:"website_audit_error,omitempty"`
+	WebsiteAuditCompletedAt *time.Time `json:"website_audit_completed_at,omitempty"`
+	// Contact evidence counts.
+	EmailCount  int `json:"email_count,omitempty"`
+	PhoneCount  int `json:"phone_count,omitempty"`
+	SocialCount int `json:"social_count,omitempty"`
+	// Scoring provenance: which rule set produced ProspectScore and when.
+	ScoringRuleVersion string     `json:"scoring_rule_version,omitempty"`
+	ProspectUpdatedAt  *time.Time `json:"prospect_updated_at,omitempty"`
+	// Observation provenance. SourceJobID, SourceQuery, and SourceCell above
+	// describe one exact observation; the fields here describe every
+	// observation in scope. When a search names a source job, both are scoped
+	// to that job so a job-scoped row never reports another job's discovery.
+	// ObservationCount is how many observations produced this row inside the
+	// current scope; TotalObservationCount is how many exist in the whole
+	// workspace. Together they tell "seen once by this job" apart from
+	// "seen once, ever".
+	ObservationCount      int64      `json:"observation_count,omitempty"`
+	TotalObservationCount int64      `json:"total_observation_count,omitempty"`
+	SourceJobIDs          []string   `json:"source_job_ids,omitempty"`
+	SourceQueries         []string   `json:"source_queries,omitempty"`
+	SourceCells           []string   `json:"source_cells,omitempty"`
+	FirstObservedAt       *time.Time `json:"first_observed_at,omitempty"`
+	LastObservedAt        *time.Time `json:"last_observed_at,omitempty"`
 }
 
 // BusinessSocial holds the canonical profile URL per platform recognised by
@@ -204,6 +254,120 @@ func (s *BusinessSocial) Set(platform, profileURL string) {
 	case "whatsapp":
 		s.WhatsApp = profileURL
 	}
+}
+
+// WeakWebsiteStates lists the stored prospect website states that make a
+// business worth calling because its web presence is broken, absent, or
+// rented. The Results "Weak website" chip, the export column, and the export
+// filter language all read this one list, so a new weak state is added in
+// exactly one place and never in two.
+func WeakWebsiteStates() []string {
+	return []string{
+		prospect.StatusDead,
+		prospect.StatusParked,
+		prospect.StatusSSLBroken,
+		prospect.StatusSocialOnly,
+		prospect.StatusFreeBuilder,
+		prospect.StatusNoHTTPS,
+	}
+}
+
+// WebsiteStateEvidence assembles the durable evidence this row carries into
+// the canonical resolver's input. Nothing is inferred here: the resolver owns
+// the taxonomy and the precedence, this method only hands it what the row
+// already knows.
+func (b BusinessResult) WebsiteStateEvidence() WebsiteStateEvidence {
+	evidence := WebsiteStateEvidence{
+		Website:         b.Website,
+		MapsURL:         b.MapsURL,
+		LegacyStatus:    b.WebsiteStatus,
+		TaskState:       b.WebsiteTaskState,
+		AuditCompleted:  b.WebsiteAuditCompleted,
+		AuditReachable:  b.WebsiteAuditReachable,
+		AuditStatusCode: b.WebsiteAuditStatusCode,
+		AuditError:      b.WebsiteAuditError,
+	}
+	if b.WebsiteAuditCompletedAt != nil {
+		evidence.AuditCompletedAt = *b.WebsiteAuditCompletedAt
+	}
+
+	return evidence
+}
+
+// WebsiteState is the canonical website state of this row as a plain data
+// value, resolved by ResolveWebsiteState. Adding a state to that taxonomy
+// adds a value here, never a branch.
+func (b BusinessResult) WebsiteState() string {
+	return ResolveWebsiteState(b.WebsiteStateEvidence()).State
+}
+
+// WebsiteKind reports what the listed URL actually is: a site the business
+// owns, a social profile standing in for one, a rented free-builder page, or
+// nothing at all.
+func (b BusinessResult) WebsiteKind() string {
+	switch b.WebsiteState() {
+	case WebsiteStateNoWebsite:
+		return "none"
+	case WebsiteStateSocialOnly:
+		return "social"
+	}
+	if strings.EqualFold(strings.TrimSpace(b.ProspectStatus), prospect.StatusFreeBuilder) {
+		return "free_builder"
+	}
+	if strings.TrimSpace(b.Website) == "" {
+		return "none"
+	}
+
+	return "owned"
+}
+
+// HasWebsite reports whether the listing links any website at all.
+func (b BusinessResult) HasWebsite() bool {
+	return strings.TrimSpace(b.Website) != ""
+}
+
+// NoWebsite is the exported inverse of HasWebsite and matches the Results
+// "No website" filter exactly.
+func (b BusinessResult) NoWebsite() bool { return !b.HasWebsite() }
+
+// SocialOnly reports whether a social profile is standing in for a website.
+func (b BusinessResult) SocialOnly() bool {
+	return b.WebsiteState() == WebsiteStateSocialOnly
+}
+
+// WeakWebsite reports whether the stored classification is in
+// WeakWebsiteStates, matching the Results "Weak website" chip exactly.
+func (b BusinessResult) WeakWebsite() bool {
+	state := strings.ToUpper(strings.TrimSpace(b.ProspectStatus))
+	if state == "" {
+		return false
+	}
+	for _, weak := range WeakWebsiteStates() {
+		if state == weak {
+			return true
+		}
+	}
+
+	return false
+}
+
+// HasPhone reports whether a phone number is stored for this business.
+func (b BusinessResult) HasPhone() bool {
+	return strings.TrimSpace(b.Phone) != "" || strings.TrimSpace(b.NormalizedPhone) != "" || b.PhoneCount > 0
+}
+
+// HasEmail reports whether an email address is stored for this business.
+func (b BusinessResult) HasEmail() bool {
+	return strings.TrimSpace(b.PrimaryEmail) != "" || b.EmailCount > 0 || len(b.Emails) > 0
+}
+
+// Contactable matches the Results "Contactable" chip: a stored email address
+// or a stored phone number.
+func (b BusinessResult) Contactable() bool { return b.HasEmail() || b.HasPhone() }
+
+// NeverChecked reports that no website audit has ever completed for this row.
+func (b BusinessResult) NeverChecked() bool {
+	return b.LastCheckedAt == nil && !b.WebsiteAuditCompleted
 }
 
 // Any reports whether at least one platform has a stored profile.

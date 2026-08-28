@@ -1838,6 +1838,111 @@
     window.addEventListener("beforeprint", renderEveryRow);
     window.addEventListener("afterprint", () => scheduleRowRender(true));
 
+    // ----------------------------------------------------------------
+    // Export scope counts.
+    //
+    // Every export entry states the scope it uses and how many businesses that
+    // scope holds right now. The numbers come from /api/v1/exports/scopes,
+    // which resolves each scope through the same query the export itself runs,
+    // so what the menu promises and what the file contains cannot disagree.
+    // ----------------------------------------------------------------
+    const exportScopeMenu = explorer.querySelector("[data-export-scope-menu]");
+
+    function exportScopeLinks() {
+        if (!exportScopeMenu) return [];
+        return Array.from(exportScopeMenu.querySelectorAll("[data-export-scope]"));
+    }
+
+    function selectedResultIDs() {
+        return checkboxes().filter((box) => box.checked).map((box) => box.value);
+    }
+
+    // The selected-businesses entry only exists while a selection exists, and
+    // it carries the ticked identifiers so the export cannot drift away from
+    // what is on screen.
+    function refreshSelectedScopeLink() {
+        const link = exportScopeLinks().find((item) => item.dataset.exportScope === "selected");
+        if (!link) return;
+        const ids = selectedResultIDs();
+        const counter = link.querySelector("[data-scope-count]");
+        if (!ids.length) {
+            link.hidden = true;
+            if (counter) counter.textContent = "0";
+            return;
+        }
+        link.hidden = false;
+        const target = new URL("/app/exports", window.location.origin);
+        target.searchParams.set("scope", "selected");
+        target.searchParams.set("selected_ids", ids.join(","));
+        link.setAttribute("href", target.pathname + target.search);
+        link.dataset.endpoint = target.pathname + target.search;
+        if (counter) counter.textContent = String(ids.length);
+    }
+
+    // Each scope link keeps the operator's current query and adds the scope it
+    // means, so following one lands on a builder that is already narrowed the
+    // same way the table is.
+    function scopeTarget(scope) {
+        const here = new URL(window.location.href);
+        const target = new URL("/app/exports", window.location.origin);
+        if (scope === "filtered" || scope === "job") {
+            here.searchParams.forEach((value, key) => {
+                if (key === "page" || key === "page_size" || key === "notice" || key === "view") return;
+                if (scope === "job" && key !== "job_id") return;
+                target.searchParams.append(key, value);
+            });
+        }
+        target.searchParams.set("scope", scope);
+        return target.pathname + target.search;
+    }
+
+    function applyScopeCounts(scopes) {
+        exportScopeLinks().forEach((link) => {
+            const scope = link.dataset.exportScope;
+            if (scope === "selected") return;
+            const entry = scopes.find((item) => item && item.key === scope);
+            const counter = link.querySelector("[data-scope-count]");
+            const hint = link.querySelector("[data-scope-hint]");
+            if (!entry) return;
+            if (counter) counter.textContent = String(entry.count);
+            const path = scopeTarget(scope);
+            link.setAttribute("href", path);
+            link.dataset.endpoint = path;
+            if (hint && entry.reason) hint.textContent = entry.reason;
+            link.setAttribute("aria-label", link.querySelector("strong")
+                ? link.querySelector("strong").textContent.trim() + " (" + entry.count + " businesses)"
+                : scope);
+        });
+    }
+
+    function loadExportScopeCounts() {
+        if (!exportScopeMenu) return;
+        const endpoint = exportScopeMenu.dataset.scopeEndpoint || "/api/v1/exports/scopes";
+        const target = new URL(endpoint, window.location.origin);
+        new URL(window.location.href).searchParams.forEach((value, key) => {
+            if (key === "page" || key === "page_size" || key === "notice" || key === "view") return;
+            target.searchParams.append(key, value);
+        });
+        window.fetch(target.toString(), { headers: { Accept: "application/json" } })
+            .then((response) => (response.ok ? response.json() : null))
+            .then((payload) => {
+                if (!payload || !Array.isArray(payload.data)) return;
+                applyScopeCounts(payload.data);
+            })
+            .catch(() => { /* the menu keeps its em dashes when counting fails */ });
+    }
+
+    if (exportScopeMenu) {
+        exportScopeMenu.addEventListener("toggle", () => {
+            if (exportScopeMenu.open) refreshSelectedScopeLink();
+        });
+        explorer.addEventListener("change", (event) => {
+            if (event.target && event.target.name === "result_ids") refreshSelectedScopeLink();
+        });
+        loadExportScopeCounts();
+        refreshSelectedScopeLink();
+    }
+
     explorer.querySelectorAll(".filter-row").forEach(updateFilterRow);
     restoreStoredProfile();
     populateLayoutSelect();

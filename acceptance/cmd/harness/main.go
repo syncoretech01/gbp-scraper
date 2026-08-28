@@ -130,7 +130,7 @@ func parseFlags(args []string) (options, *flag.FlagSet, error) {
 	flagSet := flag.NewFlagSet("harness", flag.ContinueOnError)
 	flagSet.StringVar(&opts.base, "base", "", "base URL of the deployed container, e.g. http://127.0.0.1:8099")
 	flagSet.StringVar(&opts.token, "token", "", "optional API bearer token (only if the container enabled API keys or login)")
-	flagSet.StringVar(&opts.experiment, "experiment", "escalation", "experiment id (A..E, fast, sparse, medium, dense) or group (escalation, markets, all)")
+	flagSet.StringVar(&opts.experiment, "experiment", "escalation", "experiment id (A..E, W1/W2/W4/W6, fast, sparse, medium, dense) or group (escalation, widths, markets, all)")
 	flagSet.StringVar(&opts.out, "out", "acceptance-results", "output directory for records")
 	flagSet.IntVar(&opts.repeat, "repeat", 1, "runs per experiment (>=2 produces a repeatability/variance report)")
 	flagSet.DurationVar(&opts.poll, "poll", 0, "progress poll interval (default 5s)")
@@ -254,13 +254,17 @@ func resolveExperiments(selector string, catalogOptions acceptance.CatalogOption
 		return acceptance.Escalation(catalogOptions), nil
 	case "markets":
 		return acceptance.Markets(catalogOptions), nil
+	case "widths", "width", "workers":
+		return acceptance.WidthLadder(catalogOptions), nil
 	case "all", "catalog":
 		return acceptance.Catalog(catalogOptions), nil
 	}
 
 	config, ok := acceptance.Experiment(selector, catalogOptions)
 	if !ok {
-		return nil, fmt.Errorf("unknown experiment %q (want A..E, fast, sparse, medium, dense, escalation, markets, or all)", selector)
+		return nil, fmt.Errorf(
+			"unknown experiment %q (want A..E, W1/W2/W4/W6, fast, sparse, medium, dense, escalation, widths, markets, or all)",
+			selector)
 	}
 
 	return []acceptance.ExperimentConfig{config}, nil

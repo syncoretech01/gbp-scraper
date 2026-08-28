@@ -50,21 +50,97 @@ type Signals struct {
 	CurrentYear   int  // caller-supplied "now" year (keeps Classify/Score pure)
 }
 
-// socialHosts are hosts that stand in for a real website. Matched as a
-// case-insensitive host suffix with any leading "www." ignored, so
-// "m.facebook.com" and "www.instagram.com" both match.
-var socialHosts = []string{
-	"facebook.com",
-	"instagram.com",
-	"linktr.ee",
-	"yelp.com",
-	"tiktok.com",
-	"twitter.com",
-	"x.com",
-	"linkedin.com",
-	"youtube.com",
-	"wa.me",
-	"whatsapp.com",
+// socialNetwork binds one recognised social/profile host suffix to the
+// canonical platform name this codebase uses for it. The platform names
+// match the ones the website crawler already emits for social links
+// (facebook, instagram, linkedin, x, youtube, tiktok, whatsapp) so a
+// listing URL and a crawled link never disagree about what a network is
+// called.
+type socialNetwork struct {
+	suffix   string
+	platform string
+}
+
+// socialNetworks are hosts that stand in for a real website: social
+// networks, messaging profiles, link-in-bio pages, and review-directory
+// profiles. A business whose only listed URL lives on one of these is
+// renting someone else's page, so it never counts as an owned website.
+//
+// Matched as a case-insensitive host suffix with any leading "www."
+// ignored, so "m.facebook.com" and "www.instagram.com" both match.
+var socialNetworks = []socialNetwork{
+	{"facebook.com", "facebook"},
+	{"fb.com", "facebook"},
+	{"fb.me", "facebook"},
+	{"m.me", "facebook"},
+	{"messenger.com", "facebook"},
+	{"instagram.com", "instagram"},
+	{"instagr.am", "instagram"},
+	{"threads.net", "threads"},
+	{"threads.com", "threads"},
+	{"tiktok.com", "tiktok"},
+	{"twitter.com", "x"},
+	{"x.com", "x"},
+	{"linkedin.com", "linkedin"},
+	{"pinterest.com", "pinterest"},
+	{"pin.it", "pinterest"},
+	{"youtube.com", "youtube"},
+	{"youtu.be", "youtube"},
+	{"snapchat.com", "snapchat"},
+	{"bsky.app", "bluesky"},
+	{"reddit.com", "reddit"},
+	{"tumblr.com", "tumblr"},
+	{"vk.com", "vk"},
+	{"twitch.tv", "twitch"},
+	{"nextdoor.com", "nextdoor"},
+	{"t.me", "telegram"},
+	{"telegram.me", "telegram"},
+	{"wa.me", "whatsapp"},
+	{"whatsapp.com", "whatsapp"},
+	{"yelp.com", "yelp"},
+	{"yelp.ca", "yelp"},
+	{"linktr.ee", "linktree"},
+	{"beacons.ai", "link-in-bio"},
+	{"bio.link", "link-in-bio"},
+	{"taplink.cc", "link-in-bio"},
+	{"lnk.bio", "link-in-bio"},
+	{"campsite.bio", "link-in-bio"},
+	{"allmylinks.com", "link-in-bio"},
+}
+
+// SocialPlatform reports the canonical platform name when a URL's primary
+// destination is a recognised social, messaging, link-in-bio, or review
+// profile network, and "" when it is not. It is the single vocabulary the
+// whole application uses to answer "is this really the company's own
+// website?", so classification, scoring, and storage cannot drift apart.
+func SocialPlatform(website string) string {
+	host, _ := splitHostPath(website)
+	for _, network := range socialNetworks {
+		if hostMatchesSuffix(host, network.suffix) {
+			return network.platform
+		}
+	}
+
+	return ""
+}
+
+// IsSocialWebsite reports whether a URL is a social/profile page rather
+// than an owned website. A true answer must never satisfy a "has a
+// website" requirement anywhere in the application.
+func IsSocialWebsite(website string) bool {
+	return SocialPlatform(website) != ""
+}
+
+// SocialNetworkSuffixes lists every recognised host suffix, newest first
+// in declaration order. Storage layers use it to find already-stored
+// listing URLs that were classified before a network was recognised.
+func SocialNetworkSuffixes() []string {
+	suffixes := make([]string, 0, len(socialNetworks))
+	for _, network := range socialNetworks {
+		suffixes = append(suffixes, network.suffix)
+	}
+
+	return suffixes
 }
 
 // freeBuilderHosts are free website-builder hosts. Matched the same way
@@ -116,9 +192,11 @@ func IsGoogleBusinessSite(website string) bool {
 //     MapsURL, or hosted on google.com/maps, maps.google.com, goo.gl
 //     (incl. maps.app.goo.gl) or g.page -> NO_WEBSITE (the named
 //     "website field points back at Google Maps" edge case).
-//  3. Social host (facebook.com, instagram.com, linktr.ee, yelp.com,
-//     tiktok.com, twitter.com, x.com, linkedin.com, youtube.com,
-//     wa.me, whatsapp.com) -> SOCIAL_ONLY.
+//  3. A recognised social, messaging, link-in-bio, or review-profile
+//     host (see socialNetworks and SocialPlatform) -> SOCIAL_ONLY. The
+//     match is on the URL's own host, so it holds whether or not the
+//     page responds: a reachable Instagram profile is still not an
+//     owned company website.
 //  4. Free website-builder host (wixsite.com, weebly.com,
 //     godaddysites.com, square.site, business.site, wordpress.com,
 //     blogspot.com, webnode.page, mystrikingly.com, carrd.co)
@@ -149,13 +227,11 @@ func Classify(signals Signals) (status string, conclusive bool) {
 		return StatusNoWebsite, true
 	}
 
-	host, _ := splitHostPath(website)
-
-	for _, social := range socialHosts {
-		if hostMatchesSuffix(host, social) {
-			return StatusSocialOnly, true
-		}
+	if SocialPlatform(website) != "" {
+		return StatusSocialOnly, true
 	}
+
+	host, _ := splitHostPath(website)
 
 	for _, builder := range freeBuilderHosts {
 		if hostMatchesSuffix(host, builder) {

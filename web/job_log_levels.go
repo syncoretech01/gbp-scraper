@@ -101,10 +101,10 @@ func classifyJobLogLevel(event JobEvent) string {
 		}
 	}
 
-	switch strings.TrimSpace(strings.ToLower(event.Severity)) {
-	case "error", "system-error", "fatal":
+	switch HonestJobEventSeverity(event.Type, event.Severity) {
+	case JobEventSeverityError:
 		return JobLogLevelSystemError
-	case "warning", "warn":
+	case JobEventSeverityWarning:
 		return JobLogLevelWarning
 	default:
 		return JobLogLevelInformation

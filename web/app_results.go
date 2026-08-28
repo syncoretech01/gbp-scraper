@@ -132,11 +132,17 @@ type appResultRow struct {
 	RatingLabel      string
 	ReviewCountLabel string
 	WebsiteState     string
-	ResponseTime     string
-	QualityLabel     string
-	ConfidenceLabel  string
-	UpdatedLabel     string
-	ScrapedLabel     string
+	// WebsiteStateLabel and WebsiteStateReason are the canonical audit state
+	// (NEVER_CHECKED, LIVE, DEAD, ERROR, NO_WEBSITE, SOCIAL_ONLY, ...) in
+	// operator words, so the table and the drawer say the same thing the
+	// /api/v1/websites/states summary says.
+	WebsiteStateLabel  string
+	WebsiteStateReason string
+	ResponseTime       string
+	QualityLabel       string
+	ConfidenceLabel    string
+	UpdatedLabel       string
+	ScrapedLabel       string
 	// ProspectState and ProspectTierState are CSS-safe badge suffixes for the
 	// stored prospect taxonomy values; ProspectScoreLabel is display-ready.
 	ProspectState      string
@@ -516,8 +522,11 @@ func resultLeadFilters(key string) *ResultFilterGroup {
 	case "no-website":
 		return &ResultFilterGroup{Logic: "and", Filters: []ResultFilter{{Field: "website", Operator: "empty"}}}
 	case "weak-website":
-		return &ResultFilterGroup{Logic: "or", Filters: eq("prospect_status",
-			"DEAD", "PARKED", "SSL_BROKEN", "SOCIAL_ONLY", "FREE_BUILDER", "NO_HTTPS")}
+		// One definition of "weak": WeakWebsiteStates in web/results.go, which
+		// the weak_website export column and the weak_website filter also read.
+		return &ResultFilterGroup{Logic: "and", Filters: []ResultFilter{
+			{Field: "weak_website", Operator: "eq", Value: "true"},
+		}}
 	case "contactable":
 		return &ResultFilterGroup{Logic: "or", Filters: []ResultFilter{
 			{Field: "email", Operator: "not_empty"},
@@ -1015,10 +1024,8 @@ func newAppResultRow(result BusinessResult) appResultRow {
 	if result.WebsiteResponseMS != nil {
 		responseTime = fmt.Sprintf("%d ms", *result.WebsiteResponseMS)
 	}
-	websiteState := strings.ToLower(strings.TrimSpace(result.WebsiteStatus))
-	if websiteState == "" {
-		websiteState = "unknown"
-	}
+	websiteResolution := WebsiteStateForResult(result.Website, result.MapsURL, result.WebsiteStatus)
+	websiteState := strings.ToLower(strings.ReplaceAll(websiteResolution.State, "_", "-"))
 	prospectScore := ""
 	if result.ProspectScore != nil {
 		prospectScore = strconv.FormatFloat(*result.ProspectScore, 'f', 0, 64)
@@ -1043,6 +1050,8 @@ func newAppResultRow(result BusinessResult) appResultRow {
 		RatingLabel:           rating,
 		ReviewCountLabel:      reviews,
 		WebsiteState:          safeCSSState(websiteState),
+		WebsiteStateLabel:     websiteResolution.Label,
+		WebsiteStateReason:    websiteResolution.Reason,
 		ResponseTime:          responseTime,
 		QualityLabel:          strconv.FormatFloat(result.QualityScore, 'f', 0, 64),
 		ConfidenceLabel:       fmt.Sprintf("%.0f%%", result.Confidence*100),

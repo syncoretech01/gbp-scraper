@@ -339,25 +339,12 @@ func (s *Server) newScrapePage(w http.ResponseWriter, r *http.Request) {
 	if values, settingsErr := s.svc.LoadSettings(r.Context()); settingsErr == nil {
 		localAI = localAISettingsFromMap(values)
 	}
-	initial := wizardInitialValues{
-		Name:          "San Francisco dentists",
-		Keywords:      "dentists in San Francisco\ndental clinics in San Francisco",
-		LocationLabel: "San Francisco, California, United States",
-		Latitude:      "37.7749",
-		Longitude:     "-122.4194",
-		GeographyMode: "bbox",
-	}
-	// Saved scrape defaults replace the built-in example location, while a
-	// duplicated job, saved area, or template below still wins over both.
-	if defaults.LocationLabel != "" {
-		initial.LocationLabel = defaults.LocationLabel
-	}
-	if defaults.Lat != "" {
-		initial.Latitude = defaults.Lat
-	}
-	if defaults.Lon != "" {
-		initial.Longitude = defaults.Lon
-	}
+	// A genuinely new scrape inherits nothing job-specific: no name, no query
+	// text, no geography label, no centre. Only the operator's own saved
+	// defaults may prefill it. A duplicated job, saved area, or template below
+	// still layers its own values on top, because those are explicit choices.
+	// See web/wizard_defaults.go.
+	initial := freshWizardInitialValues(defaults)
 	duplicateJobID := strings.TrimSpace(r.URL.Query().Get("duplicate_job"))
 	if duplicateJobID != "" {
 		source, sourceErr := s.svc.Get(r.Context(), duplicateJobID)

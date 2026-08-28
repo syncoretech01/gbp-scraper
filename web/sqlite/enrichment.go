@@ -1359,6 +1359,12 @@ func (repo *repo) WebsiteAuditHistory(
 			// through the same immutable result, so an audit stored before the
 			// control existed simply reports none.
 			audit.URLPatterns = raw.URLPatterns
+			// The extraction funnel, the ruleset version, and any cache
+			// provenance are what let one business's evidence explain itself:
+			// why it holds no address, and whether it was crawled at all.
+			audit.EmailFunnel = raw.EmailFunnel
+			audit.AuditVersion = raw.AuditVersion
+			audit.Cache = raw.Cache
 		}
 		audits = append(audits, audit)
 	}

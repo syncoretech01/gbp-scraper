@@ -35,12 +35,12 @@ there is something to read in them. app-results.js reads the flag below.
         <div class="results-summary-item">
             <span class="results-summary-label">Unique businesses</span>
             <strong class="results-summary-value num" data-number="{{.Page.Stats.UniqueBusinesses}}">{{.Page.Stats.UniqueBusinesses}}</strong>
-            <span class="results-summary-note">{{.Page.Stats.RawRecords}} source records</span>
+            <span class="results-summary-note">{{.Page.Stats.RawRecords}} Maps observations</span>
         </div>
         <div class="results-summary-item">
-            <span class="results-summary-label">Duplicate groups</span>
+            <span class="results-summary-label">Unresolved duplicate candidates</span>
             <strong class="results-summary-value num" data-number="{{.Page.Stats.DuplicateGroups}}">{{.Page.Stats.DuplicateGroups}}</strong>
-            <span class="results-summary-note">{{.Page.Stats.DuplicatesMerged}} records merged</span>
+            <span class="results-summary-note">{{.Page.Stats.DuplicatesMerged}} entity merges</span>
         </div>
         <div class="results-summary-item">
             <span class="results-summary-label">With website</span>
@@ -102,11 +102,23 @@ there is something to read in them. app-results.js reads the flag below.
                 <label class="sr-only" for="results-profile">Column profile</label>
                 <select class="select input-sm results-select" id="results-profile" data-column-profile></select>
                 {{if .Page.Capabilities.CanEditFields}}<button class="button button-sm" type="button" data-action="undo-inline-edit" data-inline-edit-undo hidden>Undo last edit</button>{{end}}<button class="button button-sm" type="button" data-action="open-layout-dialog" aria-haspopup="dialog">{{template "app/icon-panel"}}Columns</button>
-                {{if .Page.ExportPresets}}
-                <details class="action-menu results-menu results-menu-end">
+                {{if .Page.Capabilities.CanExport}}
+                {{/*
+                Every entry names its scope and carries the number of
+                businesses that scope contains right now, filled in by
+                app-results.js from /api/v1/exports/scopes before the operator
+                chooses. An export can therefore never widen silently: the
+                count of what is about to leave is on the control that starts
+                it.
+                */}}
+                <details class="action-menu results-menu results-menu-end" data-export-scope-menu data-scope-endpoint="/api/v1/exports/scopes">
                     <summary class="button button-sm">{{template "app/icon-exports"}}Export{{template "app/icon-chevron-down"}}</summary>
                     <div>
-                        {{range .Page.ExportPresets}}<a href="{{.URL}}" data-endpoint="{{.URL}}"><strong>{{.Label}}</strong><span>{{.Hint}}</span></a>{{end}}
+                        <a href="{{.Page.ExportURL}}" data-endpoint="{{.Page.ExportURL}}" data-export-scope="filtered"><strong>Export filtered results <span class="badge" data-scope-count>&mdash;</span></strong><span data-scope-hint>Exactly the rows this table is showing now</span></a>
+                        <a href="{{.Page.ExportURL}}" data-endpoint="{{.Page.ExportURL}}" data-export-scope="selected" hidden><strong>Export selected <span class="badge" data-scope-count>&mdash;</span></strong><span data-scope-hint>Only the businesses ticked on this page</span></a>
+                        {{if .Page.JobID}}<a href="{{.Page.ExportURL}}" data-endpoint="{{.Page.ExportURL}}" data-export-scope="job"><strong>Export this job <span class="badge" data-scope-count>&mdash;</span></strong><span data-scope-hint>Every business this scrape job discovered</span></a>{{end}}
+                        <a href="/app/exports?scope=all" data-endpoint="/app/exports?scope=all" data-export-scope="all"><strong>Export entire workspace <span class="badge" data-scope-count>&mdash;</span></strong><span data-scope-hint>Every normalized business stored on this machine</span></a>
+                        {{if .Page.ExportPresets}}<span class="results-menu-divider" role="separator"></span>{{range .Page.ExportPresets}}<a href="{{.URL}}" data-endpoint="{{.URL}}"><strong>{{.Label}}</strong><span>{{.Hint}}</span></a>{{end}}{{end}}
                     </div>
                 </details>
                 {{end}}
@@ -204,7 +216,7 @@ there is something to read in them. app-results.js reads the flag below.
                         <td tabindex="-1" data-column="name" data-copy-value="{{.Name}}"{{if $.Page.Capabilities.CanEditFields}} data-edit-field="name" data-edit-value="{{.Name}}" data-edit-label="Business name"{{end}}><a class="results-name" href="/app/results/{{.ID}}" title="{{.Name}}{{if .BusinessStatus}} &middot; {{.BusinessStatus}}{{end}}{{if .Claimed}} &middot; claimed{{end}}" data-action="open-result" data-endpoint="/app/results/{{.ID}}/drawer">{{.Name}}</a></td>
                         <td tabindex="-1" class="cell-clip" data-column="category" data-copy-value="{{.PrimaryCategory}}"{{if $.Page.Capabilities.CanEditFields}} data-edit-field="category" data-edit-value="{{.PrimaryCategory}}" data-edit-label="Primary category"{{end}}><span class="truncate" title="{{.PrimaryCategory}}{{if .AdditionalCategories}} &middot; {{.AdditionalCategories}}{{end}}">{{if .PrimaryCategory}}{{.PrimaryCategory}}{{else}}<span class="empty-inline">&mdash;</span>{{end}}</span></td>
                         <td tabindex="-1" class="cell-clip" data-column="location" data-copy-value="{{.City}}, {{.State}} {{.PostalCode}}"><span class="truncate" title="{{.Address}}">{{if .City}}{{.City}}{{if .State}}, {{.State}}{{end}}{{else}}<span class="empty-inline">&mdash;</span>{{end}}</span></td>
-                        <td tabindex="-1" class="cell-clip" data-column="website" data-copy-value="{{.Domain}}"{{if $.Page.Capabilities.CanEditFields}} data-edit-field="website" data-edit-value="{{.Website}}" data-edit-label="Website URL"{{end}}><span class="cell-stack" title="{{if .Website}}{{.Website}}{{else}}No website stored{{end}} &middot; audit {{if .WebsiteStatus}}{{.WebsiteStatus}}{{else}}never run{{end}} &middot; {{.ResponseTime}}">{{if .Domain}}<span class="truncate results-domain">{{.Domain}}</span>{{else}}<span class="empty-inline results-website-empty">No website</span>{{end}}{{if and .WebsiteStatus (ne .WebsiteStatus "unknown")}}<span class="status status-{{.WebsiteState}}">{{.WebsiteStatus}}</span>{{else if .Domain}}<span class="results-cell-note">never checked</span>{{end}}</span></td>
+                        <td tabindex="-1" class="cell-clip" data-column="website" data-copy-value="{{.Domain}}"{{if $.Page.Capabilities.CanEditFields}} data-edit-field="website" data-edit-value="{{.Website}}" data-edit-label="Website URL"{{end}}><span class="cell-stack" title="{{if .Website}}{{.Website}}{{else}}No website stored{{end}} &middot; audit {{if .WebsiteStatus}}{{.WebsiteStatus}}{{else}}never run{{end}} &middot; {{.ResponseTime}}">{{if .Domain}}<span class="truncate results-domain">{{.Domain}}</span>{{else}}<span class="empty-inline results-website-empty">No website</span>{{end}}<span class="status status-{{.WebsiteState}}" title="{{.WebsiteStateReason}}">{{.WebsiteStateLabel}}</span></span></td>
                         {{/*
                         One compact judgement cell: worth-calling tier, the
                         website signal that produced it, and the score out of

@@ -121,11 +121,39 @@ func ValidateQualityRuleSet(rules QualityRuleSet) error {
 	return nil
 }
 
+// QualityScoreDriftSample is one business whose stored quality score does not
+// match its own stored breakdown.
+type QualityScoreDriftSample struct {
+	BusinessID    string  `json:"business_id"`
+	Name          string  `json:"name"`
+	StoredScore   float64 `json:"stored_score"`
+	ExplainedSum  float64 `json:"explained_sum"`
+	RuleVersion   string  `json:"rule_version"`
+	ComponentRows int64   `json:"component_rows"`
+}
+
+// QualityScoreDriftReport is the result of auditing the record-quality column
+// against the explanation stored beside it.
+//
+// The two must agree: a score is only trustworthy if the breakdown adds up to
+// it. They can come apart when a value written by a different producer - for
+// example an import-time record-completeness number - is merged into the same
+// column, which is exactly the conflation the three separate scores exist to
+// prevent.
+type QualityScoreDriftReport struct {
+	Applied  bool                      `json:"applied"`
+	Checked  int64                     `json:"checked"`
+	Drifted  int64                     `json:"drifted"`
+	Repaired int64                     `json:"repaired"`
+	Samples  []QualityScoreDriftSample `json:"samples"`
+}
+
 type qualityRepository interface {
 	ActiveQualityRules(context.Context) (QualityRuleSet, error)
 	SaveQualityRules(context.Context, QualityRuleSet) (QualityRuleSet, error)
 	BusinessQuality(context.Context, string) (BusinessQualityReport, error)
 	RecalculateQuality(context.Context, []string) (int64, error)
+	QualityScoreDrift(ctx context.Context, repair bool) (QualityScoreDriftReport, error)
 }
 
 // ActiveQualityRules returns the current local scoring configuration.
@@ -156,6 +184,55 @@ func (s *Service) BusinessQuality(ctx context.Context, id string) (BusinessQuali
 		return BusinessQualityReport{}, ErrQualityScoringUnsupported
 	}
 	return repository.BusinessQuality(ctx, id)
+}
+
+// QualityRecalculationResult is one recalculation plus the website audits it
+// had to queue first. Scored keeps its historical meaning.
+type QualityRecalculationResult struct {
+	Scored int64 `json:"scored"`
+	// Prerequisite reports the website audits queued because some of the
+	// requested businesses had never been checked. It is nil when none were
+	// needed.
+	Prerequisite *WebsiteScoringPrerequisite `json:"website_audit_prerequisite,omitempty"`
+}
+
+// RecalculateQualityWithAudit is the explicit "score these records" entry
+// point. Website-dependent components are unknown until an audit runs, so
+// when auditFirst is set the prerequisite audits are queued durably before
+// the pass and the caller is told how many rows are still waiting.
+func (s *Service) RecalculateQualityWithAudit(
+	ctx context.Context,
+	ids []string,
+	auditFirst bool,
+) (QualityRecalculationResult, error) {
+	result := QualityRecalculationResult{}
+	if auditFirst {
+		prerequisite, err := s.EnsureWebsiteAuditPrerequisite(ctx, ids, "quality_recalculate")
+		if err != nil && !errors.Is(err, ErrWebsiteStateUnsupported) {
+			return QualityRecalculationResult{}, err
+		}
+		if prerequisite.Unaudited > 0 {
+			result.Prerequisite = &prerequisite
+		}
+	}
+	scored, err := s.RecalculateQuality(ctx, ids)
+	if err != nil {
+		return QualityRecalculationResult{}, err
+	}
+	result.Scored = scored
+
+	return result, nil
+}
+
+// QualityScoreDrift audits every stored record-quality score against its own
+// stored breakdown, and repairs the rows that disagree when repair is set.
+func (s *Service) QualityScoreDrift(ctx context.Context, repair bool) (QualityScoreDriftReport, error) {
+	repository, ok := s.repo.(qualityRepository)
+	if !ok {
+		return QualityScoreDriftReport{}, ErrQualityScoringUnsupported
+	}
+
+	return repository.QualityScoreDrift(ctx, repair)
 }
 
 // RecalculateQuality rescans selected businesses, or every business for an

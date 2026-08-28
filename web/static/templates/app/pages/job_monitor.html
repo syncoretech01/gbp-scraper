@@ -273,13 +273,64 @@ scrolls past the status header.
     inside the Technical details disclosure near the bottom. */}}
     <section class="ops-collected" aria-labelledby="ops-collected-title">
         <h2 class="t-overline" id="ops-collected-title">What this run collected</h2>
+        {{/*
+        The counting vocabulary is fixed in web/run_metrics.go and must be used
+        here word for word. "Businesses" are distinct records kept; an
+        "observation" is one time a search returned a business; a "repeated
+        observation" is a business an earlier search had already collected, so
+        its stored row was refreshed rather than added. None of those is a
+        merge: only folding two stored records into one is a merge, and this
+        strip must never call anything else one. The tile that used to say
+        "Duplicates merged" counted repeated rows inside the committed CSV,
+        which the merge has already de-repeated, so it read zero on every Maps
+        run while the coverage strip below it reported hundreds of repeats for
+        the same job.
+
+        The two observation tiles ship hidden. app-monitor.js reveals them once
+        GET /api/v1/jobs/{id}/coverage answers with per-task checkpoint totals,
+        which is the only place a run records how often a search re-found
+        something. A build without that endpoint shows the businesses it can
+        prove and no empty scaffolding.
+        */}}
         <div class="stat-grid" style="--stat-min: 11rem">
+            <article class="stat stat-compact"><p class="stat-label">Businesses kept</p><p class="stat-value num" data-progress-field="unique">{{$job.UniqueRecords}}</p><p class="stat-meta"><span class="num" data-progress-field="records">{{$job.RawRecords}}</span> rows in the result file</p></article>
+            <article class="stat stat-compact" data-run-observations hidden><p class="stat-label">Maps observations</p><p class="stat-value num" data-run-observations-value>&mdash;</p><p class="stat-meta" data-run-observations-note>each time a search returned a business</p></article>
+            <article class="stat stat-compact" data-run-repeats hidden><p class="stat-label">Repeated observations</p><p class="stat-value num" data-run-repeats-value>&mdash;</p><p class="stat-meta" data-run-repeats-note>already collected by an earlier search</p></article>
             <article class="stat stat-compact"><p class="stat-label">Emails found</p><p class="stat-value num" data-progress-field="emails">{{$job.Emails}}</p><p class="stat-meta">{{$job.Websites}} websites &middot; {{$job.SocialProfiles}} social profiles</p></article>
-            <article class="stat stat-compact"><p class="stat-label">Rows collected</p><p class="stat-value num" data-progress-field="records">{{$job.RawRecords}}</p><p class="stat-meta">{{$job.CommittedRows}} written to the result file</p></article>
-            <article class="stat stat-compact"><p class="stat-label">Duplicates merged</p><p class="stat-value num">{{$job.Duplicates}}</p><p class="stat-meta">the same business seen more than once</p></article>
-            <article class="stat stat-compact"><p class="stat-label">Warnings and errors</p><p class="stat-value num" data-job-warnings>{{$job.Warnings}}</p><p class="stat-meta"><span class="num" data-job-errors>{{$job.Errors}}</span> errors recorded in the job log</p></article>
+            <article class="stat stat-compact"><p class="stat-label">Warnings and errors</p><p class="stat-value num" data-job-warnings data-raw-warnings="{{$job.Warnings}}">{{$job.Warnings}}</p><p class="stat-meta" data-job-severity-note><span class="num" data-job-errors>{{$job.Errors}}</span> errors recorded in the job log</p></article>
             <article class="stat stat-compact"><p class="stat-label">Blocked or rate-limited</p><p class="stat-value metric-value-small" data-job-block-rate>{{if $job.BlockRate}}{{$job.BlockRate}}{{else}}&mdash;{{end}}</p><p class="stat-meta">refusals measured against finished searches</p></article>
         </div>
+
+        {{/*
+        Where the results landed.
+
+        Google does not honour a radius: a grid-cell query is a viewport hint,
+        and Maps answers a sparse category by widening the search rather than
+        returning a short list, so a run routinely keeps businesses well
+        outside the radius that was typed. Those are real businesses and they
+        are kept. This panel measures the spread instead of hiding it, and
+        offers a filter for an operator who wants only the ones inside the
+        radius. The filter narrows the saved results; it never deletes a row.
+
+        Every loop below reads the metrics web/job_pipeline_view.go tags with
+        the "geography" group, so the panel appears only for a job that carried
+        a usable centre and disappears for one that did not, rather than
+        framing nothing.
+        */}}
+        {{$hasGeography := false}}
+        {{range .Page.Pipeline}}{{range .Metrics}}{{if eq .Group "geography"}}{{$hasGeography = true}}{{end}}{{end}}{{end}}
+        {{if $hasGeography}}
+        <section class="ops-geography" aria-labelledby="ops-geography-title" data-geography-panel>
+            <div class="ops-geography-head">
+                <h3 class="t-overline" id="ops-geography-title">Where the results landed</h3>
+                <p class="t-caption">Measured from the centre this run was given. Everything Maps returned is kept, including businesses outside the area that was actually searched.</p>
+            </div>
+            <div class="stat-grid" style="--stat-min: 12rem">
+                {{range $.Page.Pipeline}}{{range .Metrics}}{{if eq .Group "geography"}}<article class="stat stat-compact"><p class="stat-label">{{.Label}}</p><p class="stat-value metric-value-small">{{.Value}}</p><p class="stat-meta">{{.Note}}</p></article>{{end}}{{end}}{{end}}
+            </div>
+            {{range $.Page.Pipeline}}{{range .Metrics}}{{if eq .Group "geography-filter"}}<p class="ops-geography-action"><a class="button button-sm" href="{{.Value}}" data-endpoint="{{.Value}}">{{.Label}}</a><span class="t-caption">{{.Note}}</span></p>{{end}}{{end}}{{end}}
+        </section>
+        {{end}}
     </section>
 
     {{/* ---------------------------------------------------------------- PLAN + CONTEXT */}}
@@ -302,11 +353,11 @@ scrolls past the status header.
                 <p class="ops-saturation" data-coverage-saturation></p>
 
                 <div class="ops-chart-frame" data-coverage-trend-frame hidden>
-                    <p class="t-overline">New rows per finished search</p>
+                    <p class="t-overline">New businesses per finished search</p>
                     <div class="overflow-safe" data-coverage-trend></div>
                     <p class="ops-chart-legend">
-                        <span><i class="ops-swatch" aria-hidden="true"></i>Rows added</span>
-                        <span><i class="ops-swatch" data-series="duplicates" aria-hidden="true"></i>Duplicates skipped</span>
+                        <span><i class="ops-swatch" aria-hidden="true"></i>Maps observations</span>
+                        <span><i class="ops-swatch" data-series="duplicates" aria-hidden="true"></i>Repeats inside one search</span>
                         <span class="ops-chart-peak" data-coverage-peak></span>
                     </p>
                 </div>
@@ -321,8 +372,8 @@ scrolls past the status header.
                             <th scope="col">State</th>
                             <th scope="col" data-col="confidence">Confidence</th>
                             <th scope="col" class="num">Att.</th>
-                            <th scope="col" class="num">Rows</th>
-                            <th scope="col" class="num">Dupes</th>
+                            <th scope="col" class="num" title="Maps observations this search contributed">Obs.</th>
+                            <th scope="col" class="num" title="Rows this search's own results repeated">Repeats</th>
                             <th scope="col" class="num">Secs</th>
                         </tr></thead>
                         <tbody data-coverage-queries></tbody>

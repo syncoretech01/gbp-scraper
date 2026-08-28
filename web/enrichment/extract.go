@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/PuerkitoBio/goquery"
+	"golang.org/x/net/html"
 )
 
 type rawEmail struct {
@@ -71,7 +72,7 @@ func extractPage(body []byte, pageURL string, kind PageKind) (extractedPage, err
 
 	visibleDocument := document.Clone()
 	visibleDocument.Find("script,style,noscript,template,svg").Remove()
-	visibleText := collapseWhitespace(visibleDocument.Text())
+	visibleText := visibleTextForScan(visibleDocument)
 
 	bodyHTML, err := document.Html()
 	if err != nil {
@@ -106,6 +107,48 @@ func extractPage(body []byte, pageURL string, kind PageKind) (extractedPage, err
 		detectPlaceholderSignals(strings.ToLower(visibleText + " " + bodyHTML))
 
 	return extracted, nil
+}
+
+// visibleTextForScan renders a document's visible text with an explicit
+// separator at every element boundary.
+//
+// goquery's Text() concatenates text nodes with nothing between them, so a
+// page that renders a phone number and an email address in two neighbouring
+// elements produces the single run "626-554-7744inquiries@example.com". The
+// contact regexes then match the whole run, and the workspace stores a mailbox
+// that does not exist. Separating at element boundaries is what makes an
+// extracted address correspond to text a human can actually see.
+func visibleTextForScan(selection *goquery.Selection) string {
+	var builder strings.Builder
+
+	for _, node := range selection.Nodes {
+		appendVisibleText(&builder, node)
+	}
+
+	return collapseWhitespace(builder.String())
+}
+
+func appendVisibleText(builder *strings.Builder, node *html.Node) {
+	switch node.Type {
+	case html.TextNode:
+		builder.WriteString(node.Data)
+
+		return
+	case html.ElementNode, html.DocumentNode:
+	default:
+		return
+	}
+
+	// The separator is written around every element, not only block-level
+	// ones: inline anchors and spans are exactly where navigation labels and
+	// contact links sit next to each other in real page source.
+	builder.WriteByte('\n')
+
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		appendVisibleText(builder, child)
+	}
+
+	builder.WriteByte('\n')
 }
 
 func metaContent(document *goquery.Document, name string) string {

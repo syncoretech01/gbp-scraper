@@ -31,14 +31,18 @@ func AnalyzeEmails(
 		findings = append(findings, rawEmail{address: candidate.Address, source: candidate.Source})
 	}
 
-	return analyzeRawEmails(ctx, findings, config)
+	emails, _, err := analyzeRawEmails(ctx, findings, config)
+
+	return emails, err
 }
 
+// analyzeRawEmails turns raw candidates into ranked addresses and returns the
+// funnel that explains what happened to every candidate it was given.
 func analyzeRawEmails(
 	ctx context.Context,
 	findings []rawEmail,
 	config EmailAnalysisConfig,
-) ([]Email, error) {
+) ([]Email, EmailFunnel, error) {
 	disposableDomains := defaultDisposableDomains()
 
 	for _, domain := range config.DisposableDomains {
@@ -49,11 +53,42 @@ func analyzeRawEmails(
 	}
 
 	emails := make(map[string]*Email)
+	funnel := EmailFunnel{Discovered: len(findings)}
+	// judged remembers which raw candidates hygiene has already ruled on, so a
+	// repeated occurrence is counted once rather than once per page.
+	judged := make(map[string]string, len(findings))
 
 	for _, finding := range findings {
-		address, domain, valid := normalizeEmailAddress(finding.address)
-		if address == "" {
+		_, alreadyJudged := judged[finding.address]
+		if !alreadyJudged {
+			funnel.Distinct++
+		}
+
+		sanitized, reason, ok := sanitizeEmailCandidate(finding.address)
+		if !ok {
+			if !alreadyJudged {
+				judged[finding.address] = ""
+				funnel.reject(reason)
+			}
+
 			continue
+		}
+
+		address, domain, valid := normalizeEmailAddress(sanitized.address)
+		if address == "" || !valid {
+			if !alreadyJudged {
+				judged[finding.address] = ""
+				funnel.reject(RejectionSyntax)
+			}
+
+			continue
+		}
+
+		if !alreadyJudged {
+			judged[finding.address] = address
+			if sanitized.repaired {
+				funnel.Repaired++
+			}
 		}
 
 		key := strings.ToLower(address)
@@ -82,7 +117,7 @@ func analyzeRawEmails(
 
 	for _, email := range emails {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, EmailFunnel{}, err
 		}
 
 		if config.CheckMX && email.ValidSyntax {
@@ -118,7 +153,9 @@ func analyzeRawEmails(
 		result[index].Rank = index + 1
 	}
 
-	return result, nil
+	funnel.Accepted = len(result)
+
+	return result, funnel, nil
 }
 
 func normalizeEmailAddress(rawAddress string) (address, domain string, valid bool) {

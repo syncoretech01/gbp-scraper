@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -226,7 +227,7 @@ func (c *Crawler) Analyze(ctx context.Context, rawURL string) (Result, error) {
 		DisposableDomains: c.config.DisposableDomains,
 	}
 
-	result.Emails, err = analyzeRawEmails(ctx, allEmails, emailConfig)
+	result.Emails, result.EmailFunnel, err = analyzeRawEmails(ctx, allEmails, emailConfig)
 	if err != nil {
 		return Result{}, err
 	}
@@ -434,6 +435,23 @@ func (c *Crawler) request(
 
 	request.Header.Set("User-Agent", c.config.UserAgent)
 
+	// Politeness is enforced at the single point every request passes through,
+	// so a page fetch, a supporting-page fetch, and a link-health probe all
+	// share one host budget. The slot is held until the caller closes the
+	// response body, because a request is not finished with a host until its
+	// bytes have been read.
+	release := func() {}
+	if c.config.HostGate != nil {
+		acquired, gateErr := c.config.HostGate.Acquire(ctx, request.URL.Hostname())
+		if gateErr != nil {
+			return nil, nil, 0, fmt.Errorf("wait for host slot: %w", gateErr)
+		}
+
+		release = acquired
+	}
+
+	releaseOnce := sync.OnceFunc(release)
+
 	redirects := make([]Redirect, 0)
 	clientCopy := *c.client
 	originalRedirectPolicy := c.client.CheckRedirect
@@ -472,10 +490,27 @@ func (c *Crawler) request(
 	elapsed := time.Since(startedAt)
 
 	if err != nil {
+		releaseOnce()
+
 		return nil, redirects, elapsed, fmt.Errorf("request %s: %w", rawURL, err)
 	}
 
+	response.Body = gatedBody{ReadCloser: response.Body, release: releaseOnce}
+
 	return response, redirects, elapsed, nil
+}
+
+// gatedBody hands a host slot back when the response body is closed.
+type gatedBody struct {
+	io.ReadCloser
+	release func()
+}
+
+// Close releases the host slot and then closes the underlying body.
+func (body gatedBody) Close() error {
+	defer body.release()
+
+	return body.ReadCloser.Close()
 }
 
 func (c *Crawler) checkInternalLinks(

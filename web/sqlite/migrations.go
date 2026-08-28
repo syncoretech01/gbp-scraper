@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	currentSchemaVersion           = 18
+	currentSchemaVersion           = 19
 	migrationChecksumSchemaVersion = 4
 )
 
@@ -1281,6 +1281,30 @@ var schemaMigrations = []schemaMigration{
 			// records how the artifact must be read back; existing rows are
 			// plain SQLite copies and default to 0.
 			`ALTER TABLE backups ADD COLUMN encrypted INTEGER NOT NULL DEFAULT 0`,
+		},
+	},
+	{
+		version: 19,
+		name:    "observation-provenance",
+		statements: []string{
+			// The legacy per-job CSV has a fixed header with no query or cell
+			// column, so the importer used to stamp every row with the job's
+			// whole keyword list joined by " | " — the "exact query that
+			// observed this business" was lost at scrape time. The pool knows
+			// which task produced which rows at merge time; it records that
+			// here, keyed by the row's Maps identity, and the importer reads
+			// it back per row. The CSV itself is untouched.
+			`CREATE TABLE IF NOT EXISTS job_observation_provenance (
+				job_id TEXT NOT NULL,
+				identity_key TEXT NOT NULL,
+				task_key TEXT NOT NULL,
+				source_query TEXT NOT NULL DEFAULT '',
+				source_cell TEXT NOT NULL DEFAULT '',
+				observed_at INTEGER NOT NULL,
+				PRIMARY KEY (job_id, identity_key, task_key)
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_observation_provenance_job_identity
+				ON job_observation_provenance(job_id, identity_key)`,
 		},
 	},
 }

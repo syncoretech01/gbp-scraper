@@ -364,6 +364,42 @@ func sameCSVHeader(left, right []string) bool {
 // non-destructively (it records review candidates and honours keep-separate
 // rules) and is the correct place for it; the per-job CSV must preserve every
 // distinct listing it ever committed.
+// runFileIdentityKeys lists the distinct identity keys of every row in a
+// task's run file, in first-seen order. The pool records them against the
+// task's query and cell right after the merge, which is the only moment the
+// exact provenance of each Maps observation is still known.
+func runFileIdentityKeys(ctx context.Context, runPath string) ([]string, error) {
+	info, err := os.Stat(runPath)
+	if err != nil || info.Size() == 0 {
+		return nil, err
+	}
+
+	header, err := csvHeader(runPath)
+	if err != nil {
+		return nil, err
+	}
+
+	seen := make(map[string]struct{})
+	keys := make([]string, 0, 32)
+
+	err = walkCSV(ctx, runPath, header, func(row []string) error {
+		for _, key := range resultIdentityKeys(header, row) {
+			if strings.HasPrefix(key, "row:") {
+				continue // no durable Maps identity; nothing to file it under
+			}
+
+			if _, dup := seen[key]; !dup {
+				seen[key] = struct{}{}
+				keys = append(keys, key)
+			}
+		}
+
+		return nil
+	})
+
+	return keys, err
+}
+
 func resultIdentityKeys(header, row []string) []string {
 	indexes := make(map[string]int, len(header))
 	for index, value := range header {

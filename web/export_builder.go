@@ -129,6 +129,73 @@ var exportColumnDefinitions = []exportColumnDefinition{
 	{Key: "last_checked_at", Label: "last_checked_at", DataType: "datetime"},
 	{Key: "first_seen_at", Label: "first_seen_at", DataType: "datetime"},
 	{Key: "last_seen_at", Label: "last_seen_at", DataType: "datetime"},
+	// Machine-usable prospecting evidence. Every column below is a value, not
+	// the text of a chip: a spreadsheet can filter, sort, and pivot on it
+	// without parsing a rendered label. None of them changes a default export.
+	{Key: "website_url", Label: "website_url", DataType: "text"},
+	{Key: "website_final_url", Label: "website_final_url", DataType: "text"},
+	{Key: "website_state", Label: "website_state", DataType: "text"},
+	{Key: "website_kind", Label: "website_kind", DataType: "text"},
+	{Key: "website_audit_status", Label: "website_audit_status", DataType: "text"},
+	{Key: "website_http_status", Label: "website_http_status", DataType: "integer"},
+	{Key: "website_error_reason", Label: "website_error_reason", DataType: "text"},
+	{Key: "website_https", Label: "website_https", DataType: "boolean"},
+	{Key: "website_tls_valid", Label: "website_tls_valid", DataType: "boolean"},
+	{Key: "website_confidence", Label: "website_confidence", DataType: "number"},
+	{Key: "website_last_checked_at", Label: "website_last_checked_at", DataType: "datetime"},
+	{Key: "website_health_score", Label: "website_health_score", DataType: "number"},
+	{Key: "website_health_grade", Label: "website_health_grade", DataType: "text"},
+	{Key: "website_health_version", Label: "website_health_version", DataType: "text"},
+	{Key: "no_website", Label: "no_website", DataType: "boolean"},
+	{Key: "social_only", Label: "social_only", DataType: "boolean"},
+	{Key: "weak_website", Label: "weak_website", DataType: "boolean"},
+	{Key: "contactable", Label: "contactable", DataType: "boolean"},
+	{Key: "has_website", Label: "has_website", DataType: "boolean"},
+	{Key: "has_phone", Label: "has_phone", DataType: "boolean"},
+	{Key: "has_email", Label: "has_email", DataType: "boolean"},
+	{Key: "never_checked", Label: "never_checked", DataType: "boolean"},
+	{Key: "email_count", Label: "email_count", DataType: "integer"},
+	{Key: "phone_count", Label: "phone_count", DataType: "integer"},
+	{Key: "social_count", Label: "social_count", DataType: "integer"},
+	{Key: "social_profiles", Label: "social_profiles", DataType: "text"},
+	{Key: "record_quality_score", Label: "record_quality_score", DataType: "number"},
+	{Key: "record_confidence", Label: "record_confidence", DataType: "number"},
+	{Key: "scoring_rule_version", Label: "scoring_rule_version", DataType: "text"},
+	{Key: "prospect_scored_at", Label: "prospect_scored_at", DataType: "datetime"},
+	// Provenance. SourceJobID, source_query, and source_cell name the one
+	// observation this row is reported under; the plural columns name every
+	// observation in the exported scope, so a business seen by four jobs can
+	// be told apart from one seen once.
+	{Key: "observation_count", Label: "observation_count", DataType: "integer"},
+	{Key: "total_observation_count", Label: "total_observation_count", DataType: "integer"},
+	{Key: "source_job_ids", Label: "source_job_ids", DataType: "text"},
+	{Key: "source_queries", Label: "source_queries", DataType: "text"},
+	{Key: "source_cells", Label: "source_cells", DataType: "text"},
+	{Key: "first_observed_at", Label: "first_observed_at", DataType: "datetime"},
+	{Key: "last_observed_at", Label: "last_observed_at", DataType: "datetime"},
+	{Key: "export_scope", Label: "export_scope", DataType: "text"},
+}
+
+// websiteHealthExportColumns are the columns that need a full website-health
+// report. The report is only loaded when one of them was actually selected,
+// so a default export costs exactly what it costs today.
+func websiteHealthExportColumns() map[string]struct{} {
+	return map[string]struct{}{
+		"website_health_score": {}, "website_health_grade": {}, "website_health_version": {},
+	}
+}
+
+// exportNeedsWebsiteHealth reports whether the selection asks for a health
+// report.
+func exportNeedsWebsiteHealth(columns []ExportColumnSelection) bool {
+	needed := websiteHealthExportColumns()
+	for _, column := range columns {
+		if _, ok := needed[column.Key]; ok {
+			return true
+		}
+	}
+
+	return false
 }
 
 var defaultExportColumnKeys = []string{
@@ -389,6 +456,12 @@ type exportDataRow struct {
 	Business BusinessResult      `json:"business"`
 	Detail   *BusinessDetail     `json:"detail,omitempty"`
 	Prospect *prospectExportData `json:"prospect,omitempty"`
+	// Health is the canonical website-health report, spooled only when a
+	// health column was selected.
+	Health *WebsiteHealthReport `json:"health,omitempty"`
+	// Scope names which businesses this file contains, carried onto every row
+	// so a delivered file states its own scope without its filename.
+	Scope string `json:"scope,omitempty"`
 }
 
 // exportProspectValue returns the prospect data spooled with the row, or
@@ -446,7 +519,7 @@ func (s *Server) generateConfiguredExport(
 	}
 	defer os.RemoveAll(workDirectory)
 
-	groups, rowCount, err := s.spoolExportRows(ctx, workDirectory, search, options)
+	groups, rowCount, err := s.spoolExportRows(ctx, workDirectory, record, search, columns, options)
 	if err != nil {
 		return exportArtifact{}, err
 	}
@@ -539,7 +612,9 @@ func (s *Server) generateConfiguredExport(
 func (s *Server) spoolExportRows(
 	ctx context.Context,
 	workDirectory string,
+	record ExportRecord,
 	search ResultSearch,
+	columns []ExportColumnSelection,
 	options ExportBuildOptions,
 ) ([]*exportSpoolGroup, int64, error) {
 	search.Limit = 250
@@ -549,6 +624,8 @@ func (s *Server) spoolExportRows(
 	var rowCount int64
 	var touch uint64
 	prospectWeights, prospectTemplates := s.svc.prospectExportConfiguration(ctx)
+	scope := exportScopeLabel(strings.TrimPrefix(record.SourceType, "results_"))
+	wantHealth := exportNeedsWebsiteHealth(columns) && s.svc.WebsiteStateAvailable()
 	closeSpools := func() error {
 		var closeErrors []error
 		for _, group := range groups {
@@ -573,9 +650,16 @@ func (s *Server) spoolExportRows(
 			return nil, rowCount, fmt.Errorf("filter matches more than %d rows", maximumExportRows)
 		}
 		for _, business := range page.Results {
-			data := exportDataRow{Business: business}
+			data := exportDataRow{Business: business, Scope: scope}
 			computed := computeProspectExportData(business, prospectWeights, prospectTemplates)
 			data.Prospect = &computed
+			if wantHealth {
+				report, healthErr := s.svc.BusinessWebsiteHealth(ctx, business.ID)
+				if healthErr != nil {
+					return nil, rowCount, fmt.Errorf("load website health for %s: %w", business.ID, healthErr)
+				}
+				data.Health = &report
+			}
 			if options.IncludeRaw || options.IncludeSources || options.IncludeProvenance || options.IncludeChanges {
 				detail, err := s.svc.GetBusiness(ctx, business.ID)
 				if err != nil {
@@ -974,9 +1058,144 @@ func exportColumnValue(row exportDataRow, key string) (any, error) {
 		return exportTimeValue(business.FirstSeenAt), nil
 	case "last_seen_at":
 		return exportTimeValue(business.LastSeenAt), nil
+	case "website_url":
+		return business.Website, nil
+	case "website_final_url":
+		return business.WebsiteFinalURL, nil
+	case "website_state":
+		return business.WebsiteState(), nil
+	case "website_kind":
+		return business.WebsiteKind(), nil
+	case "website_audit_status":
+		return business.WebsiteAuditStatus, nil
+	case "website_http_status":
+		return pointerValue(business.WebsiteHTTPStatus), nil
+	case "website_error_reason":
+		return exportWebsiteErrorReason(business), nil
+	case "website_https":
+		return pointerValue(business.WebsiteHTTPS), nil
+	case "website_tls_valid":
+		return pointerValue(business.WebsiteTLSValid), nil
+	case "website_confidence":
+		return pointerValue(business.WebsiteConfidence), nil
+	case "website_last_checked_at":
+		if business.LastCheckedAt == nil {
+			return nil, nil
+		}
+
+		return exportTimeValue(*business.LastCheckedAt), nil
+	case "website_health_score", "website_health_grade", "website_health_version":
+		return exportWebsiteHealthValue(row, key), nil
+	case "no_website":
+		return business.NoWebsite(), nil
+	case "social_only":
+		return business.SocialOnly(), nil
+	case "weak_website":
+		return business.WeakWebsite(), nil
+	case "contactable":
+		return business.Contactable(), nil
+	case "has_website":
+		return business.HasWebsite(), nil
+	case "has_phone":
+		return business.HasPhone(), nil
+	case "has_email":
+		return business.HasEmail(), nil
+	case "never_checked":
+		return business.NeverChecked(), nil
+	case "email_count":
+		return int64(business.EmailCount), nil
+	case "phone_count":
+		return int64(business.PhoneCount), nil
+	case "social_count":
+		return int64(business.SocialCount), nil
+	case "social_profiles":
+		return exportSocialProfiles(business), nil
+	case "record_quality_score":
+		return business.QualityScore, nil
+	case "record_confidence":
+		return business.Confidence, nil
+	case "scoring_rule_version":
+		return business.ScoringRuleVersion, nil
+	case "prospect_scored_at":
+		if business.ProspectUpdatedAt == nil {
+			return nil, nil
+		}
+
+		return exportTimeValue(*business.ProspectUpdatedAt), nil
+	case "observation_count":
+		return business.ObservationCount, nil
+	case "total_observation_count":
+		return business.TotalObservationCount, nil
+	case "source_job_ids":
+		return strings.Join(business.SourceJobIDs, "; "), nil
+	case "source_queries":
+		return strings.Join(business.SourceQueries, "; "), nil
+	case "source_cells":
+		return strings.Join(business.SourceCells, "; "), nil
+	case "first_observed_at":
+		if business.FirstObservedAt == nil {
+			return nil, nil
+		}
+
+		return exportTimeValue(*business.FirstObservedAt), nil
+	case "last_observed_at":
+		if business.LastObservedAt == nil {
+			return nil, nil
+		}
+
+		return exportTimeValue(*business.LastObservedAt), nil
+	case "export_scope":
+		return row.Scope, nil
 	default:
 		return nil, fmt.Errorf("unsupported export column %q", key)
 	}
+}
+
+// exportWebsiteErrorReason states why an audited site did not serve, using
+// only what the audit recorded. It is empty when nothing went wrong.
+func exportWebsiteErrorReason(business BusinessResult) string {
+	if reason := strings.TrimSpace(business.WebsiteAuditError); reason != "" {
+		return reason
+	}
+	if reason := strings.TrimSpace(business.WebsiteErrorReason); reason != "" {
+		return reason
+	}
+	if business.WebsiteHTTPStatus != nil && *business.WebsiteHTTPStatus >= 400 {
+		return "HTTP " + strconv.FormatInt(*business.WebsiteHTTPStatus, 10)
+	}
+
+	return ""
+}
+
+// exportWebsiteHealthValue reports the canonical website-health report the
+// spool carried. A business whose site was never reachable has no health
+// score at all, and an absent score is left absent rather than filled with a
+// zero that would read as "graded badly".
+func exportWebsiteHealthValue(row exportDataRow, key string) any {
+	if key == "website_health_version" {
+		return WebsiteHealthRuleVersion
+	}
+	if row.Health == nil || !row.Health.Available {
+		return nil
+	}
+	if key == "website_health_grade" {
+		return row.Health.Grade
+	}
+
+	return row.Health.Score
+}
+
+// exportSocialProfiles renders every stored social profile as
+// "platform=url" pairs, so one column stays parseable by a machine.
+func exportSocialProfiles(business BusinessResult) string {
+	pairs := make([]string, 0, len(SocialPlatforms()))
+	for _, platform := range SocialPlatforms() {
+		if url := business.Social.URL(platform); url != "" {
+			pairs = append(pairs, platform+"="+url)
+		}
+	}
+
+	return strings.Join(pairs, "; ")
 }
 
 func pointerValue[T any](value *T) any {

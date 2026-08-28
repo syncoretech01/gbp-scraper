@@ -593,3 +593,27 @@ but cannot remove them:
   leaks one loopback listener and HTTP server goroutine. Only affects
   credentialed-proxy browser runs; recorded so an operator running large
   proxy-heavy batches knows to recycle the worker periodically.
+
+## Google Maps does not honour a search radius
+
+Measured on job `7100e95b` (15 km radius, 5 km grid, 331 businesses): 34.7% of
+results came from outside the whole planned grid, and 92.4% were returned by a
+cell more than that cell's own 3.5 km half-diagonal away, up to 20.1 km. This is
+the platform widening a sparse-category query, not a planner boundary error.
+The application makes the spread explicit on the job monitor (distance from the
+configured centre, inside/outside the planned boundary) and offers a
+non-destructive distance filter; it never discards businesses Google returned.
+
+Fast mode is, by construction, one radius-biased retrieval per term from the
+centre: it is not exhaustive coverage, and the UI says so. The camera altitude
+sent to Maps now follows the requested radius (it was previously fixed at
+roughly 3.8 km whatever the operator chose), which widens the spread but cannot
+turn a single retrieval into a grid walk.
+
+## Historical provenance cannot be reconstructed
+
+Runs collected before the observation-provenance sidecar (schema version 19)
+carry the job's joined keyword list as every row's `source_query`, because the
+legacy per-job CSV has no query or cell column and the exact task that found a
+row was never recorded. That information does not exist and is not invented;
+runs from this version onward record it at merge time.

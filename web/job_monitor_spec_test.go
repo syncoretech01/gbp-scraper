@@ -259,9 +259,16 @@ func TestJobMonitorPipelineRendersEveryStageWithItsNamedMetrics(t *testing.T) {
 		"Searching Maps":      {"Current query", "Coordinates", "Grid cell", "Results found", "Speed", "Block rate"},
 		"Extracting details":  {"Listings opened", "Detail rows parsed", "Retries", "Browser health"},
 		"Crawling websites":   {"Current domain", "Pages visited", "Last HTTP status", "Average response time"},
-		"Extracting contacts": {"Emails discovered", "Phones discovered", "Social links discovered"},
-		"Deduplicating":       {"Raw records", "Duplicate matches", "Merged records", "Unresolved conflicts"},
-		"Saving/exporting":    {"Rows committed", "Output file", "Storage used"},
+		"Extracting contacts": {"Businesses with an email", "Phones discovered", "Social links discovered"},
+		// The counting vocabulary is fixed in web/run_metrics.go. The stage used
+		// to report "Raw records / Duplicate matches / Merged records", three
+		// labels for three different quantities that no operator could
+		// reconcile against the coverage strip on the same page.
+		"Deduplicating": {
+			"Maps observations", "Repeated observations", "Unique businesses",
+			"Entity merges", "Unresolved duplicate candidates",
+		},
+		"Saving/exporting": {"Rows committed", "Output file", "Storage used"},
 	}
 
 	if len(page.Pipeline) != len(want) {
@@ -347,8 +354,10 @@ func TestJobMonitorPipelineMetricsUseDurableEvidence(t *testing.T) {
 	if got := metric("Extracting contacts", "Social links discovered"); got != "1" {
 		t.Fatalf("social links = %q, want 1", got)
 	}
-	if got := metric("Deduplicating", "Merged records"); got != "1" {
-		t.Fatalf("merged records = %q, want 1", got)
+	// One stored record folded into another is the only thing the console may
+	// call a merge. See web/run_metrics.go for the rest of the vocabulary.
+	if got := metric("Deduplicating", "Entity merges"); got != "1" {
+		t.Fatalf("entity merges = %q, want 1", got)
 	}
 	if got := metric("Saving/exporting", "Output file"); got != monitorSpecJobID+".csv" {
 		t.Fatalf("output file = %q", got)

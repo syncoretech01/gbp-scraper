@@ -473,7 +473,21 @@ func initDatabase(path string) (*sql.DB, error) {
 		return fail(err)
 	}
 
-	_, err = db.Exec("PRAGMA cache_size=1000")
+	// The page cache is sized for the workspace this product is built for, not
+	// for an empty database. On the Docker bind mount every page miss is a
+	// round trip through the host file-sharing layer, and with 1000 pages
+	// (~4 MiB) of cache a 372-business workspace took 10-50 s to render the
+	// dashboard against 0.03 s on a native volume — same image, same data.
+	// 64 MiB (negative values are KiB) keeps the hot set resident; SQLite still
+	// evicts under memory pressure, so this is a ceiling, not a reservation.
+	_, err = db.Exec("PRAGMA cache_size=-65536")
+	if err != nil {
+		return fail(err)
+	}
+
+	// Temporary b-trees for sorts and GROUP BY live in memory rather than in
+	// temp files on the same slow mount.
+	_, err = db.Exec("PRAGMA temp_store=MEMORY")
 	if err != nil {
 		return fail(err)
 	}

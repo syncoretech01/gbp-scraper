@@ -109,12 +109,28 @@ type taskPoolPlan struct {
 	// CappedExplicit is true when a physical cap lowered a value the operator
 	// set explicitly (TaskWorkers or BrowserPool); the caller records it.
 	CappedExplicit bool
+	// FastMode mirrors the job's Fast mode. Fast mode is a pure-HTTP stealth
+	// fetcher that launches NO browser, so every browser-denominated number in
+	// this plan is zero for it — including the planned browser count, which
+	// used to be reported as one-per-worker and told operators a fast job was
+	// holding browsers it had never launched. [throughput/auto-capacity]
+	FastMode bool
 }
 
 // PlannedBrowsers is the number of Chromium processes this plan launches:
 // every worker runs its own app whose pool is PerTaskBrowserPool when set,
 // else derived by the engine as ceil(concurrency/pages), never below one.
+//
+// Fast mode launches none. It is exempt from the browser budget precisely
+// because it needs no browser, so the arithmetic below — which floors a pool at
+// one browser per worker — does not describe it and must not be applied to it.
+// liveBrowserFootprint already reported zero for a running fast job; this is
+// the same truth at plan time. [throughput/auto-capacity]
 func (p taskPoolPlan) PlannedBrowsers() int {
+	if p.FastMode {
+		return 0
+	}
+
 	perWorker := p.PerTaskBrowserPool
 	if perWorker <= 0 {
 		pages := max(1, p.PerTaskPages)
@@ -197,6 +213,7 @@ func planTaskPool(job *web.Job, effectiveConcurrency, pendingTasks, browserWorke
 		PerTaskPages:       job.Data.PagesBrowser,
 		BrowserBudgetTotal: browserBudgetTotal,
 		CappedExplicit:     cappedExplicit,
+		FastMode:           job.Data.FastMode,
 	}
 
 	if job.Data.BrowserPool > 0 {
@@ -293,6 +310,65 @@ type taskPoolRun struct {
 	// the hysteresis that keeps the budget from oscillating around a cascade.
 	lastReductionAt atomic.Int64
 
+	// workerTarget is how many task workers auto capacity wants running right
+	// now; run.workers is how many are actually alive. The two converge from
+	// both ends: the supervisor spawns to close a gap upward, and a worker
+	// retires itself between tasks to close one downward.
+	//
+	// The worker count used to be frozen for the whole run, which is why a
+	// healthy run could never take back the parallelism a cascade had cost it,
+	// and why lowering concurrency could not lower the browser count below the
+	// worker floor. [throughput/auto-capacity]
+	workerTarget atomic.Int64
+	// lastWorkerChangeAt is the wall-clock nanosecond of the last worker-count
+	// change. It gates BOTH directions: a new worker needs a whole task to show
+	// what it costs, so judging it sooner measures nothing.
+	lastWorkerChangeAt atomic.Int64
+	// scaleCooldown is how long lastWorkerChangeAt gates for. It is copied from
+	// the runner once, at pool start, so a test can watch several scaling
+	// decisions without waiting the production settling time for each.
+	scaleCooldown time.Duration
+
+	// The worker window accumulates task outcomes ACROSS sampling ticks.
+	//
+	// The concurrency controller re-decides every resourceSampleInterval (two
+	// seconds) and swaps its counters empty each time. A browser-mode task
+	// takes tens of seconds, so a two-second window almost never contains the
+	// three corroborating successes a growth step requires: a controller
+	// reading the per-tick window could react to trouble but could never take
+	// capacity back. These counters give growth a window the length of the
+	// worker-scale cooldown instead, and are emptied whenever the worker count
+	// actually changes. [throughput/auto-capacity]
+	workerWindowFailures  atomic.Int64
+	workerWindowSuccesses atomic.Int64
+	workerWindowBlocks    atomic.Int64
+	// workerGroup owns the worker goroutines, so the controller can add one
+	// mid-run without racing the pool's own shutdown wait.
+	workerGroup *dynamicWorkerGroup
+	// spawnWorker starts one more task worker. It closes over the run's
+	// contexts, seeds and plan so the supervisor can grow the pool without
+	// carrying all of them, and reports false once the pool has drained.
+	spawnWorker func() bool
+	// nextWorkerIndex numbers spawned workers so their lease owners stay
+	// readable in the event log. Uniqueness comes from the owner's UUID, not
+	// from this counter.
+	nextWorkerIndex atomic.Int64
+
+	// pendingCache and pendingCachedAt memoise how much claimable work is left.
+	// The growth rule needs it, but SQLite pressure is itself one of the
+	// signals, so it is read at most once per worker-scale cooldown rather than
+	// once per two-second sample.
+	pendingCache    atomic.Int64
+	pendingCachedAt atomic.Int64
+
+	// taskLatency and writeLatency are the throughput signals auto capacity
+	// weighs beside the resource ones: how long a whole task takes, and how
+	// long its durable finish write (CSV merge plus the ownership-checked
+	// completion) takes. Both are compared against the best this run itself
+	// achieved, so neither needs a per-machine threshold.
+	taskLatency  latencySeries
+	writeLatency latencySeries
+
 	// browserBudget and pagesBudget are the per-task browser pool and
 	// pages-per-browser values new tasks take. They start at the plan's
 	// values and only ever shrink, under measured RAM pressure.
@@ -369,9 +445,141 @@ func (run *taskPoolRun) recoveryCooldownElapsed() bool {
 	return time.Since(time.Unix(0, last)) >= adaptiveRecoveryCooldown
 }
 
+// workerScaleCooldownElapsed reports whether enough time has passed since the
+// last worker-count change for another one to be allowed.
+//
+// A real pool stamps lastWorkerChangeAt when it starts, so a run always holds
+// its planned width for one settling window before anything reshapes it. The
+// zero case below is therefore only reached by a hand-built run in a test,
+// where an immediate decision is what the test is asking for.
+func (run *taskPoolRun) workerScaleCooldownElapsed() bool {
+	last := run.lastWorkerChangeAt.Load()
+	if last == 0 {
+		return true
+	}
+
+	cooldown := run.scaleCooldown
+	if cooldown <= 0 {
+		cooldown = autoWorkerScaleCooldown
+	}
+
+	return time.Since(time.Unix(0, last)) >= cooldown
+}
+
+// resetWorkerWindow empties the accumulated task outcomes. It is called
+// whenever the worker count actually changes, so the evidence that justified
+// one decision can never justify the next one as well.
+func (run *taskPoolRun) resetWorkerWindow() {
+	run.workerWindowFailures.Store(0)
+	run.workerWindowSuccesses.Store(0)
+	run.workerWindowBlocks.Store(0)
+}
+
+// retireWorker reports whether the calling worker should stop claiming because
+// auto capacity lowered the target below the number of live workers.
+//
+// It is only ever consulted at the top of the claim loop, where the worker
+// holds no lease and owns no task, so shrinking the pool can never abandon
+// leased work, lose a checkpoint or leave a task "running" with nobody to
+// finish it. The last worker never retires: a run always keeps one.
+func (run *taskPoolRun) retireWorker() bool {
+	for {
+		live := run.workers.Load()
+		if live <= 1 {
+			return false
+		}
+
+		target := max(int64(1), run.workerTarget.Load())
+		if live <= target {
+			return false
+		}
+
+		if run.workers.CompareAndSwap(live, live-1) {
+			run.lastWorkerChangeAt.Store(time.Now().UnixNano())
+
+			return true
+		}
+	}
+}
+
+// dynamicWorkerGroup is a WaitGroup that may be added to while it is being
+// waited on. The pool needs exactly that: the supervisor spawns a worker in
+// response to a measurement taken long after the initial fan-out, and a plain
+// sync.WaitGroup panics if an Add races the counter reaching zero.
+//
+// wait() returns only once no worker is running AND no further worker can be
+// spawned, so a late spawn can never resurrect a pool the run has finished
+// with, and an in-flight spawn can never be missed.
+type dynamicWorkerGroup struct {
+	mu      sync.Mutex
+	idle    *sync.Cond
+	running int
+	closed  bool
+}
+
+func newDynamicWorkerGroup() *dynamicWorkerGroup {
+	group := &dynamicWorkerGroup{}
+	group.idle = sync.NewCond(&group.mu)
+
+	return group
+}
+
+// spawn starts one worker goroutine and reports whether it was started. It
+// fails only once the group is closed, which happens exactly when wait() has
+// observed an idle pool.
+func (group *dynamicWorkerGroup) spawn(work func()) bool {
+	group.mu.Lock()
+
+	if group.closed {
+		group.mu.Unlock()
+
+		return false
+	}
+
+	group.running++
+	group.mu.Unlock()
+
+	go func() {
+		defer group.finish()
+		work()
+	}()
+
+	return true
+}
+
+func (group *dynamicWorkerGroup) finish() {
+	group.mu.Lock()
+	defer group.mu.Unlock()
+
+	group.running--
+
+	if group.running == 0 {
+		group.idle.Broadcast()
+	}
+}
+
+// wait blocks until every worker has returned, then closes the group so no
+// later spawn can start one again.
+func (group *dynamicWorkerGroup) wait() {
+	group.mu.Lock()
+	defer group.mu.Unlock()
+
+	for group.running > 0 {
+		group.idle.Wait()
+	}
+
+	group.closed = true
+}
+
 // mergeTaskOutput folds one finished task's rows into the job CSV under the
 // merge lock and reports the resulting checkpoint.
 func (run *taskPoolRun) mergeTaskOutput(runPath string, diskFree uint64) (web.JobTaskCheckpoint, error) {
+	// Timed from BEFORE the lock, so the measurement includes the queueing
+	// delay every extra worker adds. That is the write-pressure signal auto
+	// capacity needs: a merge that is fast but waited a long time for its turn
+	// is exactly the contention another worker would make worse.
+	startedAt := time.Now()
+
 	run.mergeMu.Lock()
 	defer run.mergeMu.Unlock()
 
@@ -381,6 +589,7 @@ func (run *taskPoolRun) mergeTaskOutput(runPath string, diskFree uint64) (web.Jo
 	}
 
 	run.committedWrites.Add(1)
+	run.writeLatency.observe(time.Since(startedAt))
 
 	checkpoint := web.JobTaskCheckpoint{
 		RowsAdded:         summary.RunAdded,
@@ -423,10 +632,26 @@ func (w *webrunner) runTaskPool(
 		extraReviews:     extras.extraReviews,
 		baselineBrowsers: plan.PerTaskBrowserPool,
 		baselinePages:    plan.PerTaskPages,
+		workerGroup:      newDynamicWorkerGroup(),
+		scaleCooldown:    w.scaleCooldown(),
 	}
 	run.desiredConcurrency.Store(int64(desiredConcurrency))
 	run.effectiveConcurrency.Store(int64(plan.PerTaskConcurrency * plan.Workers))
 	run.workers.Store(int64(plan.Workers))
+	run.workerTarget.Store(int64(plan.Workers))
+	run.nextWorkerIndex.Store(int64(plan.Workers))
+	// The scale cooldown starts at the pool, not at the first change. A run
+	// that has just launched has no evidence about itself yet, and a zero here
+	// would make every early tick count as "cooldown elapsed" — which would
+	// empty the accumulating worker window on every tick and throw away the
+	// very corroboration growth needs. It also keeps the pool at its planned
+	// width for one settling window before anything reshapes it.
+	run.lastWorkerChangeAt.Store(time.Now().UnixNano())
+	run.spawnWorker = func() bool {
+		index := int(run.nextWorkerIndex.Add(1))
+
+		return w.spawnTaskWorker(ctx, runCtx, runCancel, run, index, seedsByKey, exitMonitor, plan)
+	}
 	run.failureBudget.Store(int64(desiredConcurrency))
 	run.blockBudget.Store(int64(desiredConcurrency))
 	run.browserBudget.Store(int64(plan.PerTaskBrowserPool))
@@ -469,20 +694,26 @@ func (w *webrunner) runTaskPool(
 		}
 	}()
 
-	var group sync.WaitGroup
+	started := 0
 
 	for index := range plan.Workers {
-		owner := fmt.Sprintf("%s/%d/%s", job.ID, index, uuid.NewString()[:8])
+		if !w.spawnTaskWorker(ctx, runCtx, runCancel, run, index, seedsByKey, exitMonitor, plan) {
+			break
+		}
 
-		group.Add(1)
-
-		go func() {
-			defer group.Done()
-			w.runTaskWorker(ctx, runCtx, runCancel, run, owner, seedsByKey, exitMonitor, plan)
-		}()
+		started++
 	}
 
-	group.Wait()
+	// The live worker count is what actually started, not what was planned. A
+	// refused spawn is impossible on a fresh group, but an over-count here
+	// would make the retire gate believe there is a surplus worker to shed and
+	// silently narrow the pool below its own target.
+	if started > 0 && started != plan.Workers {
+		run.workers.Store(int64(started))
+		run.workerTarget.Store(int64(started))
+	}
+
+	run.workerGroup.wait()
 	flushListingKeys(context.Background(), run.dedup)
 	runCancel()
 	<-stopWatchDone
@@ -491,8 +722,30 @@ func (w *webrunner) runTaskPool(
 	return run.currentStop()
 }
 
-// runTaskWorker claims and executes tasks until the plan is drained or the run
-// is stopped.
+// spawnTaskWorker starts one task worker on the run's dynamic group and reports
+// whether it started. Every worker gets a fresh, unique lease owner: an owner
+// is the identity a claim is written under and a finish is verified against, so
+// a worker added mid-run must never be able to inherit a retired worker's
+// identity. [throughput/auto-capacity]
+func (w *webrunner) spawnTaskWorker(
+	ctx context.Context,
+	runCtx context.Context,
+	runCancel context.CancelFunc,
+	run *taskPoolRun,
+	index int,
+	seedsByKey map[string]scrapemate.IJob,
+	exitMonitor exiter.Exiter,
+	plan taskPoolPlan,
+) bool {
+	owner := fmt.Sprintf("%s/%d/%s", run.job.ID, index, uuid.NewString()[:8])
+
+	return run.workerGroup.spawn(func() {
+		w.runTaskWorker(ctx, runCtx, runCancel, run, owner, seedsByKey, exitMonitor, plan)
+	})
+}
+
+// runTaskWorker claims and executes tasks until the plan is drained, the run is
+// stopped, or auto capacity retires this worker.
 func (w *webrunner) runTaskWorker(
 	ctx context.Context,
 	runCtx context.Context,
@@ -512,6 +765,20 @@ func (w *webrunner) runTaskWorker(
 
 		if runCtx.Err() != nil {
 			run.requestStop(stoppedBecauseContext(ctx, runCtx.Err()))
+
+			return
+		}
+
+		// Auto capacity may have lowered the worker target since the last
+		// task. Retiring here — before a claim, holding no lease and owning no
+		// task — is the only point at which a worker can leave without
+		// stranding work.
+		if run.retireWorker() {
+			_ = w.svc.RecordJobWorkerEvent(
+				context.Background(), job.ID, "task-worker-retired", "information",
+				"A parallel task worker stopped to release its share of the browser budget",
+				map[string]any{"owner": owner, "task_workers": run.workers.Load()},
+			)
 
 			return
 		}
@@ -662,7 +929,13 @@ func (w *webrunner) executeLeasedTask(
 	// The live budget can shrink or recover between tasks; each new task takes
 	// its share of the budget as it stands, which is the safe reconfiguration
 	// point the engine supports.
-	taskJob.Data.Concurrency = max(1, int(run.effectiveConcurrency.Load())/max(1, plan.Workers))
+	//
+	// The divisor is the LIVE worker count, not the plan's opening one: auto
+	// capacity moves the worker count during the run, and dividing by a stale
+	// number would make Workers * PerTaskConcurrency drift away from the
+	// effective budget — the one quantity that describes the real load on the
+	// platform. [throughput/auto-capacity]
+	taskJob.Data.Concurrency = max(1, int(run.effectiveConcurrency.Load())/max(1, int(run.workers.Load())))
 
 	if assignment.override {
 		taskJob.Data.Proxies = assignment.proxies
@@ -727,7 +1000,11 @@ func (w *webrunner) executeLeasedTask(
 		)
 	case taskCounters.SeedsCompleted > 0 && taskCounters.PlacesFound == 0:
 		_ = w.svc.RecordJobWorkerEvent(
-			context.Background(), job.ID, "cell-empty", "warning",
+			// A cell whose area holds no matching business is a fact about the
+			// area, not a fault. Recorded at warning severity it was 117 of the 118
+			// "warnings" job 7100e95b reported after a run that completed 180/180
+			// searches and failed none. See web/job_event_severity.go.
+			context.Background(), job.ID, "cell-empty", web.JobEventSeverityInformation,
 			"Task completed its walk but found zero places; the cell is either genuinely empty or was served an empty page",
 			map[string]any{"task_key": task.Key},
 		)
@@ -785,7 +1062,23 @@ func (w *webrunner) executeLeasedTask(
 		return true
 	}
 
+	// Exact provenance is captured BEFORE the merge: the merge consumes the
+	// run file, and the legacy job CSV has no column to carry which query or
+	// cell found a row. Missing provenance is never a reason to fail a task.
+	observationKeys, _ := runFileIdentityKeys(context.Background(), runPath)
+
 	checkpoint, mergeErr := run.mergeTaskOutput(runPath, sample.DiskFreeBytes)
+	if mergeErr == nil && len(observationKeys) > 0 {
+		if provenanceErr := w.svc.RecordTaskObservations(
+			context.Background(), job.ID, task.Key, task.Query, task.SourceCell, observationKeys,
+		); provenanceErr != nil && !errors.Is(provenanceErr, web.ErrObservationProvenanceUnsupported) {
+			_ = w.svc.RecordJobWorkerEvent(
+				context.Background(), job.ID, "provenance-not-recorded", "warning",
+				"The exact query and cell for this task's rows could not be stored; the import falls back to the job's keyword list",
+				map[string]any{"task_key": task.Key, "error": jobruntime.RedactString(provenanceErr.Error())},
+			)
+		}
+	}
 	if mergeErr != nil {
 		mergeErr = fmt.Errorf("merge checkpoint task results: %w", mergeErr)
 
@@ -829,8 +1122,11 @@ func (w *webrunner) executeLeasedTask(
 		}
 
 		// The success only counts once it is durably committed; counting it
-		// earlier skews the adaptive window when the commit is refused.
+		// earlier skews the adaptive window when the commit is refused. The
+		// same is true of the latency series: only a task that ran to a durable
+		// conclusion says anything about how fast this width of pool is.
 		run.windowSuccesses.Add(1)
+		run.taskLatency.observe(taskDuration)
 
 		if completeErr != nil {
 			_ = w.svc.RecordJobWorkerEvent(
@@ -1166,7 +1462,7 @@ func (w *webrunner) superviseTaskPool(
 ) {
 	job := run.job
 
-	ticker := time.NewTicker(resourceSampleInterval)
+	ticker := time.NewTicker(w.samplingInterval())
 	defer ticker.Stop()
 
 	// The configurable interval checkpoint complements the one written after
@@ -1345,6 +1641,14 @@ func (w *webrunner) adaptTaskPool(run *taskPoolRun, sample workerResourceSample)
 
 	resourceBudget := adaptiveWorkerConcurrency(desired, sample, run.job.Data.LowDiskBytes, ceiling)
 	next := int64(min(resourceBudget, failureBudget, blockBudget))
+
+	// Auto capacity decides the WORKER count from the SAME window, before the
+	// early return below: the failure/success/block counters have already been
+	// swapped out, so a second pass would see an empty window and never act.
+	// Workers are what cost browsers and therefore memory, so a controller that
+	// could only move concurrency could never undo a browser cascade.
+	// [throughput/auto-capacity]
+	w.adaptWorkerCount(run, sample, int(failures), int(successes), int(blocks), int(next))
 
 	previous := run.effectiveConcurrency.Load()
 	if next == previous {
@@ -1537,4 +1841,272 @@ func stoppedBecauseContext(parent context.Context, runErr error) jobruntime.Stop
 	default:
 		return jobruntime.StopReasonNone
 	}
+}
+
+// adaptWorkerCount is the auto-capacity worker controller wiring: it gathers the
+// window measurements, asks the pure decision function what the worker count
+// should be, and converges the live pool on that answer.
+//
+// Growing spawns a worker immediately; shrinking only sets the target, because
+// a worker may leave only between tasks, where it holds no lease. The two
+// directions are deliberately asymmetric in cost as well as in speed.
+func (w *webrunner) adaptWorkerCount(
+	run *taskPoolRun,
+	sample workerResourceSample,
+	failures, successes, blocks, effectiveConcurrency int,
+) {
+	current := int(max(int64(1), run.workers.Load()))
+	scaleCooldownElapsed := run.workerScaleCooldownElapsed()
+
+	run.workerWindowFailures.Add(int64(failures))
+	run.workerWindowSuccesses.Add(int64(successes))
+	run.workerWindowBlocks.Add(int64(blocks))
+
+	// Adverse evidence is acted on the tick it is seen, so a reduction reads
+	// THIS tick's counters. Growth needs corroboration over a whole settling
+	// window, so once the cooldown has elapsed the decision reads the
+	// accumulated counters and empties them, starting a fresh window. The two
+	// are identical early in a window and diverge exactly when a task (tens of
+	// seconds) outlasts a sampling tick (two) — which is every browser run.
+	if scaleCooldownElapsed {
+		failures = int(run.workerWindowFailures.Swap(0))
+		successes = int(run.workerWindowSuccesses.Swap(0))
+		blocks = int(run.workerWindowBlocks.Swap(0))
+	}
+
+	// SQLite pressure is one of the signals this controller weighs, so the one
+	// query it needs is read only when a growth step is actually possible.
+	pending := 0
+	if scaleCooldownElapsed {
+		pending = w.pendingTasksForScaling(run)
+	}
+
+	taskMean, taskBest, taskSamples := run.taskLatency.snapshot()
+	writeMean, writeBest, writeSamples := run.writeLatency.snapshot()
+
+	perWorkerBrowsers := max(1, int(run.browserBudget.Load()))
+	allowedBrowsers := 0
+
+	if !run.job.Data.FastMode {
+		allowedBrowsers = current * perWorkerBrowsers
+	}
+
+	ceiling, ceilingReason := w.workerCeilingForRun(run, sample, effectiveConcurrency)
+
+	decision := decideWorkerTarget(current, workerScalingSignals{
+		Ceiling:                 ceiling,
+		CeilingReason:           ceilingReason,
+		Pending:                 pending,
+		Failures:                failures,
+		Successes:               successes,
+		Blocks:                  blocks,
+		CPUPercent:              sample.CPUPercent,
+		MemoryAvailable:         sample.MemoryAvailableBytes,
+		MemoryUsed:              sample.MemoryUsedBytes,
+		MemoryCeiling:           run.job.Data.MemoryCeilingBytes,
+		BrowserCensus:           sample.BrowserProcesses,
+		AllowedBrowsers:         allowedBrowsers,
+		TaskMean:                taskMean,
+		TaskBest:                taskBest,
+		TaskSamples:             taskSamples,
+		WriteMean:               writeMean,
+		WriteBest:               writeBest,
+		WriteSamples:            writeSamples,
+		ScaleCooldownElapsed:    scaleCooldownElapsed,
+		RecoveryCooldownElapsed: run.recoveryCooldownElapsed(),
+	})
+
+	if decision.Workers == current {
+		return
+	}
+
+	if decision.Workers < current {
+		// A reduction takes effect only when the surplus workers reach their
+		// next claim boundary, which may be a whole task away. Re-deciding the
+		// same target in the meantime is not a new decision, and recording it
+		// again would fill the operator's log with a change that has already
+		// happened. The target alone shrinks the pool: each surplus worker
+		// retires itself at the top of its claim loop, holding no lease.
+		if decision.Workers == int(run.workerTarget.Load()) {
+			return
+		}
+
+		run.workerTarget.Store(int64(decision.Workers))
+		run.lastWorkerChangeAt.Store(time.Now().UnixNano())
+		run.resetWorkerWindow()
+		w.recordWorkerScaling(run, current, decision, sample, pending)
+
+		return
+	}
+
+	// The target is raised BEFORE the first spawn. A newly started worker
+	// consults the retire gate at the top of its very first claim loop, so with
+	// the old target still in place it would see live > target and retire
+	// itself the instant it was created — growing the pool by adding a worker
+	// that immediately leaves.
+	run.workerTarget.Store(int64(decision.Workers))
+
+	started := current
+
+	for started < decision.Workers {
+		run.workers.Add(1)
+
+		if run.spawnWorker == nil || !run.spawnWorker() {
+			run.workers.Add(-1)
+
+			break
+		}
+
+		started++
+	}
+
+	// Growth is only ever committed to the target once the workers have
+	// actually started. Leaving an unreachable target behind would make every
+	// later window look like "already decided" and quietly freeze the pool at a
+	// width it never reached.
+	run.workerTarget.Store(int64(started))
+
+	if started == current {
+		return
+	}
+
+	run.lastWorkerChangeAt.Store(time.Now().UnixNano())
+	run.resetWorkerWindow()
+	w.recordWorkerScaling(run, current, workerScalingDecision{
+		Workers: started, Reason: decision.Reason,
+	}, sample, pending)
+}
+
+// recordWorkerScaling puts the arithmetic behind a worker-count change on the
+// job event log. An operator who sees a run change width is entitled to see
+// which measurement moved it.
+func (w *webrunner) recordWorkerScaling(
+	run *taskPoolRun,
+	previous int,
+	decision workerScalingDecision,
+	sample workerResourceSample,
+	pending int,
+) {
+	verb := "increased"
+	if decision.Workers < previous {
+		verb = "reduced"
+	}
+
+	scalingContext := map[string]any{
+		"previous_task_workers":  previous,
+		"task_workers":           decision.Workers,
+		"reason":                 decision.Reason,
+		"pending_tasks":          pending,
+		"effective_concurrency":  run.effectiveConcurrency.Load(),
+		"cpu_percent":            sample.CPUPercent,
+		"cpu_cores":              sample.CPUCores,
+		"memory_available_bytes": sample.MemoryAvailableBytes,
+	}
+
+	// Browser-denominated evidence belongs only to the mode that has browsers.
+	// Attaching a browser budget to a Fast-mode decision would explain a
+	// concurrency clamp with an arithmetic that had no part in it.
+	if !run.job.Data.FastMode {
+		scalingContext["per_task_browser_pool"] = run.browserBudget.Load()
+		scalingContext["browser_processes"] = sample.BrowserProcesses
+		scalingContext["browser_memory_bytes"] = sample.BrowserMemoryBytes
+		scalingContext["auto_worker_ceiling"] = autoWorkerCeiling(sample)
+		scalingContext["browser_budget_total"] = browserProcessBudget(sample)
+	}
+
+	_ = w.svc.RecordJobWorkerEvent(
+		context.Background(), run.job.ID, "adaptive-workers", "information",
+		fmt.Sprintf("Auto capacity %s parallel tasks from %d to %d (%s)",
+			verb, previous, decision.Workers, decision.Reason),
+		scalingContext,
+	)
+}
+
+// workerCeilingForRun is the highest worker count this run may take right now.
+//
+// It layers the operator intent over the host physics, and the tightest bound
+// wins:
+//
+//   - the effective concurrency budget, because simultaneous Maps operations
+//     are Workers * PerTaskConcurrency and PerTaskConcurrency never falls below
+//     one. Auto capacity may reshape the operator load budget between workers
+//     and per-task concurrency; it may never exceed it.
+//   - an explicit TaskWorkers choice, never exceeded.
+//   - web.MaximumJobTaskWorkers, the product own bound.
+//   - in browser mode, autoWorkerCeiling (measured memory and CPU) and the
+//     browser-denominated budget: workers * per-worker pool <=
+//     browserProcessBudget. That invariant belongs to the hardening phase and
+//     is not negotiable here.
+//
+// Fast mode launches no browser, so neither browser bound applies to it.
+//
+// It also reports WHICH bound is tightest, because a clamp has to explain
+// itself in the operator's terms: "your concurrency budget" and "this machine's
+// memory" are different problems with different fixes, and Fast mode has
+// neither browser bound to blame.
+func (w *webrunner) workerCeilingForRun(
+	run *taskPoolRun, sample workerResourceSample, effectiveConcurrency int,
+) (int, string) {
+	job := run.job
+
+	ceiling := max(1, effectiveConcurrency)
+	reason := "the concurrency budget this run is allowed only covers fewer parallel tasks"
+
+	if job.Data.TaskWorkers > 0 && ceiling > job.Data.TaskWorkers {
+		ceiling = job.Data.TaskWorkers
+		reason = "the configured parallel-task count"
+	}
+
+	if ceiling > web.MaximumJobTaskWorkers {
+		ceiling = web.MaximumJobTaskWorkers
+		reason = "the maximum parallel tasks one job may run"
+	}
+
+	if !job.Data.FastMode {
+		if derived := autoWorkerCeiling(sample); ceiling > derived {
+			ceiling = derived
+			reason = "the measured memory and CPU budget now supports fewer parallel tasks"
+		}
+
+		perWorker := max(1, int(run.browserBudget.Load()))
+		if browsers := browserProcessBudget(sample) / perWorker; ceiling > browsers {
+			ceiling = browsers
+			reason = "available memory now holds fewer simultaneous browsers"
+		}
+	}
+
+	return max(1, ceiling), reason
+}
+
+// pendingTasksForScaling reports how much claimable work is left, memoised for
+// one worker-scale cooldown. Another worker with nothing to claim costs a
+// browser and buys nothing, so the growth rule needs this number - but reading
+// it on every two-second sample would add database load to answer a question
+// about database load.
+func (w *webrunner) pendingTasksForScaling(run *taskPoolRun) int {
+	cooldown := run.scaleCooldown
+	if cooldown <= 0 {
+		cooldown = autoWorkerScaleCooldown
+	}
+
+	cachedAt := run.pendingCachedAt.Load()
+	if cachedAt != 0 && time.Since(time.Unix(0, cachedAt)) < cooldown {
+		return int(run.pendingCache.Load())
+	}
+
+	execution, err := w.svc.GetJobExecution(context.Background(), run.job.ID)
+	if err != nil {
+		// A failed read is not evidence that the plan emptied. Returning zero
+		// would silently veto growth for as long as the database is busy —
+		// which is exactly when several workers are committing at once, so the
+		// read is most likely to fail on a healthy, productive run. The last
+		// known value is stale at worst, and the cost of acting on a stale
+		// count is one worker that finds nothing to claim and exits.
+		return int(run.pendingCache.Load())
+	}
+
+	run.pendingCache.Store(execution.Tasks.Pending)
+	run.pendingCachedAt.Store(time.Now().UnixNano())
+
+	return int(execution.Tasks.Pending)
 }

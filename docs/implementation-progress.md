@@ -558,6 +558,14 @@ Last updated: 2026-08-25
 - [x] Section complete and verified against the specification.
 - [x] Reduce concurrency when block/failure rate rises.
 - [x] Increase concurrency cautiously after a stable success window.
+- [x] Derive the safe worker/browser ceiling from measured RAM, cgroup-aware CPU
+      cores, measured browser RSS and the live browser census, rather than from a
+      fixed number. `runner/webrunner/auto_capacity.go`.
+- [x] Raise and lower the number of parallel tasks during a run, not only the
+      concurrency budget, so a healthy run can take back capacity a cascade cost
+      it and a block can lower the browser count. Reported as `adaptive-workers`.
+- [x] Weigh task latency and database write latency against the best the run
+      itself achieved, so contention needs no per-machine threshold.
 - [x] Reduce browser count or pages per browser when RAM pressure rises.
 - [x] Pause new tasks when disk space becomes low.
 - [x] Retry failed pages with another proxy or a fresh browser context.

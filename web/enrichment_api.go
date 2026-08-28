@@ -22,6 +22,8 @@ func (s *Server) registerEnrichmentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/results/{id}/enrich", s.apiQueueSingleBusinessEnrichment)
 	mux.HandleFunc("GET /api/v1/results/{id}/enrichment", s.apiBusinessEnrichmentHistory)
 	mux.HandleFunc("GET /api/v1/enrichment/tasks", s.apiEnrichmentTasks)
+	mux.HandleFunc("GET /api/v1/enrichment/email-hygiene", s.apiEnrichmentEmailHygiene)
+	mux.HandleFunc("POST /api/v1/enrichment/jobs/{id}/reconcile", s.apiReconcileJobEnrichment)
 }
 
 func (s *Server) enrichmentAvailable() bool {
@@ -100,6 +102,52 @@ func (s *Server) apiEnrichmentTasks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	renderJSON(w, http.StatusOK, localAPIEnvelope{Data: tasks, Meta: map[string]any{"count": len(tasks)}})
+}
+
+// apiEnrichmentEmailHygiene reports how many stored addresses the current
+// extraction rules would refuse or repair, and why. It is read-only: it exists
+// so an operator can see how much of the workspace's contact data predates the
+// extraction fix, and decide whether to re-audit.
+func (s *Server) apiEnrichmentEmailHygiene(w http.ResponseWriter, r *http.Request) {
+	report, err := s.svc.EmailHygieneReport(r.Context())
+	if err != nil {
+		renderEnrichmentError(w, err)
+
+		return
+	}
+
+	renderJSON(w, http.StatusOK, localAPIEnvelope{
+		Data: report,
+		Meta: map[string]any{
+			"total":    report.Total,
+			"affected": report.Affected(),
+		},
+	})
+}
+
+// apiReconcileJobEnrichment recomputes one job's contact counters and rewrites
+// its result file from the evidence the workspace holds. A job that finished
+// before enrichment wrote anything reported zero emails and exported none; this
+// is how such a job is corrected without re-running the scrape.
+func (s *Server) apiReconcileJobEnrichment(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" || len(id) > 128 {
+		renderLocalAPIError(w, http.StatusUnprocessableEntity, "invalid_job_id", "A valid job ID is required")
+
+		return
+	}
+
+	summary, err := s.svc.ReconcileJobEnrichment(r.Context(), id)
+	if err != nil {
+		renderEnrichmentError(w, err)
+
+		return
+	}
+
+	renderJSON(w, http.StatusOK, localAPIEnvelope{
+		Data: summary,
+		Meta: map[string]any{"result_rows_updated": summary.ResultRowsUpdated},
+	})
 }
 
 func decodeEnrichmentRequest(w http.ResponseWriter, r *http.Request) (enrichmentAPIRequest, error) {

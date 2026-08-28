@@ -388,6 +388,15 @@ type WebsiteAuditView struct {
 	Addresses               []enrichment.PostalAddress `json:"addresses,omitempty"`
 	SocialProfiles          []enrichment.SocialProfile `json:"social_profiles,omitempty"`
 	ContentAudit            enrichment.ContentAudit    `json:"content_audit"`
+	// EmailFunnel explains the Emails list: how many candidates the crawl
+	// found, how many survived hygiene, and why the rest did not. An audit
+	// stored before the funnel existed reports zeros.
+	EmailFunnel enrichment.EmailFunnel `json:"email_funnel"`
+	// AuditVersion is the extraction ruleset that produced this evidence.
+	AuditVersion int `json:"audit_version,omitempty"`
+	// Cache is present when this evidence was reused from another business's
+	// audit of the same page instead of being crawled again.
+	Cache *enrichment.CacheProvenance `json:"cache,omitempty"`
 	// URLPatterns reports the crawl URL patterns that were in force for this
 	// run and the candidate URLs they kept out. It is absent for a run without
 	// patterns and for audits stored before patterns existed.
@@ -643,143 +652,10 @@ func adaptEnrichmentTimeout(
 
 // ProcessEnrichmentQueue claims and processes up to limit durable tasks. A
 // failed task is recorded and does not stop later tasks from running.
+//
+// The pass itself runs on the bounded website-enrichment pool; see
+// enrichment_pipeline.go for its capacity, per-host politeness, and the
+// domain-audit cache it consults before crawling.
 func (s *Service) ProcessEnrichmentQueue(ctx context.Context, limit int) (int, error) {
-	return s.processEnrichmentQueue(ctx, limit, defaultWebsiteAnalyzer)
-}
-
-func (s *Service) processEnrichmentQueue(
-	ctx context.Context,
-	limit int,
-	factory websiteAnalyzerFactory,
-) (int, error) {
-	repository, err := s.enrichmentRepository()
-	if err != nil {
-		return 0, err
-	}
-	if limit <= 0 {
-		limit = 1
-	}
-	if limit > 25 {
-		limit = 25
-	}
-
-	processed := 0
-	failures := make([]error, 0)
-	// Homepage screenshots share one lazily started browser per queue pass,
-	// and a missing driver is reported at most once per pass. Screenshot
-	// problems are recorded as audit-log events and never fail a task.
-	var capturer screenshotCapturer
-	missingDriverLogged := false
-	defer func() {
-		if closer, ok := capturer.(interface{ Close() }); ok {
-			closer.Close()
-		}
-	}()
-	for processed < limit {
-		if err := ctx.Err(); err != nil {
-			return processed, errors.Join(append(failures, err)...)
-		}
-		task, found, claimErr := repository.ClaimEnrichmentTask(ctx)
-		if claimErr != nil {
-			return processed, errors.Join(append(failures, claimErr)...)
-		}
-		if !found {
-			break
-		}
-		processed++
-
-		effective := adaptEnrichmentTimeout(ctx, repository, task)
-
-		analyzer, analyzerErr := factory(effective)
-		if analyzerErr != nil {
-			_ = repository.FinishEnrichmentTask(ctx, task.ID, nil, analyzerErr)
-			failures = append(failures, fmt.Errorf("enrichment task %s: %w", task.ID, analyzerErr))
-			continue
-		}
-
-		startedAt := time.Now().UTC()
-		// The whole-task budget derives from the same per-request timeout the
-		// analyzer received, so an adapted (shorter) budget frees the worker
-		// sooner and can never widen the envelope.
-		requestBudget := effective.requestTimeout() *
-			time.Duration(effective.MaxPages+effective.MaxInternalLinkChecks+2)
-		if requestBudget < 30*time.Second {
-			requestBudget = 30 * time.Second
-		}
-		if requestBudget > 30*time.Minute {
-			requestBudget = 30 * time.Minute
-		}
-		taskContext, cancelTask := context.WithTimeout(ctx, requestBudget)
-		result, analyzeErr := analyzer.Analyze(taskContext, task.WebsiteURL)
-		cancelTask()
-		completedAt := time.Now().UTC()
-		if analyzeErr != nil {
-			// A cancelled worker context means the application is shutting down, not
-			// that the website failed. Leave the claimed task in its running state so
-			// RecoverEnrichmentTasks requeues it on the next start; recording a
-			// permanent failure here would silently discard the work instead.
-			if ctx.Err() != nil {
-				failures = append(failures, fmt.Errorf("enrichment task %s: %w", task.ID, ctx.Err()))
-
-				break
-			}
-			if errors.Is(analyzeErr, enrichment.ErrUnsafeURL) ||
-				errors.Is(analyzeErr, enrichment.ErrUnsupportedScheme) {
-				_ = repository.FinishEnrichmentTask(context.WithoutCancel(ctx), task.ID, nil, analyzeErr)
-				failures = append(failures, fmt.Errorf("enrichment task %s: %w", task.ID, analyzeErr))
-
-				continue
-			}
-			// DNS, timeout, TLS, and transport failures are useful website-status
-			// evidence. Persist them as an inaccessible audit rather than losing
-			// the observation in a task error alone.
-			result = enrichment.Result{RequestedURL: task.WebsiteURL, Error: analyzeErr.Error()}
-		}
-
-		auditID, storeErr := repository.StoreWebsiteAudit(context.WithoutCancel(ctx), task, result, startedAt, completedAt)
-		if storeErr != nil {
-			_ = repository.FinishEnrichmentTask(context.WithoutCancel(ctx), task.ID, nil, storeErr)
-			failures = append(failures, fmt.Errorf("enrichment task %s: %w", task.ID, storeErr))
-			continue
-		}
-		if finishErr := repository.FinishEnrichmentTask(context.WithoutCancel(ctx), task.ID, &auditID, nil); finishErr != nil {
-			failures = append(failures, fmt.Errorf("finish enrichment task %s: %w", task.ID, finishErr))
-			continue
-		}
-		// The homepage screenshot is best-effort extra evidence captured only
-		// for genuinely reachable audits. It runs after the task is durably
-		// completed so a slow browser can never hold an audit hostage.
-		if task.Options.CaptureScreenshot {
-			if !screenshotDriverAvailable() {
-				if !missingDriverLogged {
-					missingDriverLogged = true
-					_ = repository.RecordScreenshotEvent(
-						context.WithoutCancel(ctx),
-						"screenshot_skipped_no_driver",
-						task.ID,
-						`{"reason":"the Playwright browser driver is not installed on this host"}`,
-					)
-				}
-			} else {
-				if capturer == nil {
-					capturer = newScreenshotCapturer()
-				}
-				if analyzeErr == nil {
-					s.captureAuditScreenshot(ctx, repository, capturer, task, auditID, result.FinalURL)
-				}
-				// The optional error capture records what a failing site
-				// actually shows: an HTTP error page, a parked or placeholder
-				// page, a certificate warning, or a transport failure.
-				if shouldCaptureErrorScreenshot(result) {
-					s.captureAuditErrorScreenshot(ctx, repository, capturer, task, auditID, result.FinalURL)
-				}
-			}
-		}
-		if _, qualityErr := s.RecalculateQuality(context.WithoutCancel(ctx), []string{task.BusinessID}); qualityErr != nil &&
-			!errors.Is(qualityErr, ErrQualityScoringUnsupported) {
-			failures = append(failures, fmt.Errorf("refresh quality for %s: %w", task.BusinessID, qualityErr))
-		}
-	}
-
-	return processed, errors.Join(failures...)
+	return s.processEnrichmentQueue(ctx, limit, nil)
 }

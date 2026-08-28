@@ -115,3 +115,108 @@ func freshClient(t *testing.T) *Client {
 
 	return newClientFor(t, fake)
 }
+
+// TestConcurrencyEvidenceRecordsTheWidthARunSettledAt covers the width ladder's
+// headline reading. A rung labelled "six parallel tasks" is only evidence about
+// six if the run actually held six, and auto capacity may move the count during
+// the run, so the plan alone cannot answer it.
+func TestConcurrencyEvidenceRecordsTheWidthARunSettledAt(t *testing.T) {
+	events := []workerEvent{
+		{
+			Type: "task-pool",
+			Context: `{"task_workers":6,"per_task_concurrency":1,"desired_concurrency":6,` +
+				`"effective_concurrency":6,"planned_browsers":6}`,
+		},
+		{
+			Type:    "adaptive-workers",
+			Context: `{"previous_task_workers":6,"task_workers":3}`,
+		},
+		{
+			Type:    "adaptive-workers",
+			Context: `{"previous_task_workers":3,"task_workers":4}`,
+		},
+	}
+
+	evidence := concurrencyFromEvents(events, "")
+
+	if evidence.PlannedWorkers != 6 {
+		t.Errorf("planned workers = %d, want 6", evidence.PlannedWorkers)
+	}
+	if evidence.PlannedBrowsers != 6 {
+		t.Errorf("planned browsers = %d, want 6", evidence.PlannedBrowsers)
+	}
+	if evidence.FinalWorkers != 4 {
+		t.Errorf("final workers = %d, want the 4 the run settled at", evidence.FinalWorkers)
+	}
+	if evidence.WorkerReductions != 1 || evidence.WorkerIncreases != 1 {
+		t.Errorf("worker moves = %d down / %d up, want 1 / 1",
+			evidence.WorkerReductions, evidence.WorkerIncreases)
+	}
+	if evidence.Source != "worker-events" {
+		t.Errorf("source = %q, want worker-events", evidence.Source)
+	}
+}
+
+// TestConcurrencyEvidenceRecoversWidthFromPlainText proves the same reading
+// survives a build that attached no structured context, which is the fallback
+// path the harness already relies on for concurrency.
+func TestConcurrencyEvidenceRecoversWidthFromPlainText(t *testing.T) {
+	log := "Running 4 task(s) in parallel with 1 worker concurrency each (4 browser(s) planned)\n" +
+		"Auto capacity reduced parallel tasks from 4 to 2 (the platform refused an attempt)\n" +
+		"Auto capacity increased parallel tasks from 2 to 3 (a clean task window)\n"
+
+	evidence := concurrencyFromEvents(nil, log)
+
+	if evidence.PlannedWorkers != 4 {
+		t.Errorf("planned workers = %d, want 4", evidence.PlannedWorkers)
+	}
+	if evidence.FinalWorkers != 3 {
+		t.Errorf("final workers = %d, want 3", evidence.FinalWorkers)
+	}
+	if evidence.WorkerReductions != 1 || evidence.WorkerIncreases != 1 {
+		t.Errorf("worker moves = %d down / %d up, want 1 / 1",
+			evidence.WorkerReductions, evidence.WorkerIncreases)
+	}
+	if evidence.Source != "log-messages" {
+		t.Errorf("source = %q, want log-messages", evidence.Source)
+	}
+}
+
+// TestFastModePoolLineStillParses guards the throughput phase's message change:
+// a Fast-mode task-pool line ends with "(Fast mode: no browser)" instead of a
+// browser count, and the harness must still recover the width from it.
+func TestFastModePoolLineStillParses(t *testing.T) {
+	log := "Running 4 task(s) in parallel with 1 worker concurrency each (Fast mode: no browser)"
+
+	evidence := concurrencyFromEvents(nil, log)
+
+	if evidence.PlannedWorkers != 4 || evidence.PerTaskConcurrency != 1 {
+		t.Fatalf("fast-mode plan = %d workers x %d, want 4 x 1",
+			evidence.PlannedWorkers, evidence.PerTaskConcurrency)
+	}
+}
+
+// TestAutoCapacityEventsAreNotCountedAsFailures keeps the capacity events out
+// of the failure-kind breakdown. They are operational information; counting a
+// pool that safely narrowed itself as a failure would make every healthy
+// adaptive run look broken.
+func TestAutoCapacityEventsAreNotCountedAsFailures(t *testing.T) {
+	events := []workerEvent{
+		{Type: "adaptive-workers", Severity: "information"},
+		{Type: "task-worker-retired", Severity: "information"},
+		{Type: "capacity-capped", Severity: "warning"},
+		{Type: "browser-failure", Severity: "warning"},
+	}
+
+	kinds := failureKindsFromEvents(events)
+
+	for _, excluded := range []string{"adaptive-workers", "task-worker-retired", "capacity-capped"} {
+		if _, present := kinds[excluded]; present {
+			t.Errorf("%q was counted as a failure kind", excluded)
+		}
+	}
+
+	if kinds["browser-failure"] != 1 {
+		t.Errorf("browser-failure count = %d, want 1", kinds["browser-failure"])
+	}
+}

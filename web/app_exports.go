@@ -84,13 +84,22 @@ func (s *Server) exportsPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not load jobs", http.StatusInternalServerError)
 		return
 	}
-	sourceScope := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("source_scope")))
-	if sourceScope == "" {
-		sourceScope = "filtered"
-	}
-	if sourceScope != "all" && sourceScope != "filtered" && sourceScope != "saved_view" && sourceScope != "selected" {
-		http.Error(w, "unsupported export source scope", http.StatusUnprocessableEntity)
+	// The page and the POST handler share one scope vocabulary, so a deep link
+	// from Results ("Export this job") opens a builder already set to that
+	// scope instead of being refused. "scope" is the same value under the name
+	// the Results export menu links with.
+	sourceScope, scopeErr := normalizeExportScope(r.URL.Query().Get("source_scope"))
+	if scopeErr != nil {
+		http.Error(w, scopeErr.Error(), http.StatusUnprocessableEntity)
 		return
+	}
+	if requested := strings.TrimSpace(r.URL.Query().Get("scope")); requested != "" {
+		normalized, requestErr := normalizeExportScope(requested)
+		if requestErr != nil {
+			http.Error(w, requestErr.Error(), http.StatusUnprocessableEntity)
+			return
+		}
+		sourceScope = normalized
 	}
 	selectedIDs := ""
 	if sourceScope == "selected" {

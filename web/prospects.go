@@ -216,6 +216,49 @@ func validateProspectBoundaryURL(raw string) error {
 	return fmt.Errorf("host %q must be localhost or a private/loopback IP address", host)
 }
 
+// ProspectRecomputeResult is one recompute pass plus the website audits it
+// had to queue first. Processed keeps its historical meaning, so a caller
+// that only reads that field is unchanged.
+type ProspectRecomputeResult struct {
+	Processed int64 `json:"processed"`
+	// Prerequisite reports the website audits queued because the requested
+	// businesses had never been checked. It is nil when nothing was needed.
+	Prerequisite *WebsiteScoringPrerequisite `json:"website_audit_prerequisite,omitempty"`
+}
+
+// RecomputeProspectsWithAudit is the explicit "score these businesses"
+// entry point.
+//
+// The worth-calling score leans on website state, so scoring a business whose
+// website has never been checked would turn "unknown" into a number that
+// reads like a measurement. When auditFirst is set, the prerequisite audits
+// are queued durably before the pass runs and the caller is told how many
+// rows are still waiting on evidence; the pass itself still runs, and the
+// classifier leaves an unaudited business unclassified rather than guessing.
+func (s *Service) RecomputeProspectsWithAudit(
+	ctx context.Context,
+	ids []string,
+	auditFirst bool,
+) (ProspectRecomputeResult, error) {
+	result := ProspectRecomputeResult{}
+	if auditFirst {
+		prerequisite, err := s.EnsureWebsiteAuditPrerequisite(ctx, ids, "prospect_recompute")
+		if err != nil && !errors.Is(err, ErrWebsiteStateUnsupported) {
+			return ProspectRecomputeResult{}, err
+		}
+		if prerequisite.Unaudited > 0 {
+			result.Prerequisite = &prerequisite
+		}
+	}
+	processed, err := s.RecomputeProspects(ctx, ids)
+	if err != nil {
+		return ProspectRecomputeResult{}, err
+	}
+	result.Processed = processed
+
+	return result, nil
+}
+
 // RecomputeProspects rescans the selected businesses, or every business when
 // the ID list is empty, using the currently stored score weights.
 func (s *Service) RecomputeProspects(ctx context.Context, ids []string) (int64, error) {
@@ -496,6 +539,12 @@ type ProspectQueryPlan struct {
 	Centre   [2]float64 `json:"centre"`
 	ZIPCount int        `json:"zip_count"`
 	Skipped  int        `json:"skipped"`
+	// Targets carries the geography each query must be executed from: one
+	// entry per (synonym, ZIP) with that ZIP's own centroid, city, state,
+	// population, selection rank and a stable id. Geography must never live
+	// only inside the query string, which is what made a 25-ZIP plan execute
+	// as one area from a single population-weighted centre.
+	Targets []prospect.QueryTarget `json:"targets,omitempty"`
 }
 
 // GenerateProspectQueries crosses category synonyms with the most populous
@@ -542,15 +591,16 @@ func (s *Service) GenerateProspectQueries(state, city string, topN int, synonyms
 	if len(selected) == 0 {
 		return ProspectQueryPlan{}, fmt.Errorf("%w: no ZIP areas match the state and city filters", ErrInvalidProspectConfig)
 	}
-	queries, err := prospect.BuildQueries(cleaned, selected, true)
+	targets, err := prospect.BuildTargets(cleaned, selected, true)
 	if err != nil {
 		return ProspectQueryPlan{}, fmt.Errorf("%w: %v", ErrInvalidProspectConfig, err)
 	}
-	latitude, longitude := prospect.Centre(selected)
+	latitude, longitude := prospect.TargetCentre(targets)
 	return ProspectQueryPlan{
-		Queries:  prospect.QueryLines(queries),
+		Queries:  prospect.TargetLines(targets),
 		Centre:   [2]float64{latitude, longitude},
-		ZIPCount: len(selected),
+		ZIPCount: prospect.DistinctTargetZIPs(targets),
 		Skipped:  len(areas) - len(selected),
+		Targets:  targets,
 	}, nil
 }

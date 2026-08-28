@@ -70,6 +70,14 @@ type CatalogOptions struct {
 	// MarketConcurrency is the fixed browser concurrency the market
 	// experiments run at.
 	MarketConcurrency int
+	// Widths are the parallel-task counts the W ladder walks. The escalation
+	// ladder varies CONCURRENCY, which the engine can spend on pages inside one
+	// browser; this ladder varies the number of task WORKERS, which is the
+	// dimension that costs one browser process each and therefore the dimension
+	// the memory budget bounds. Finding the live block-rate knee needs the
+	// second ladder, not the first. Default 1, 2, 4, 6.
+	// [throughput/auto-capacity]
+	Widths []int
 	// Repeat is how many times each experiment is run for a repeatability
 	// measurement; zero or one means a single run.
 	Repeat int
@@ -88,6 +96,7 @@ func DefaultCatalogOptions() CatalogOptions {
 			"E": 16,
 		},
 		MarketConcurrency: defaultMarketConcurrency,
+		Widths:            []int{1, 2, 4, 6},
 		Repeat:            1,
 	}
 }
@@ -102,6 +111,9 @@ func (o CatalogOptions) normalised() CatalogOptions {
 	}
 	if o.MarketConcurrency <= 0 {
 		o.MarketConcurrency = defaults.MarketConcurrency
+	}
+	if len(o.Widths) == 0 {
+		o.Widths = defaults.Widths
 	}
 	if o.Repeat <= 0 {
 		o.Repeat = 1
@@ -220,12 +232,64 @@ func FastReference(options CatalogOptions) ExperimentConfig {
 	}
 }
 
+// WidthLadder returns the parallel-task ladder W1, W2, W4, ... : the same
+// workload run at a rising number of task WORKERS with per-task concurrency
+// pinned to one.
+//
+// It exists because the A..E ladder cannot answer the throughput question. Each
+// task worker runs its own scrapemate app and therefore its own browser pool
+// that never drops below one browser, so workers — not concurrency — are what
+// multiply browser processes and consume the memory budget. Pinning
+// concurrency to the width makes every rung "N workers, one Maps operation and
+// one browser each", so a rung's block rate, browser-failure rate and peak
+// memory are attributable to the width alone.
+//
+// Run the rungs in ascending order and stop at the first one whose block rate
+// or browser-failure rate rises: that rung is the live knee, and the rung below
+// it is the safe width for that host and target. Throughput bought past the
+// knee is bought with refusals. [throughput/auto-capacity]
+func WidthLadder(options CatalogOptions) []ExperimentConfig {
+	options = options.normalised()
+
+	configs := make([]ExperimentConfig, 0, len(options.Widths))
+
+	for _, width := range options.Widths {
+		if width < 1 {
+			continue
+		}
+
+		job := browserJob(fmt.Sprintf("acceptance-W%d-workers", width), options.Workload, width)
+		job.TaskWorkers = width
+		// One browser per worker, one page each: the rung's browser count is
+		// exactly its width, with nothing for the engine to derive.
+		job.BrowserPool = width
+		job.PagesPerBrowser = 1
+		// Auto capacity is left ON, because what the ladder measures is the
+		// width the controller is allowed to settle at, not a width forced past
+		// a machine's own budget. A rung whose measured browsers come back below
+		// its label means the host could not afford that width, which is itself
+		// the answer.
+		job.Adaptive = true
+
+		configs = append(configs, ExperimentConfig{
+			ID:     fmt.Sprintf("W%d", width),
+			Label:  fmt.Sprintf("browser mode, %d parallel task(s) x 1 concurrency, 48-task workload, direct", width),
+			Job:    job,
+			Repeat: options.Repeat,
+		})
+	}
+
+	return configs
+}
+
 // Catalog returns every named experiment in a stable order: the A..E
-// escalation, the fast-mode reference, then the three markets.
+// escalation, the W width ladder, the fast-mode reference, then the three
+// markets.
 func Catalog(options CatalogOptions) []ExperimentConfig {
 	options = options.normalised()
 
 	configs := Escalation(options)
+	configs = append(configs, WidthLadder(options)...)
 	configs = append(configs, FastReference(options))
 	configs = append(configs, Markets(options)...)
 
@@ -237,6 +301,12 @@ func Catalog(options CatalogOptions) []ExperimentConfig {
 func Experiment(id string, options CatalogOptions) (ExperimentConfig, bool) {
 	target := strings.ToUpper(strings.TrimSpace(id))
 	for _, config := range Escalation(options) {
+		if strings.ToUpper(config.ID) == target {
+			return config, true
+		}
+	}
+
+	for _, config := range WidthLadder(options) {
 		if strings.ToUpper(config.ID) == target {
 			return config, true
 		}

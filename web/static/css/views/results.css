@@ -186,6 +186,11 @@
     font-weight: var(--weight-semibold);
 }
 .results-menu-empty { margin: 0; padding: var(--space-2) var(--space-3); color: var(--text-muted); font-size: var(--text-xs); }
+/* The export menu states a scope and its live count on every entry, so the
+   count reads as a value rather than as part of the sentence. */
+.results-menu > div > a[data-export-scope] > strong { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-2); }
+.results-menu > div > a[data-export-scope] .badge { font-variant-numeric: tabular-nums; }
+.results-menu-divider { display: block; height: 1px; margin: var(--space-1) var(--space-2); background: var(--border-subtle); }
 .results-menu-end > div { right: 0; left: auto; }
 
 /* ---------------------------------------------------------------------------

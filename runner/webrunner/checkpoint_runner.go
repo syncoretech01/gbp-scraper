@@ -42,6 +42,17 @@ type workerResourceSample struct {
 	// census has not produced a value yet and must be treated as unknown
 	// rather than as "no browsers are running".
 	BrowserProcesses int
+	// BrowserMemoryBytes is the total resident memory those browsers actually
+	// hold. Divided by BrowserProcesses it turns the per-browser planning cost
+	// from an estimate into a measurement — one that may only ever raise the
+	// cost, never lower it (see plannedBrowserCostBytes). Zero means unmeasured.
+	// [throughput/auto-capacity]
+	BrowserMemoryBytes uint64
+	// CPUCores is how many CPUs this process may actually use: the cgroup quota
+	// when one is set, otherwise the visible core count. It bounds the auto
+	// worker ceiling, so a small container no longer plans for a big host's
+	// cores. Zero means unmeasured and is treated as one.
+	CPUCores int
 }
 
 type seedTaskMetadata struct {
@@ -320,7 +331,10 @@ func (w *webrunner) scrapeJobCheckpointed(
 	browserWorkerBudget := 0
 	browserBudgetTotal := 0
 
-	var budgetMemoryAvailable uint64
+	var (
+		budgetMemoryAvailable uint64
+		budgetCPUCores        int
+	)
 
 	// A browser-mode job fans out one scrapemate app — and therefore one
 	// browser pool that never drops below a single browser — per task worker.
@@ -341,6 +355,7 @@ func (w *webrunner) scrapeJobCheckpointed(
 			browserWorkerBudget = browserModeWorkerBudget(resourceSample)
 			browserBudgetTotal = browserProcessBudget(resourceSample)
 			budgetMemoryAvailable = resourceSample.MemoryAvailableBytes
+			budgetCPUCores = resourceSample.CPUCores
 		}
 	}
 
@@ -352,22 +367,42 @@ func (w *webrunner) scrapeJobCheckpointed(
 	// are what cost memory.
 	plan := planTaskPool(job, effectiveConcurrency, len(pending), browserWorkerBudget, browserBudgetTotal)
 
+	// Fast mode launches no browser at all, so announcing a planned browser
+	// count for it was simply false: job cfe2d653 was told it was running "4
+	// browser(s) planned" while holding none. The browser clause belongs only
+	// to the mode that actually has browsers. [throughput/auto-capacity]
+	poolSummary := fmt.Sprintf(
+		"Running %d task(s) in parallel with %d worker concurrency each (%d browser(s) planned)",
+		plan.Workers, plan.PerTaskConcurrency, plan.PlannedBrowsers())
+	if plan.FastMode {
+		poolSummary = fmt.Sprintf(
+			"Running %d task(s) in parallel with %d worker concurrency each (Fast mode: no browser)",
+			plan.Workers, plan.PerTaskConcurrency)
+	}
+
+	poolContext := map[string]any{
+		"task_workers": plan.Workers, "per_task_concurrency": plan.PerTaskConcurrency,
+		"per_task_browser_pool": plan.PerTaskBrowserPool, "per_task_pages": plan.PerTaskPages,
+		"desired_concurrency": desiredConcurrency, "effective_concurrency": effectiveConcurrency,
+		"pending_tasks":    len(pending),
+		"planned_browsers": plan.PlannedBrowsers(),
+		"fast_mode":        plan.FastMode,
+	}
+
+	// The browser budget arithmetic is only meaningful where browsers exist.
+	// Emitting the reserve and per-browser cost for a fast job made a run that
+	// can never touch them look budget-bound.
+	if !plan.FastMode {
+		poolContext["browser_budget_total"] = browserBudgetTotal
+		poolContext["browser_worker_budget"] = browserWorkerBudget
+		poolContext["memory_available_bytes"] = budgetMemoryAvailable
+		poolContext["per_browser_cost_bytes"] = uint64(perBrowserPlanningCostBytes)
+		poolContext["budget_reserve_bytes"] = uint64(browserBudgetReserveBytes)
+		poolContext["cpu_cores"] = budgetCPUCores
+	}
+
 	_ = w.svc.RecordJobWorkerEvent(
-		context.Background(), job.ID, "task-pool", "information",
-		fmt.Sprintf("Running %d task(s) in parallel with %d worker concurrency each (%d browser(s) planned)",
-			plan.Workers, plan.PerTaskConcurrency, plan.PlannedBrowsers()),
-		map[string]any{
-			"task_workers": plan.Workers, "per_task_concurrency": plan.PerTaskConcurrency,
-			"per_task_browser_pool": plan.PerTaskBrowserPool, "per_task_pages": plan.PerTaskPages,
-			"desired_concurrency": desiredConcurrency, "effective_concurrency": effectiveConcurrency,
-			"pending_tasks":          len(pending),
-			"planned_browsers":       plan.PlannedBrowsers(),
-			"browser_budget_total":   browserBudgetTotal,
-			"browser_worker_budget":  browserWorkerBudget,
-			"memory_available_bytes": budgetMemoryAvailable,
-			"per_browser_cost_bytes": uint64(perBrowserPlanningCostBytes),
-			"budget_reserve_bytes":   uint64(browserBudgetReserveBytes),
-		},
+		context.Background(), job.ID, "task-pool", "information", poolSummary, poolContext,
 	)
 
 	if plan.CappedExplicit {
@@ -377,7 +412,7 @@ func (w *webrunner) scrapeJobCheckpointed(
 		_ = w.svc.RecordJobWorkerEvent(
 			context.Background(), job.ID, "capacity-capped", "warning",
 			fmt.Sprintf(
-				"Requested workers/browsers exceed what available memory can hold; running %d worker(s) with %d browser(s) instead",
+				"Requested workers/browsers exceed what the measured memory and CPU can hold; running %d worker(s) with %d browser(s) instead",
 				plan.Workers, plan.PlannedBrowsers()),
 			map[string]any{
 				"requested_task_workers": job.Data.TaskWorkers,
@@ -766,7 +801,16 @@ func normalizeCheckpointRunError(ctx context.Context, runErr error, after exiter
 // known count.
 func (w *webrunner) sampleWorkerResources(ctx context.Context) (workerResourceSample, error) {
 	if w.sampleResources != nil {
-		return w.sampleResources(ctx, w.cfg.DataFolder)
+		sample, err := w.sampleResources(ctx, w.cfg.DataFolder)
+		// An injected sampler predates the CPU dimension and may leave it
+		// unset. Treating unset as "one core" would silently pin the auto
+		// ceiling to a single worker, so the real value is filled in here
+		// while an explicit choice is left exactly as the caller made it.
+		if sample.CPUCores < 1 {
+			sample.CPUCores = hostCPUCores()
+		}
+
+		return sample, err
 	}
 
 	sample, err := defaultWorkerResourceSample(ctx, w.cfg.DataFolder)
@@ -774,7 +818,7 @@ func (w *webrunner) sampleWorkerResources(ctx context.Context) (workerResourceSa
 		return sample, err
 	}
 
-	sample.BrowserProcesses = w.browsers.countBrowsers(ctx, int32(os.Getpid()))
+	sample.BrowserProcesses, sample.BrowserMemoryBytes = w.browsers.countBrowsers(ctx, int32(os.Getpid()))
 
 	return sample, nil
 }
@@ -810,6 +854,7 @@ func defaultWorkerResourceSample(ctx context.Context, dataFolder string) (worker
 	return workerResourceSample{
 		CPUPercent: cpuPercent, MemoryUsedBytes: memory.Used,
 		MemoryAvailableBytes: available, DiskFreeBytes: diskUsage.Free,
+		CPUCores: hostCPUCores(),
 	}, nil
 }
 

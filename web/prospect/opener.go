@@ -78,6 +78,13 @@ func OpenerTemplateFor(templates map[string]string, status string) string {
 // by website status, plus a "default" fallback used for any status
 // without a template of its own. All templates are plain text with
 // RenderOpener placeholders, so users can edit them freely.
+//
+// A default template only asserts a fact the collector can actually
+// capture. {reviews} is deliberately absent: the Fast-mode search
+// payload carries no review count, so the count is stored as unknown,
+// and a script that read "0 reviews" aloud about a business with
+// hundreds was a fabricated claim rather than a missing one. The star
+// rating IS in the payload, so {rating} stays.
 func DefaultOpenerTemplates() map[string]string {
 	return map[string]string{
 		StatusNoWebsite:   "Hi {name}, I searched for {category} in {city} and found you on Google — but couldn't find a website to send people to. Do you have one I missed?",
@@ -87,7 +94,7 @@ func DefaultOpenerTemplates() map[string]string {
 		StatusSSLBroken:   "Hi {name}, browsers are showing a security warning on your website's certificate, which tends to scare off people who find you on Google. Thought you'd want to know — it's usually a quick fix.",
 		StatusFreeBuilder: "Hi {name}, I came across your {category} in {city} — your {rating}-star rating stood out. I noticed the site runs on a free builder; have you thought about a site that's fully yours?",
 		StatusNoHTTPS:     "Hi {name}, your website works, but it loads without the padlock (HTTPS), so browsers label it \"not secure\" for visitors. It's a small fix — happy to point you in the right direction.",
-		StatusLive:        "Hi {name}, I was looking at {category} options in {city} and your reviews stood out — {rating} stars across {reviews} reviews. Do you have a quick minute?",
+		StatusLive:        "Hi {name}, I was looking at {category} options in {city} and your {rating}-star rating stood out. Do you have a quick minute?",
 		"default":         "Hi {name}, I came across your {category} in {city} on Google and wanted to reach out. Do you have a quick minute?",
 	}
 }

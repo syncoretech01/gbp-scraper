@@ -20,6 +20,11 @@ const (
 
 type prospectRecomputeInput struct {
 	IDs []string `json:"ids"`
+	// AuditFirst queues the website audits the score depends on before the
+	// pass runs. It defaults to true: an explicit scoring request for a
+	// never-checked website should produce evidence, not a guess. Send false
+	// to score from whatever evidence already exists.
+	AuditFirst *bool `json:"audit_first,omitempty"`
 }
 
 // registerProspectRoutes wires the GBP-prospecting API. Every GET works with
@@ -36,6 +41,10 @@ func (s *Server) registerProspectRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/prospects/integrations", s.apiProspectIntegrations)
 	mux.HandleFunc("GET /api/v1/prospects/discovered", s.apiDiscoveredCompanies)
 	mux.HandleFunc("POST /api/v1/prospects/queries", s.apiProspectQueries)
+	// The canonical website-state surface is registered here rather than in
+	// the shared route table: it is the same prospecting area, and keeping
+	// the registration next to its owner keeps web.go untouched.
+	s.registerWebsiteStateRoutes(mux)
 }
 
 func (s *Server) apiProspectSummary(w http.ResponseWriter, r *http.Request) {
@@ -62,12 +71,20 @@ func (s *Server) apiProspectRecompute(w http.ResponseWriter, r *http.Request) {
 		renderProspectAPIError(w, err)
 		return
 	}
-	count, err := s.svc.RecomputeProspects(r.Context(), input.IDs)
+	auditFirst := true
+	if input.AuditFirst != nil {
+		auditFirst = *input.AuditFirst
+	}
+	result, err := s.svc.RecomputeProspectsWithAudit(r.Context(), input.IDs, auditFirst)
 	if err != nil {
 		renderProspectAPIError(w, err)
 		return
 	}
-	renderJSON(w, http.StatusOK, localAPIEnvelope{Data: map[string]any{"processed": count}})
+	payload := map[string]any{"processed": result.Processed}
+	if result.Prerequisite != nil {
+		payload["website_audit_prerequisite"] = result.Prerequisite
+	}
+	renderJSON(w, http.StatusOK, localAPIEnvelope{Data: payload})
 }
 
 // apiProspectScoring reads and writes the worth-calling score weights. The

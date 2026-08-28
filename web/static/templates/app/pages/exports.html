@@ -1,5 +1,7 @@
 {{define "app/page/exports"}}{{template "app/layout" .}}{{end}}
 
+{{define "app/head"}}<script defer src="/static/js/app-exports.js"></script>{{end}}
+
 {{define "app/page-actions"}}<div class="page-actions"><a class="button" href="/app/results">{{template "app/icon-results"}} Start from Results</a><a class="button button-primary" href="#export-builder">{{template "app/icon-plus"}} New export</a></div>{{end}}
 
 {{define "app/content"}}
@@ -22,21 +24,33 @@
         <div class="card-header"><div><h2 id="export-builder-title">Create an export</h2><p>Build a verified local file from all, filtered, saved-view, or explicitly selected businesses. Everything is written inside the data directory on this machine.</p></div></div>
         <form class="card-body section-stack" action="/api/v1/exports" method="post">
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-            <input type="hidden" name="sort" value="{{.Page.Sort}}"><input type="hidden" name="include_duplicates" value="{{.Page.IncludeDuplicates}}">{{range .Page.Filters}}<input type="hidden" name="filter_field" value="{{.Field}}"><input type="hidden" name="filter_operator" value="{{.Operator}}"><input type="hidden" name="filter_value" value="{{.Value}}">{{end}}{{if .Page.FilterJSON}}<input type="hidden" name="filter_json" value="{{.Page.FilterJSON}}">{{end}}
+            <input type="hidden" name="sort" value="{{.Page.Sort}}"><input type="hidden" name="include_duplicates" value="{{.Page.IncludeDuplicates}}"><span data-scope-input="filters">{{range .Page.Filters}}<input type="hidden" name="filter_field" value="{{.Field}}"><input type="hidden" name="filter_operator" value="{{.Operator}}"><input type="hidden" name="filter_value" value="{{.Value}}">{{end}}{{if .Page.FilterJSON}}<input type="hidden" name="filter_json" value="{{.Page.FilterJSON}}">{{end}}</span>
 
             <fieldset class="fieldset export-group"><legend>File</legend><div class="grid grid-4">
                 <div class="field"><label for="export-name">Name</label><input class="input" id="export-name" name="name" value="business-results" maxlength="120" required></div>
                 <div class="field"><label for="export-format">Format</label><select class="select" id="export-format" name="format" required><option value="csv">CSV</option><option value="xlsx">XLSX workbook</option><option value="sqlite">Portable SQLite</option><option value="parquet">Parquet (columnar)</option><option value="json">JSON</option><option value="jsonl">JSON Lines</option><option value="geojson">GeoJSON</option><option value="kml">KML</option><option value="vcard">VCard</option><option value="txt">Plain text</option><option value="postgresql_sql">PostgreSQL-compatible SQL</option><option value="mysql_sql">MySQL-compatible SQL</option>{{if .Page.FutureIntegrations}}<option value="discovered_companies">Discovered companies (Lead-Engine JSONL, future integration)</option>{{end}}</select></div>
                 <div class="field"><label for="export-deduplicate">Duplicate handling</label><select class="select" id="export-deduplicate" name="deduplicate"><option value="true" selected>Normalized and deduplicated</option><option value="false">Include duplicate records</option></select></div>
-                <div class="field"><label for="export-query">Search text</label><input class="input" id="export-query" name="q" value="{{.Page.Query}}" placeholder="Name, category, address, or contact text"><span class="field-hint">Optional. Narrows the rows before the export runs.</span></div>
+                <div class="field" data-scope-input="q"><label for="export-query">Search text</label><input class="input" id="export-query" name="q" value="{{.Page.Query}}" placeholder="Name, category, address, or contact text"><span class="field-hint">Used by the <em>Current filtered view</em> scope.</span></div>
             </div></fieldset>
 
-            <fieldset class="fieldset export-group"><legend>Which records</legend><div class="grid grid-4">
-                <div class="field"><label for="export-scope">Records</label><select class="select" id="export-scope" name="source_scope"><option value="filtered" {{if eq .Page.SourceScope "filtered"}}selected{{end}}>Current filters</option><option value="all" {{if eq .Page.SourceScope "all"}}selected{{end}}>All normalized results</option><option value="saved_view" {{if eq .Page.SourceScope "saved_view"}}selected{{end}}>Saved view</option><option value="selected" {{if eq .Page.SourceScope "selected"}}selected{{end}}>Selected IDs</option></select><span class="field-hint">The three fields beside this one apply only to the matching choice.</span></div>
-                <div class="field"><label for="export-job">Source job</label><select class="select" id="export-job" name="job_id"><option value="">All jobs</option>{{range .Page.Jobs}}<option value="{{.ID}}" {{if .Selected}}selected{{end}}>{{.Name}}</option>{{end}}</select></div>
-                <div class="field"><label for="export-view">Saved view</label><select class="select" id="export-view" name="saved_view_id"><option value="">&mdash;</option>{{range .Page.SavedViews}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select><span class="field-hint">Used when Records is <em>Saved view</em>.</span></div>
-                <div class="field"><label for="export-selected">Selected business IDs</label><textarea class="textarea" id="export-selected" name="selected_ids" rows="3" placeholder="Comma or newline separated IDs">{{.Page.SelectedIDs}}</textarea><span class="field-hint">Used when Records is <em>Selected IDs</em>.</span></div>
-            </div></fieldset>
+            {{/*
+            Which records an export contains is the one decision that cannot be
+            ambiguous, so the scope is chosen explicitly and its live count is
+            shown before the file is built. app-exports.js reads
+            /api/v1/exports/scopes for the numbers, disables the inputs the
+            chosen scope does not use, and clears them so a scope can never
+            quietly ignore a value that is still on screen.
+            */}}
+            <fieldset class="fieldset export-group" data-export-scope-form data-scope-endpoint="/api/v1/exports/scopes"><legend>Which businesses</legend>
+                <div class="grid grid-4">
+                    <div class="field"><label for="export-scope">Records</label><select class="select" id="export-scope" name="source_scope"><option value="filtered" {{if eq .Page.SourceScope "filtered"}}selected{{end}}>Current filtered view</option><option value="selected" {{if eq .Page.SourceScope "selected"}}selected{{end}}>Selected businesses</option><option value="job">Current source job</option><option value="all" {{if eq .Page.SourceScope "all"}}selected{{end}}>Entire workspace</option><option value="saved_view" {{if eq .Page.SourceScope "saved_view"}}selected{{end}}>Saved view</option></select><span class="field-hint">Only the fields this choice uses stay enabled.</span></div>
+                    <div class="field" data-scope-input="job_id"><label for="export-job">Source job</label><select class="select" id="export-job" name="job_id"><option value="">All jobs</option>{{range .Page.Jobs}}<option value="{{.ID}}" {{if .Selected}}selected{{end}}>{{.Name}}</option>{{end}}</select></div>
+                    <div class="field" data-scope-input="saved_view_id"><label for="export-view">Saved view</label><select class="select" id="export-view" name="saved_view_id"><option value="">&mdash;</option>{{range .Page.SavedViews}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select><span class="field-hint">Used by the <em>Saved view</em> scope.</span></div>
+                    <div class="field" data-scope-input="selected_ids"><label for="export-selected">Selected business IDs</label><textarea class="textarea" id="export-selected" name="selected_ids" rows="3" placeholder="Comma or newline separated IDs">{{.Page.SelectedIDs}}</textarea><span class="field-hint">Used by the <em>Selected businesses</em> scope.</span></div>
+                </div>
+                <p class="notice notice-info" role="status" data-scope-summary hidden></p>
+                <div class="chip-group" data-scope-counts hidden role="group" aria-label="Businesses in each export scope"></div>
+            </fieldset>
 
             <details class="export-disclosure">
                 <summary><strong>Columns and headings</strong></summary>
@@ -72,7 +86,7 @@
             </details>
 
             <p class="field-help">Files are built through a bounded local workspace, atomically published, verified, checksummed, and recorded with their source query, columns, options, row count, and timestamps.</p>
-            <div class="form-actions"><button class="button button-primary" type="submit">Create export</button></div>
+            <div class="form-actions"><button class="button button-primary" type="submit" data-scope-submit>Create export</button></div>
         </form>
     </section>
 

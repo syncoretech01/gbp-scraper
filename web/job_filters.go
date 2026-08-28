@@ -59,6 +59,42 @@ type JobResultFilters struct {
 const JobResultFilterNotice = "Applied to stored results after collection. " +
 	"Google Maps returned every listing the plan reached and the per-job CSV keeps them all."
 
+// JobStatusFilterNotice is shown whenever a business-status rule is stored.
+// The status is read from the listing payload, and Maps is currently not
+// returning one in either collection mode, so a status rule narrows the view
+// to nothing rather than to open businesses.
+const JobStatusFilterNotice = "Business status is read from the Maps listing payload, which is " +
+	"currently returning no status at all. A status rule therefore keeps only businesses whose " +
+	"status was captured, which may be none of them. Collection and the per-job CSV are unaffected."
+
+// JobReviewFilterNotice is shown whenever a review-count bound is stored. A
+// business whose review count was never captured (Fast mode cannot capture it
+// -- the search payload does not carry one) is stored as NULL, not as zero,
+// and a NULL never satisfies a numeric bound, so it is excluded by either end
+// of the range rather than being silently counted as a business with no
+// reviews.
+const JobReviewFilterNotice = "Review-count bounds only keep businesses whose review count was " +
+	"actually captured. A count that was never captured is stored as unknown, not as zero, and is " +
+	"excluded once either bound is set."
+
+// StatusFiltered reports whether a business-status rule is stored.
+func (f *JobResultFilters) StatusFiltered() bool {
+	if f == nil {
+		return false
+	}
+
+	return len(normalizeJobFilterList(f.Statuses)) > 0
+}
+
+// ReviewCountFiltered reports whether a review-count bound is stored.
+func (f *JobResultFilters) ReviewCountFiltered() bool {
+	if f == nil {
+		return false
+	}
+
+	return f.ReviewsMin != nil || f.ReviewsMax != nil
+}
+
 // Empty reports whether the filter set would narrow nothing.
 func (f *JobResultFilters) Empty() bool {
 	if f == nil {

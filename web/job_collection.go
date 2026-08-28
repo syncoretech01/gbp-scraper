@@ -104,7 +104,7 @@ func BuildJobCollectionPlan(jobID string, data JobData) JobCollectionPlan {
 		ExportColumns:   JobFieldExportColumnKeys(data.Fields),
 		Filters:         data.ResultFilters.Normalized(),
 		IncrementalMode: data.IncrementalMode,
-		Notices:         make([]string, 0, 3),
+		Notices:         make([]string, 0, 5),
 	}
 
 	group := jobCollectionFilterGroup(jobID, data)
@@ -118,6 +118,16 @@ func BuildJobCollectionPlan(jobID string, data JobData) JobCollectionPlan {
 	}
 	if plan.Filters != nil {
 		plan.Notices = append(plan.Notices, JobResultFilterNotice)
+	}
+	// Two of the rules can empty a result view for reasons that have nothing
+	// to do with the businesses: a status Maps is not returning, and a review
+	// count Fast mode cannot capture. Both are named here so the plan never
+	// reads as "your filter found nothing".
+	if plan.Filters.StatusFiltered() {
+		plan.Notices = append(plan.Notices, JobStatusFilterNotice)
+	}
+	if plan.Filters.ReviewCountFiltered() {
+		plan.Notices = append(plan.Notices, JobReviewFilterNotice)
 	}
 	if notice := incrementalModeNotice(data.IncrementalMode); notice != "" {
 		plan.Notices = append(plan.Notices, notice)

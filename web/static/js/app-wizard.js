@@ -19,6 +19,86 @@
         return String(raw || "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
     }
 
+    // --- GBP coverage targets ------------------------------------------------
+    // A ZIP x synonym plan is a set of geographic targets, not a list of words.
+    // The generator hands back one target per (synonym, ZIP) with that ZIP's
+    // own centroid; they are carried in a hidden field so the job stores them
+    // and every surface counts AREAS by distinct ZIP centroid instead of
+    // reporting one area for a 25-ZIP plan.
+    // The hidden field is the single source of truth: it is what the job
+    // stores, so reading it back (rather than caching a parallel array) means a
+    // plan rendered by the server for a duplicate, a rerun or a template is
+    // treated exactly like one generated in this session. The parse is memoised
+    // on the raw string so a 75-target plan is not re-parsed per keystroke.
+    let coverageCache = { raw: null, targets: [] };
+
+    function coverageTargetsField() { return wizard.querySelector("[data-query-targets]"); }
+
+    function coverageTargets() {
+        const holder = coverageTargetsField();
+        const raw = holder ? holder.value : "";
+        if (raw === coverageCache.raw) return coverageCache.targets;
+        let parsed = [];
+        if (raw) {
+            try {
+                const decoded = JSON.parse(raw);
+                if (Array.isArray(decoded)) parsed = decoded.filter(isCoverageTarget);
+            } catch (_) {
+                parsed = [];
+            }
+        }
+        coverageCache = { raw: raw, targets: parsed };
+        return parsed;
+    }
+
+    function isCoverageTarget(target) {
+        return Boolean(target) && typeof target.query === "string" && target.query !== "" &&
+            Boolean(target.zip) &&
+            Number.isFinite(Number(target.latitude)) && Number.isFinite(Number(target.longitude));
+    }
+
+    function writeCoverageTargets(targets) {
+        const kept = Array.isArray(targets) ? targets.filter(isCoverageTarget) : [];
+        const holder = coverageTargetsField();
+        if (holder) holder.value = kept.length ? JSON.stringify(kept) : "";
+        coverageCache = { raw: holder ? holder.value : "", targets: kept };
+        syncCoverageEcho();
+    }
+
+    // liveCoverageTargets keeps only the targets whose query line is still in
+    // the keyword box, so deleting a generated line really does remove its
+    // geographic target instead of leaving a phantom area in the estimate.
+    function liveCoverageTargets() {
+        const stored = coverageTargets();
+        if (!stored.length) return [];
+        const present = new Set(uniqueQueries().unique.map((query) => query.toLocaleLowerCase()));
+        return stored.filter((target) => present.has(target.query.toLocaleLowerCase()));
+    }
+
+    function distinctTargetZips(targets) {
+        const zips = new Set();
+        targets.forEach((target) => { if (target && target.zip) zips.add(String(target.zip)); });
+        return zips.size;
+    }
+
+    function syncCoverageEcho() {
+        const echo = wizard.querySelector("[data-coverage-echo]");
+        if (!echo) return;
+        const live = liveCoverageTargets();
+        if (!live.length) { echo.hidden = true; return; }
+        echo.hidden = false;
+        setStatus("[data-coverage-echo-text]",
+            live.length + " query targets across " + distinctTargetZips(live) +
+            " ZIP centres. Each target searches from its own ZIP centroid, not from the job centre.");
+    }
+
+    // Google returns at most one page of listings for the single Maps search
+    // request Fast mode issues per query ("!7i20" in the request it builds),
+    // so twenty is the hard ceiling on what one Fast query can observe. Every
+    // Fast-mode sentence in this wizard is derived from that number rather
+    // than implying the radius is covered.
+    const FAST_MODE_RESULT_CAP = 20;
+
     function notify(message, kind) {
         if (window.GMapsApp) window.GMapsApp.toast(message, kind || "success");
     }
@@ -62,7 +142,27 @@
 
     function locations() {
         const items = lines(value("locations", ""));
-        return items.length ? items : [value("location_label", "San Francisco, California")];
+        const label = value("location_label", "");
+        return items.length ? items : (label ? [label] : []);
+    }
+
+    // The centre this page was rendered with. The GBP coverage generator may
+    // only overwrite the map centre while it is still untouched, and "untouched"
+    // has to mean "still whatever the server rendered" -- comparing against a
+    // hard-coded San Francisco pair silently made one particular city the only
+    // centre the generator would ever replace.
+    const loadedCentre = {
+        latitude: field("latitude") ? field("latitude").value : "",
+        longitude: field("longitude") ? field("longitude").value : ""
+    };
+
+    function centreIsUntouched() {
+        const latitude = field("latitude");
+        const longitude = field("longitude");
+        if (!latitude || !longitude) return false;
+        const blank = latitude.value === "" || longitude.value === "";
+        const asLoaded = latitude.value === loadedCentre.latitude && longitude.value === loadedCentre.longitude;
+        return blank || asLoaded;
     }
 
     // --- Wizard modes -------------------------------------------------------
@@ -156,6 +256,9 @@
         const currentPanel = wizard.querySelector('[data-wizard-panel="' + current + '"]');
         if (!currentPanel || currentPanel.dataset.modeHidden === "true") setStep(visible.length ? visible[0].dataset.wizardPanel : 1, false);
         else setStep(current, false);
+        // A step this mode has just hidden may still be carrying rules that
+        // narrow the job. Say so immediately, not only once Review is opened.
+        syncHiddenNarrowingNotice();
     }
 
     // renumberSteps keeps the visible rail numbered 1..n for the current mode
@@ -285,6 +388,13 @@
         const cellsPerLocation = usesGrid ? Math.max(1, Math.pow(Math.ceil((radiusKm * 2) / gridKm), 2)) : 1;
         const cells = cellsPerLocation * locationCount;
         const tasks = queryCount * cells;
+        // Areas is how many DISTINCT places this run searches. A ZIP coverage
+        // plan is 25 ZIP centres, not one job centre, and reporting "1 area"
+        // for it was the visible half of geography living only in the query
+        // text. Task count is unchanged: each generated query is still one
+        // unit of work, now aimed at its own ZIP centroid.
+        const targets = liveCoverageTargets();
+        const areas = targets.length ? distinctTargetZips(targets) : cells;
         const depth = Math.max(1, Number(value("depth", 10)));
         const concurrency = Math.max(1, Number(value("concurrency", 4)));
         const browserCapacity = Math.max(1, Number(value("browser_pool_size", 2)) * Number(value("pages_per_browser", 2)));
@@ -293,7 +403,7 @@
         // extraction, so a single factor covers the added network work.
         const enrichmentFactor = field("email") && field("email").checked ? 1.7 : 1;
         const minutes = Math.max(3, Math.ceil((tasks * Math.max(1, depth / 5) * .7 * enrichmentFactor) / effectiveConcurrency));
-        return { queryCount, locationCount, cells, tasks, minutes };
+        return { queryCount, locationCount, cells, areas, tasks, minutes, targetCount: targets.length };
     }
 
     function durationMinutes(raw) {
@@ -320,10 +430,11 @@
         }
         setText("[data-query-count]", String(result.unique.length));
         setText("[data-duplicate-count]", String(result.duplicate.length));
+        syncCoverageEcho();
         const stats = estimate();
         setText("[data-estimate-locations]", String(stats.locationCount));
         setText("[data-estimate-queries]", String(stats.queryCount));
-        setText("[data-estimate-cells]", String(stats.cells));
+        setText("[data-estimate-cells]", String(stats.areas));
         setText("[data-estimate-tasks]", String(stats.tasks));
         setText("[data-estimate-runtime]", "~" + stats.minutes + " min");
         syncCoordinateEcho();
@@ -343,13 +454,21 @@
         const limitMinutes = durationMinutes(limit);
         setText("[data-limit-echo]", limit);
 
-        const coverage = fast
-            ? countOf(stats.cells, "radius search", "radius searches") + " of " + radiusKilometres() + " km"
-            : countOf(stats.cells, "area", "areas") + " covering " + radiusKilometres() + " km";
-        setText("[data-cost-sentence]", (fast ? "Fast mode" : "Thorough mode") + ": " +
-            countOf(stats.queryCount, "query", "queries") + " across " + coverage +
-            " is " + countOf(stats.tasks, "search", "searches") + " to run. Estimated runtime ~" +
-            stats.minutes + " min, and this job stops after " + limit + ".");
+        // Fast mode is one Maps search request per query, capped by Maps at
+        // 20 listings, aimed at the centre and then trimmed to the radius. It
+        // is a radius-biased sample, NOT coverage of the radius, and saying
+        // otherwise was the single most misleading sentence in the wizard.
+        setText("[data-cost-sentence]", fast
+            ? "Fast mode: " + countOf(stats.queryCount, "query", "queries") + ", one Maps search each, " +
+              "up to " + FAST_MODE_RESULT_CAP + " listings per query (at most " +
+              (stats.queryCount * FAST_MODE_RESULT_CAP) + " observations before duplicates are merged), " +
+              "aimed at the centre and trimmed to " + radiusKilometres() + " km. " +
+              "This samples the area; it does not cover it. Estimated runtime ~" + stats.minutes +
+              " min, and this job stops after " + limit + "."
+            : "Thorough mode: " + countOf(stats.queryCount, "query", "queries") + " across " +
+              countOf(stats.cells, "area", "areas") + " covering " + radiusKilometres() + " km is " +
+              countOf(stats.tasks, "search", "searches") + " to run. Estimated runtime ~" +
+              stats.minutes + " min, and this job stops after " + limit + ".");
 
         const warning = summary.querySelector("[data-cost-warning]");
         if (!warning) return;
@@ -389,8 +508,11 @@
         const fast = isFastMode();
         const savedArea = value("saved_area_id", "");
         setPreflight("area", "ok",
-            savedArea ? "Saved area snapshot" : (fast ? "Strict radius" : "Full map coverage"),
-            radiusKilometres() + " km" + (fast ? " radius, no grid walk" : " radius, searched in " + value("grid_cell_km", "2.5") + " km areas"));
+            savedArea ? "Saved area snapshot" : (fast ? "Radius-biased sample" : "Full map coverage"),
+            fast
+                ? "Up to " + FAST_MODE_RESULT_CAP + " listings per query, aimed at the centre and trimmed to " +
+                  radiusKilometres() + " km. No grid walk, so the " + radiusKilometres() + " km is a bound, not coverage."
+                : radiusKilometres() + " km radius, searched in " + value("grid_cell_km", "2.5") + " km areas");
 
         const limit = durationMinutes(value("maxtime", "60m"));
         const fits = limit >= stats.minutes;
@@ -408,11 +530,15 @@
         updatePreview();
         const stats = estimate();
         setText("[data-review-name]", value("name", "Untitled scrape"));
-        setText("[data-review-location]", value("location_label", "San Francisco, California"));
-        setText("[data-review-coordinates]", value("latitude", "37.7749") + ", " + value("longitude", "-122.4194"));
+        setText("[data-review-location]", value("location_label", "Not set"));
+        const latitude = value("latitude", "");
+        const longitude = value("longitude", "");
+        setText("[data-review-coordinates]", latitude && longitude ? latitude + ", " + longitude : "Not set");
         const fast = isFastMode();
         setText("[data-review-mode]", fast ? "Fast mode — quick, no map grid" : "Thorough mode — full map coverage");
-        setText("[data-review-radius]", radiusKilometres() + " km " + (fast ? "strict radius" : "covered as a map grid"));
+        setText("[data-review-radius]", fast
+            ? radiusKilometres() + " km bound on a radius-biased sample"
+            : radiusKilometres() + " km covered as a map grid");
         setText("[data-review-grid]", fast ? "Not used in Fast mode" : value("grid_cell_km", "2.5") + " km areas");
         setText("[data-review-tasks]", String(stats.tasks));
         setText("[data-review-runtime]", value("maxtime", "60m"));
@@ -422,6 +548,7 @@
         setText("[data-review-fields]", fieldSelectionSummary());
         setText("[data-review-filters]", filterSummary());
         setText("[data-review-incremental]", selectedText("incremental_mode", "Full collection"));
+        syncHiddenNarrowingNotice();
         updatePreflight(stats);
         const warning = wizard.querySelector("[data-estimate-warning]");
         if (warning) {
@@ -507,7 +634,7 @@
         if (include.length) parts.push(include.length + " included " + (include.length === 1 ? "category" : "categories"));
         const exclude = splitCategoryList(value("filter_exclude_categories", ""));
         if (exclude.length) parts.push(exclude.length + " excluded " + (exclude.length === 1 ? "category" : "categories"));
-        const statuses = Array.from(wizard.querySelectorAll('input[name="filter_status"]:checked')).map((box) => box.value);
+        const statuses = selectedStatusFilters();
         if (statuses.length) parts.push("status " + statuses.join(", "));
         const claimed = value("filter_claimed", "any");
         if (claimed === "claimed") parts.push("claimed only");
@@ -515,7 +642,91 @@
         if (value("filter_name_contains", "")) parts.push('name contains "' + value("filter_name_contains", "") + '"');
         if (value("filter_name_excludes", "")) parts.push('name excludes "' + value("filter_name_excludes", "") + '"');
         if (!parts.length) return "None";
+        // The status rule is the one that silently empties a result view, so
+        // Review names its state either way rather than leaving its absence to
+        // be inferred from a clause that simply is not there.
+        if (!statuses.length) parts.push("any business status");
         return parts.join("; ") + " — applied after collection";
+    }
+
+    function statusFilterBoxes() {
+        return Array.from(wizard.querySelectorAll('input[name="filter_status"]'));
+    }
+
+    function selectedStatusFilters() {
+        return statusFilterBoxes().filter((box) => box.checked).map((box) => box.value);
+    }
+
+    // activeNarrowingControls lists every control that narrows this job and is
+    // currently carrying a non-default value, together with the step it lives
+    // on. Mode only changes what is SHOWN -- a hidden step still submits -- so
+    // this is what makes a rule set on a step the current mode has removed
+    // visible instead of silent.
+    function activeNarrowingControls() {
+        const active = [];
+        const add = (label, panel) => active.push({ label: label, panel: panel });
+        const filled = (name) => String(value(name, "")).trim() !== "";
+        if (filled("filter_rating_min") || filled("filter_rating_max")) add("rating bounds", "5");
+        if (filled("filter_reviews_min") || filled("filter_reviews_max")) add("review-count bounds", "5");
+        if (filled("filter_include_categories")) add("included categories", "5");
+        if (filled("filter_exclude_categories")) add("excluded categories", "5");
+        selectedStatusFilters().forEach((status) => add("business status " + status, "5"));
+        if (value("filter_claimed", "any") !== "any") add("listing ownership", "5");
+        if (filled("filter_name_contains")) add("name contains", "5");
+        if (filled("filter_name_excludes")) add("name excludes", "5");
+        if (value("incremental_mode", "") !== "") add("rescan mode", "5");
+        const toggle = fieldToggle();
+        if (toggle && toggle.checked) add("data-field selection", "3");
+        return active;
+    }
+
+    // syncHiddenNarrowingNotice is the fix for the Filters/Review divergence:
+    // ticking a filter in Advanced and then switching to Basic hid the Filters
+    // step while leaving the rule checked, enabled and submitting, so Review
+    // announced "status operational" for a step the operator could no longer
+    // see or clear. The rule still applies -- hiding a step must never change
+    // the job that runs -- but it is now named, with a way to reach and clear
+    // it.
+    function syncHiddenNarrowingNotice() {
+        const notice = wizard.querySelector("[data-hidden-narrowing]");
+        if (!notice) return;
+        const hidden = activeNarrowingControls().filter((entry) => {
+            const panel = wizard.querySelector('[data-wizard-panel="' + entry.panel + '"]');
+            return panel && panel.dataset.modeHidden === "true";
+        });
+        notice.hidden = hidden.length === 0;
+        if (!hidden.length) return;
+        setStatus("[data-hidden-narrowing-text]", hidden.length === 1
+            ? "One rule set on a step this mode hides still applies to this job: " + hidden[0].label + "."
+            : hidden.length + " rules set on steps this mode hides still apply to this job: " +
+              hidden.map((entry) => entry.label).join(", ") + ".");
+    }
+
+    // clearResultFilters empties every step-5 rule. It is the "clear it" half
+    // of making a hidden filter visible again.
+    function clearResultFilters() {
+        ["filter_rating_min", "filter_rating_max", "filter_reviews_min", "filter_reviews_max",
+            "filter_include_categories", "filter_exclude_categories",
+            "filter_name_contains", "filter_name_excludes"].forEach((name) => {
+            const control = field(name);
+            if (control) control.value = "";
+        });
+        statusFilterBoxes().forEach((box) => { box.checked = false; });
+        const claimed = field("filter_claimed");
+        if (claimed) claimed.value = "any";
+        const incremental = field("incremental_mode");
+        if (incremental) incremental.value = "";
+        syncIncrementalNote();
+        updateReview();
+        notify("Post-collection filters cleared.", "success");
+    }
+
+    // openFilterStep reveals the Filters step even when the current mode hides
+    // it, so the notice above always has somewhere to send the operator.
+    function openFilterStep() {
+        const panel = wizard.querySelector('[data-wizard-panel="5"]');
+        if (panel && panel.dataset.modeHidden === "true") applyMode("advanced", true);
+        setStep("5", true);
     }
 
     const INCREMENTAL_NOTES = {
@@ -779,23 +990,25 @@
         }
     }
 
-    function applySanFranciscoPreset() {
+    // applySanFranciscoExampleArea fills the GEOGRAPHY of a known city and
+    // nothing else. It used to write a job name and two dental queries as
+    // well, which is how one real job's subject ended up in wizards that had
+    // nothing to do with dentists. What the operator is looking for is a
+    // working centre; the queries are theirs to write.
+    function applySanFranciscoExampleArea() {
         const values = {
-            name: "San Francisco dentists",
-            keywords: "dentists in San Francisco\ndental clinics in San Francisco",
             location_label: "San Francisco, California, United States",
             locations: "San Francisco, California, United States",
             latitude: "37.7749",
             longitude: "-122.4194",
             radius: "10000",
             zoom: "12",
-            grid_cell_km: "2.5",
-            maxtime: "60m"
+            grid_cell_km: "2.5"
         };
         Object.keys(values).forEach((name) => { const control = field(name); if (control) control.value = values[name]; });
         syncKilometresFromMetres();
         updatePreview();
-        if (window.GMapsApp) window.GMapsApp.toast("San Francisco dentist settings applied.", "success");
+        notify("San Francisco example area applied. The queries are still yours to write.", "success");
     }
 
     function applyPerformancePreset(preset) {
@@ -977,18 +1190,25 @@
             if (!queries.length) throw new Error("No queries were generated for that state and city");
             const result = appendUniqueLines(queries);
             const centre = Array.isArray(data.centre) ? data.centre : [];
-            if (centre.length === 2 && Number.isFinite(Number(centre[0])) && Number.isFinite(Number(centre[1]))) {
-                const latitudeField = field("latitude");
-                const longitudeField = field("longitude");
-                const sfDefault = (latitudeField && (latitudeField.value === "" || latitudeField.value === "37.7749")) &&
-                    (longitudeField && (longitudeField.value === "" || longitudeField.value === "-122.4194"));
-                if (sfDefault) {
-                    latitudeField.value = String(centre[0]);
-                    longitudeField.value = String(centre[1]);
-                    updatePreview();
-                }
+            if (centre.length === 2 && Number.isFinite(Number(centre[0])) && Number.isFinite(Number(centre[1])) &&
+                centreIsUntouched()) {
+                field("latitude").value = String(centre[0]);
+                field("longitude").value = String(centre[1]);
+                loadedCentre.latitude = field("latitude").value;
+                loadedCentre.longitude = field("longitude").value;
+                updatePreview();
             }
             const zipCount = Number(data.zip_count) || 0;
+            // Targets carry the ZIP centroid each query must run from. A build
+            // whose API does not return them yet still gets an honest area
+            // count from zip_count, and stores no geography it cannot honour.
+            writeCoverageTargets(Array.isArray(data.targets) ? data.targets : []);
+            if (!coverageTargets().length && zipCount > 0) {
+                setStatus("[data-coverage-echo-text]", queries.length + " queries across " + zipCount +
+                    " ZIPs. This build stores no per-ZIP execution targets, so every query runs from the job centre.");
+                const echo = wizard.querySelector("[data-coverage-echo]");
+                if (echo) echo.hidden = false;
+            }
             const pipelineApplied = applyProspectingPipelinePreset();
             setStatus("[data-gbp-status]", queries.length + " queries across " + zipCount + " ZIPs; added " + result.added +
                 " new" + (result.skipped ? ", skipped " + result.skipped + " duplicates" : "") +
@@ -1127,7 +1347,9 @@
         else if (trigger.dataset.action === "wizard-next") { event.preventDefault(); setStep(current + 1, true); }
         else if (trigger.dataset.action === "wizard-back") { event.preventDefault(); setStep(current - 1, true); }
         else if (trigger.dataset.action === "open-stop-after") { event.preventDefault(); openStopAfter(); }
-        else if (trigger.dataset.action === "use-san-francisco-preset") { event.preventDefault(); applySanFranciscoPreset(); }
+        else if (trigger.dataset.action === "use-san-francisco-preset") { event.preventDefault(); applySanFranciscoExampleArea(); }
+        else if (trigger.dataset.action === "open-filter-step") { event.preventDefault(); openFilterStep(); }
+        else if (trigger.dataset.action === "clear-result-filters") { event.preventDefault(); clearResultFilters(); }
         else if (trigger.dataset.action === "preview-queries") { event.preventDefault(); updatePreview(); }
         else if (trigger.dataset.action === "local-ai-keywords") { event.preventDefault(); generateLocalAIKeywords(trigger); }
         else if (trigger.dataset.action === "insert-keyword-set") { event.preventDefault(); insertKeywordSet(trigger); }
@@ -1198,7 +1420,11 @@
             return;
         }
         if (event.target.matches("[data-category-sector]")) { renderCategoryOptions(); return; }
-        if (event.target.name === "incremental_mode") { syncIncrementalNote(); return; }
+        if (event.target.name === "filter_status" || event.target.name === "filter_claimed") {
+            syncHiddenNarrowingNotice();
+            return;
+        }
+        if (event.target.name === "incremental_mode") { syncIncrementalNote(); syncHiddenNarrowingNotice(); return; }
         if (event.target.matches("[data-keywords-file]")) loadTextFile(event.target, field("keywords"));
         else if (event.target.matches("[data-locations-file]")) loadTextFile(event.target, field("locations"));
         else if (event.target.matches("[data-combo-locations-file]")) loadTextFile(event.target, wizard.querySelector("[data-combo-locations]"));

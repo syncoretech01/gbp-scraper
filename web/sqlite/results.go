@@ -66,6 +66,81 @@ const businessCoreColumnSQL = `businesses.description,
 	businesses.first_seen_at,
 	businesses.last_seen_at`
 
+// sourceScopeMarker is a placeholder inside the provenance expressions of the
+// Results query. It is replaced with an empty string for a workspace-wide
+// search, and with the bound job predicate when the search names a source job,
+// so one query answers "which observation" inside the scope being viewed.
+const sourceScopeMarker = "/*scope*/"
+
+// sourceScopeParameter is the single bound placeholder the scoped predicate
+// uses. Job identifiers are never interpolated into SQL text.
+const sourceScopeParameter = "?"
+
+// businessEvidenceColumnSQL adds machine-usable audit and contact evidence to
+// one business row. The website audit is packed into a single JSON object so
+// the whole audit costs one indexed lookup instead of one per field.
+const businessEvidenceColumnSQL = `COALESCE((SELECT json_object(
+		'status', websites.status,
+		'final_url', websites.final_url,
+		'http_status', websites.http_status,
+		'https', websites.https,
+		'tls_valid', websites.tls_valid,
+		'certificate_error', websites.certificate_error,
+		'parked', websites.parked,
+		'coming_soon', websites.coming_soon,
+		'placeholder', websites.placeholder,
+		'mixed_content', websites.mixed_content,
+		'pages_checked', websites.pages_checked,
+		'broken_internal_links', websites.broken_internal_links)
+		FROM websites WHERE websites.business_id = businesses.id
+		ORDER BY websites.last_checked_at DESC, websites.id DESC LIMIT 1), ''),
+	(SELECT field_provenance.confidence FROM field_provenance
+		WHERE field_provenance.business_id = businesses.id
+			AND field_provenance.field_name = 'website'
+		ORDER BY field_provenance.preferred DESC, field_provenance.extracted_at DESC,
+			field_provenance.id DESC LIMIT 1),
+	(SELECT COUNT(*) FROM emails WHERE emails.business_id = businesses.id),
+	(SELECT COUNT(*) FROM phones WHERE phones.business_id = businesses.id),
+	(SELECT COUNT(*) FROM social_profiles WHERE social_profiles.business_id = businesses.id),
+	businesses.scoring_rule_version,
+	businesses.prospect_updated_at,
+	COALESCE((SELECT enrichment_tasks.state FROM enrichment_tasks
+		WHERE enrichment_tasks.business_id = businesses.id
+			AND enrichment_tasks.state IN ('queued', 'running')
+		ORDER BY enrichment_tasks.id DESC LIMIT 1), ''),
+	COALESCE((SELECT json_object(
+		'reachable', website_audits.reachable,
+		'status_code', website_audits.status_code,
+		'error', website_audits.error,
+		'completed_at', website_audits.completed_at)
+		FROM website_audits WHERE website_audits.business_id = businesses.id
+		ORDER BY website_audits.completed_at DESC, website_audits.id DESC LIMIT 1), '')`
+
+// businessProvenanceColumnSQL reports every observation that produced this row
+// inside the current scope: how many there were, which jobs, which discovery
+// queries, which geographic cells, and when the first and last one happened.
+const businessProvenanceColumnSQL = `COALESCE((SELECT json_object(
+		'observations', COUNT(*), 'first', MIN(business_sources.extracted_at),
+		'last', MAX(business_sources.extracted_at))
+		FROM business_sources
+		WHERE business_sources.business_id = businesses.id` + sourceScopeMarker + `), ''),
+	COALESCE((SELECT GROUP_CONCAT(job_id, char(31)) FROM
+		(SELECT DISTINCT business_sources.job_id AS job_id FROM business_sources
+			WHERE business_sources.business_id = businesses.id` + sourceScopeMarker + `
+				AND COALESCE(business_sources.job_id, '') <> ''
+			ORDER BY business_sources.job_id)), ''),
+	COALESCE((SELECT GROUP_CONCAT(source_query, char(31)) FROM
+		(SELECT DISTINCT business_sources.source_query AS source_query FROM business_sources
+			WHERE business_sources.business_id = businesses.id` + sourceScopeMarker + `
+				AND business_sources.source_query <> ''
+			ORDER BY business_sources.source_query)), ''),
+	COALESCE((SELECT GROUP_CONCAT(source_cell, char(31)) FROM
+		(SELECT DISTINCT business_sources.source_cell AS source_cell FROM business_sources
+			WHERE business_sources.business_id = businesses.id` + sourceScopeMarker + `
+				AND business_sources.source_cell <> ''
+			ORDER BY business_sources.source_cell)), ''),
+	(SELECT COUNT(*) FROM business_sources WHERE business_sources.business_id = businesses.id)`
+
 var _ web.ResultRepository = (*repo)(nil)
 
 // ImportLegacyCSV streams an untouched legacy result file into the normalized
@@ -182,9 +257,24 @@ func (repo *repo) ImportLegacyCSV(
 
 		summary.Rows++
 		summary.Warnings += int64(len(record.Warnings))
+		// The CSV row says nothing about which query or cell found it, so the
+		// reader stamped the job's whole keyword list. The pool recorded the
+		// exact observations at merge time; use them when they exist.
+		observations, provenanceErr := observationProvenanceFor(ctx, tx, job.ID,
+			web.ObservationIdentityKeys(record.Business.PlaceID, record.Business.CID, record.Business.DataID))
+		if provenanceErr != nil {
+			return web.ResultFileImport{}, provenanceErr
+		}
+		if len(observations) > 0 {
+			record.Source.Query = observations[0].SourceQuery
+			record.Source.GridCell = observations[0].SourceCell
+		}
 		imported, importErr := importNormalizedRecord(ctx, tx, job, record)
 		if importErr != nil {
 			return web.ResultFileImport{}, importErr
+		}
+		if err := insertExtraObservations(ctx, tx, imported.businessID, job.ID, record, observations); err != nil {
+			return web.ResultFileImport{}, err
 		}
 		switch current := seenStatus[imported.businessID]; {
 		case imported.wasNew:
@@ -881,7 +971,7 @@ func ensureBusiness(
 	}
 	emailsJSON := mustJSON(emailValues, "[]")
 	categoriesJSON := mustJSON(nonEmptyStrings(business.Category), "[]")
-	quality, confidence := businessQuality(business)
+	quality, _ := businessQuality(business)
 	changeStatus := "unchanged"
 	if wasNew {
 		changeStatus = "new"
@@ -925,8 +1015,6 @@ func ensureBusiness(
 			popular_times = CASE WHEN ? <> '' THEN ? ELSE popular_times END,
 			user_reviews = CASE WHEN ? <> '' THEN ? ELSE user_reviews END,
 			price_range = COALESCE(NULLIF(?, ''), price_range),
-			quality_score = MAX(quality_score, ?),
-			quality_confidence = MAX(quality_confidence, ?),
 			raw_json = ?,
 			last_seen_at = MAX(last_seen_at, ?),
 			last_changed_at = CASE WHEN ? <> 'unchanged' THEN MAX(last_changed_at, ?) ELSE last_changed_at END,
@@ -972,8 +1060,6 @@ func ensureBusiness(
 		canonicalJSONValue(business.Structured.UserReviews),
 		canonicalJSONValue(business.Structured.UserReviews),
 		business.PriceRange,
-		quality,
-		confidence,
 		rawJSON,
 		observedAt,
 		changeStatus,
@@ -990,6 +1076,48 @@ func ensureBusiness(
 	}
 
 	return id, wasNew, previousHash, nil
+}
+
+// insertExtraObservations files one business_sources row per ADDITIONAL task
+// that observed the same business, so "queries that matched" and "cells that
+// matched" survive the merge that keeps only one CSV row per identity. The
+// first observation is carried by the main source row; each extra row gets its
+// own ingest key derived from the task, so a re-import is idempotent.
+func insertExtraObservations(
+	ctx context.Context,
+	tx *sql.Tx,
+	businessID string,
+	jobID string,
+	record resultimport.Record,
+	observations []web.ObservationProvenance,
+) error {
+	seen := map[string]struct{}{}
+	if len(observations) > 0 {
+		seen[observations[0].SourceQuery+""+observations[0].SourceCell] = struct{}{}
+	}
+
+	for _, observation := range observations[min(1, len(observations)):] {
+		key := observation.SourceQuery + "" + observation.SourceCell
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		if _, err := tx.ExecContext(ctx, `
+			INSERT OR IGNORE INTO business_sources(
+				business_id, job_id, source_type, source_url, source_query, source_cell,
+				input_id, extraction_method, confidence, extracted_at, raw_json,
+				normalized_json, record_hash, ingest_key
+			) VALUES (?, ?, 'google_maps_csv', ?, ?, ?, ?, 'legacy_csv_import', 1, ?, '{}', '{}', ?, ?)`,
+			businessID, jobID, record.Source.SourceURL, observation.SourceQuery, observation.SourceCell,
+			record.Source.InputID, observation.ObservedAt.Unix(), record.Business.RecordHash,
+			record.Cursor.Token+":obs:"+observation.TaskKey,
+		); err != nil {
+			return fmt.Errorf("insert extra observation: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func insertBusinessSource(
@@ -1754,16 +1882,29 @@ func (repo *repo) SearchBusinesses(ctx context.Context, search web.ResultSearch)
 	if err != nil {
 		return web.ResultPage{}, fmt.Errorf("%w: %v", web.ErrInvalidResultQuery, err)
 	}
-	sourceIDSQL := `COALESCE((SELECT id FROM business_sources WHERE business_sources.business_id = businesses.id
-		ORDER BY extracted_at DESC, id DESC LIMIT 1), 0)`
-	sourceJobSQL := `COALESCE((SELECT job_id FROM business_sources WHERE business_sources.business_id = businesses.id
-		ORDER BY extracted_at DESC, id DESC LIMIT 1), '')`
-	sourceQuerySQL := `COALESCE((SELECT source_query FROM business_sources WHERE business_sources.business_id = businesses.id
-		ORDER BY extracted_at DESC, id DESC LIMIT 1), '')`
-	sourceCellSQL := `COALESCE((SELECT source_cell FROM business_sources WHERE business_sources.business_id = businesses.id
-		ORDER BY extracted_at DESC, id DESC LIMIT 1), '')`
-	sourceTimeSQL := `COALESCE((SELECT extracted_at FROM business_sources WHERE business_sources.business_id = businesses.id
-		ORDER BY extracted_at DESC, id DESC LIMIT 1), businesses.last_seen_at)`
+	// Provenance is answered inside the scope the operator is looking at. A
+	// business seen by four jobs has four different truthful answers to "which
+	// query found this"; reporting the newest one globally would tell a
+	// job-scoped view about a different job's discovery. When the search names
+	// a source job, every provenance expression below is restricted to that
+	// job, and the one observation reported is the newest one in scope that
+	// actually carries a discovery query.
+	scopeJobID := strings.TrimSpace(search.JobID)
+	scopeClause := ""
+	if scopeJobID != "" && !search.IncludeDuplicates {
+		scopeClause = " AND business_sources.job_id = " + sourceScopeParameter
+	}
+	observation := func(column, fallback string) string {
+		return `COALESCE((SELECT ` + column + ` FROM business_sources
+		WHERE business_sources.business_id = businesses.id` + sourceScopeMarker + `
+		ORDER BY (CASE WHEN business_sources.source_query <> '' THEN 0 ELSE 1 END),
+			business_sources.extracted_at DESC, business_sources.id DESC LIMIT 1), ` + fallback + `)`
+	}
+	sourceIDSQL := observation("business_sources.id", "0")
+	sourceJobSQL := observation("business_sources.job_id", "''")
+	sourceQuerySQL := observation("business_sources.source_query", "''")
+	sourceCellSQL := observation("business_sources.source_cell", "''")
+	sourceTimeSQL := observation("business_sources.extracted_at", "businesses.last_seen_at")
 	if search.IncludeDuplicates {
 		sourceIDSQL = "selected_source.id"
 		sourceJobSQL = "COALESCE(selected_source.job_id, '')"
@@ -1789,12 +1930,27 @@ func (repo *repo) SearchBusinesses(ctx context.Context, search web.ResultSearch)
 		COALESCE((SELECT GROUP_CONCAT(tags.name, char(31)) FROM business_tags
 			JOIN tags ON tags.id = business_tags.tag_id
 			WHERE business_tags.business_id = businesses.id), ''),
-		` + businessCoreColumnSQL + `
+		` + businessCoreColumnSQL + `,
+		` + businessEvidenceColumnSQL + `,
+		` + businessProvenanceColumnSQL + `
 	` + fromSQL + `
 	WHERE ` + whereSQL + `
 	ORDER BY ` + orderSQL + `
 	LIMIT ? OFFSET ?`
-	queryArgs := append(append([]any(nil), args...), search.Limit, search.Offset)
+	// Every scope placeholder in the assembled SELECT list is bound here, in
+	// the textual order it appears, so the select arguments always precede the
+	// WHERE arguments the count query already validated.
+	selectArgs := make([]any, 0, strings.Count(query, sourceScopeMarker))
+	if scopeClause != "" {
+		for index := strings.Count(query, sourceScopeMarker); index > 0; index-- {
+			selectArgs = append(selectArgs, scopeJobID)
+		}
+	}
+	query = strings.ReplaceAll(query, sourceScopeMarker, scopeClause)
+	queryArgs := make([]any, 0, len(selectArgs)+len(args)+2)
+	queryArgs = append(queryArgs, selectArgs...)
+	queryArgs = append(queryArgs, args...)
+	queryArgs = append(queryArgs, search.Limit, search.Offset)
 	rows, err := repo.db.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
 		return web.ResultPage{}, fmt.Errorf("search normalized results: %w", err)
@@ -2403,6 +2559,11 @@ func scanBusinessResult(scanner resultScanner) (web.BusinessResult, error) {
 	var emails, socials, technologies string
 	var lastCheckedAt sql.NullInt64
 	var firstSeenAt, lastSeenAt int64
+	var websiteAuditJSON, auditEvidenceJSON, provenanceJSON string
+	var sourceJobIDs, sourceQueries, sourceCells string
+	var websiteConfidence sql.NullFloat64
+	var emailCount, phoneCount, socialCount int
+	var prospectUpdatedAt sql.NullInt64
 	err := scanner.Scan(
 		&result.ID,
 		&result.Name,
@@ -2461,6 +2622,20 @@ func scanBusinessResult(scanner resultScanner) (web.BusinessResult, error) {
 		&lastCheckedAt,
 		&firstSeenAt,
 		&lastSeenAt,
+		&websiteAuditJSON,
+		&websiteConfidence,
+		&emailCount,
+		&phoneCount,
+		&socialCount,
+		&result.ScoringRuleVersion,
+		&prospectUpdatedAt,
+		&result.WebsiteTaskState,
+		&auditEvidenceJSON,
+		&provenanceJSON,
+		&sourceJobIDs,
+		&sourceQueries,
+		&sourceCells,
+		&result.TotalObservationCount,
 	)
 	if err != nil {
 		return web.BusinessResult{}, fmt.Errorf("scan normalized business: %w", err)
@@ -2489,8 +2664,134 @@ func scanBusinessResult(scanner resultScanner) (web.BusinessResult, error) {
 	result.UpdatedAt = time.Unix(updatedAt, 0).UTC()
 	result.Tags = splitUnitSeparator(tags)
 	result.AdditionalCategories = additionalCategories(categories, result.PrimaryCategory)
+	result.EmailCount = emailCount
+	result.PhoneCount = phoneCount
+	result.SocialCount = socialCount
+	result.WebsiteConfidence = nullFloatPointer(websiteConfidence)
+	if prospectUpdatedAt.Valid {
+		scored := time.Unix(prospectUpdatedAt.Int64, 0).UTC()
+		result.ProspectUpdatedAt = &scored
+	}
+	applyWebsiteAuditColumn(&result, websiteAuditJSON)
+	applyWebsiteAuditEvidenceColumn(&result, auditEvidenceJSON)
+	applyProvenanceColumn(&result, provenanceJSON)
+	result.SourceJobIDs = splitUnitSeparator(sourceJobIDs)
+	result.SourceQueries = splitUnitSeparator(sourceQueries)
+	result.SourceCells = splitUnitSeparator(sourceCells)
 
 	return result, nil
+}
+
+// websiteAuditColumn is the packed newest website audit decoded from the
+// json_object built by businessEvidenceColumnSQL. Every field is a pointer or
+// zero value so "never observed" stays distinguishable from "observed false".
+type websiteAuditColumn struct {
+	Status              string `json:"status"`
+	FinalURL            string `json:"final_url"`
+	HTTPStatus          *int64 `json:"http_status"`
+	HTTPS               *int64 `json:"https"`
+	TLSValid            *int64 `json:"tls_valid"`
+	CertificateError    string `json:"certificate_error"`
+	Parked              *int64 `json:"parked"`
+	ComingSoon          *int64 `json:"coming_soon"`
+	Placeholder         *int64 `json:"placeholder"`
+	MixedContent        *int64 `json:"mixed_content"`
+	PagesChecked        *int64 `json:"pages_checked"`
+	BrokenInternalLinks *int64 `json:"broken_internal_links"`
+}
+
+// applyWebsiteAuditColumn copies the packed audit onto the result row. An
+// unparsable or empty value simply leaves the audit fields unset.
+func applyWebsiteAuditColumn(result *web.BusinessResult, encoded string) {
+	if strings.TrimSpace(encoded) == "" {
+		return
+	}
+	var audit websiteAuditColumn
+	if err := json.Unmarshal([]byte(encoded), &audit); err != nil {
+		return
+	}
+	result.WebsiteAuditStatus = audit.Status
+	result.WebsiteFinalURL = audit.FinalURL
+	result.WebsiteHTTPStatus = audit.HTTPStatus
+	result.WebsiteHTTPS = nullableIntegerBool(audit.HTTPS)
+	result.WebsiteTLSValid = nullableIntegerBool(audit.TLSValid)
+	result.WebsiteErrorReason = audit.CertificateError
+	result.WebsiteParked = integerBool(audit.Parked)
+	result.WebsiteComingSoon = integerBool(audit.ComingSoon)
+	result.WebsitePlaceholder = integerBool(audit.Placeholder)
+	result.WebsiteMixedContent = integerBool(audit.MixedContent)
+	if audit.PagesChecked != nil {
+		result.WebsitePagesChecked = int(*audit.PagesChecked)
+	}
+	if audit.BrokenInternalLinks != nil {
+		result.WebsiteBrokenLinks = int(*audit.BrokenInternalLinks)
+	}
+}
+
+// applyProvenanceColumn copies the packed observation summary onto the row.
+func applyProvenanceColumn(result *web.BusinessResult, encoded string) {
+	if strings.TrimSpace(encoded) == "" {
+		return
+	}
+	var summary struct {
+		Observations int64  `json:"observations"`
+		First        *int64 `json:"first"`
+		Last         *int64 `json:"last"`
+	}
+	if err := json.Unmarshal([]byte(encoded), &summary); err != nil {
+		return
+	}
+	result.ObservationCount = summary.Observations
+	if summary.First != nil {
+		first := time.Unix(*summary.First, 0).UTC()
+		result.FirstObservedAt = &first
+	}
+	if summary.Last != nil {
+		last := time.Unix(*summary.Last, 0).UTC()
+		result.LastObservedAt = &last
+	}
+}
+
+// applyWebsiteAuditEvidenceColumn copies the newest immutable website audit
+// onto the row. It carries exactly the evidence web.ResolveWebsiteState reads,
+// so the canonical website state can be resolved for a whole page without a
+// second query per business.
+func applyWebsiteAuditEvidenceColumn(result *web.BusinessResult, encoded string) {
+	if strings.TrimSpace(encoded) == "" {
+		return
+	}
+	var evidence struct {
+		Reachable   *int64 `json:"reachable"`
+		StatusCode  *int64 `json:"status_code"`
+		Error       string `json:"error"`
+		CompletedAt *int64 `json:"completed_at"`
+	}
+	if err := json.Unmarshal([]byte(encoded), &evidence); err != nil {
+		return
+	}
+	result.WebsiteAuditCompleted = true
+	result.WebsiteAuditReachable = integerBool(evidence.Reachable)
+	if evidence.StatusCode != nil {
+		result.WebsiteAuditStatusCode = int(*evidence.StatusCode)
+	}
+	result.WebsiteAuditError = evidence.Error
+	if evidence.CompletedAt != nil && *evidence.CompletedAt > 0 {
+		completed := time.Unix(*evidence.CompletedAt, 0).UTC()
+		result.WebsiteAuditCompletedAt = &completed
+	}
+}
+
+func nullableIntegerBool(value *int64) *bool {
+	if value == nil {
+		return nil
+	}
+	flag := *value != 0
+
+	return &flag
+}
+
+func integerBool(value *int64) bool {
+	return value != nil && *value != 0
 }
 
 func resultFilterSQL(filter web.ResultFilter) (string, []any, error) {
@@ -2685,6 +2986,13 @@ func resultFilterSQL(filter web.ResultFilter) (string, []any, error) {
 	if field == "polygon" && operator == "within" {
 		return polygonFilterSQL(value)
 	}
+	// Prospecting filters. Every one of them is the query behind a control the
+	// Results table already shows, expressed so an export reproduces the
+	// table's own count exactly.
+	if clause, arguments, handled, err := prospectingResultFilterSQL(field, operator, value); handled {
+		return clause, arguments, err
+	}
+
 	// Discovery-history filters ("what did this run or campaign first see or
 	// change") are additive members of the same language; see
 	// results_lineage_filters.go.
@@ -2693,6 +3001,239 @@ func resultFilterSQL(filter web.ResultFilter) (string, []any, error) {
 	}
 
 	return "", nil, fmt.Errorf("unsupported result filter %q/%q", field, operator)
+}
+
+// newestWebsiteColumnSQL reads one column of the newest stored website row.
+func newestWebsiteColumnSQL(column string) string {
+	return `(SELECT websites.` + column + ` FROM websites
+		WHERE websites.business_id = businesses.id
+		ORDER BY websites.last_checked_at DESC, websites.id DESC LIMIT 1)`
+}
+
+// websiteStateFilterSQL turns one canonical website state into a predicate over
+// stored evidence. The mapping is a table, not a chain of special cases: a
+// state this table does not name falls through to the stored prospect
+// classification, so a state added to the taxonomy is a data value here and
+// needs no new code path.
+func websiteStateFilterSQL(state string) (string, []any) {
+	normalized := strings.ToUpper(strings.TrimSpace(state))
+	switch normalized {
+	case web.WebsiteStateNoWebsite:
+		return `(COALESCE(businesses.website, '') = '' OR businesses.prospect_status = ? COLLATE NOCASE)`,
+			[]any{web.WebsiteStateNoWebsite}
+	case web.WebsiteStateNeverChecked:
+		return `(NOT EXISTS (SELECT 1 FROM website_audits
+				WHERE website_audits.business_id = businesses.id)
+			AND NOT EXISTS (SELECT 1 FROM websites
+				WHERE websites.business_id = businesses.id AND websites.last_checked_at IS NOT NULL)
+			AND COALESCE(businesses.website_status, '') IN ('', 'unknown'))`, nil
+	case web.WebsiteStateQueued, web.WebsiteStateChecking:
+		taskState := "queued"
+		if normalized == web.WebsiteStateChecking {
+			taskState = "running"
+		}
+
+		return `EXISTS (SELECT 1 FROM enrichment_tasks
+			WHERE enrichment_tasks.business_id = businesses.id AND enrichment_tasks.state = ?)`,
+			[]any{taskState}
+	case web.WebsiteStateError:
+		return `(businesses.website_status = 'error' OR ` + newestWebsiteColumnSQL("status") + ` = 'error')`, nil
+	case web.WebsiteStateLive:
+		return `(businesses.prospect_status = 'LIVE' OR businesses.website_status = 'active')`, nil
+	case web.WebsiteStateDead:
+		return `(businesses.prospect_status = 'DEAD' OR businesses.website_status = 'inactive')`, nil
+	}
+
+	return `businesses.prospect_status = ? COLLATE NOCASE`, []any{normalized}
+}
+
+// booleanPredicateSQL renders one boolean prospecting predicate, honouring
+// eq/neq against a parsed boolean and the bare true/false spellings.
+func booleanPredicateSQL(clause, field, operator, value string) (string, []any, error) {
+	want := true
+	switch operator {
+	case "", "eq", "is":
+		if strings.TrimSpace(value) != "" {
+			parsed, err := strconv.ParseBool(value)
+			if err != nil {
+				return "", nil, fmt.Errorf("invalid boolean result filter %q", field)
+			}
+			want = parsed
+		}
+	case "neq":
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return "", nil, fmt.Errorf("invalid boolean result filter %q", field)
+		}
+		want = !parsed
+	case "true":
+		want = true
+	case "false":
+		want = false
+	default:
+		return "", nil, fmt.Errorf("unsupported boolean result operator %q", operator)
+	}
+	if !want {
+		return "NOT (" + clause + ")", nil, nil
+	}
+
+	return clause, nil, nil
+}
+
+// prospectingBooleanClauses are the stored-evidence predicates behind the
+// derived prospecting flags the Results chips show and the export columns
+// carry. Keeping them in one map is what lets a chip, a saved view, and an
+// exported column agree on a single definition.
+func prospectingBooleanClauses() map[string]string {
+	clauses := map[string]string{
+		"has_website": `COALESCE(businesses.website, '') <> ''`,
+		"no_website":  `COALESCE(businesses.website, '') = ''`,
+		"has_email":   `EXISTS (SELECT 1 FROM emails WHERE emails.business_id = businesses.id)`,
+		"has_phone": `(COALESCE(businesses.normalized_phone, '') <> '' OR COALESCE(businesses.phone, '') <> ''
+			OR EXISTS (SELECT 1 FROM phones WHERE phones.business_id = businesses.id))`,
+		"has_social":  `EXISTS (SELECT 1 FROM social_profiles WHERE social_profiles.business_id = businesses.id)`,
+		"social_only": `businesses.prospect_status = 'SOCIAL_ONLY'`,
+		"never_checked": `NOT EXISTS (SELECT 1 FROM websites
+			WHERE websites.business_id = businesses.id AND websites.last_checked_at IS NOT NULL)`,
+		"weak_website": weakWebsiteClauseSQL(),
+	}
+	clauses["contactable"] = "(" + clauses["has_email"] + " OR " + clauses["has_phone"] + ")"
+
+	return clauses
+}
+
+// prospectingResultFilterSQL implements the prospecting half of the bounded
+// query language: canonical website state, the derived prospecting flags,
+// contact-evidence counts, and per-observation provenance. Every one is
+// available to Results, to a saved view, and to an export through the same
+// ResultSearch, which is what keeps a table count and an exported file equal.
+func prospectingResultFilterSQL(field, operator, value string) (string, []any, bool, error) {
+	switch field {
+	case "website_state":
+		clause, arguments, err := websiteStateSetSQL(operator, value)
+
+		return clause, arguments, true, err
+	case "website_audit_status":
+		clause, arguments, err := textFilterSQL(
+			"COALESCE("+newestWebsiteColumnSQL("status")+", '')", operator, value)
+
+		return clause, arguments, true, err
+	case "website_http_status":
+		clause, arguments, err := numericFilterSQL(newestWebsiteColumnSQL("http_status"), field, operator, value)
+
+		return clause, arguments, true, err
+	case "source_query", "source_cell", "source_job":
+		columns := map[string]string{
+			"source_query": "business_sources.source_query",
+			"source_cell":  "business_sources.source_cell",
+			"source_job":   "COALESCE(business_sources.job_id, '')",
+		}
+		inner, arguments, err := textFilterSQL(columns[field], operator, value)
+		if err != nil {
+			return "", nil, true, err
+		}
+
+		return `EXISTS (SELECT 1 FROM business_sources
+			WHERE business_sources.business_id = businesses.id AND (` + inner + `))`, arguments, true, nil
+	case "observation_count":
+		clause, arguments, err := numericFilterSQL(
+			`(SELECT COUNT(*) FROM business_sources WHERE business_sources.business_id = businesses.id)`,
+			field, operator, value)
+
+		return clause, arguments, true, err
+	case "email_count":
+		clause, arguments, err := numericFilterSQL(
+			`(SELECT COUNT(*) FROM emails WHERE emails.business_id = businesses.id)`, field, operator, value)
+
+		return clause, arguments, true, err
+	case "phone_count":
+		clause, arguments, err := numericFilterSQL(
+			`(SELECT COUNT(*) FROM phones WHERE phones.business_id = businesses.id)`, field, operator, value)
+
+		return clause, arguments, true, err
+	}
+	if clause, ok := prospectingBooleanClauses()[field]; ok {
+		result, arguments, err := booleanPredicateSQL("("+clause+")", field, operator, value)
+
+		return result, arguments, true, err
+	}
+
+	return "", nil, false, nil
+}
+
+// websiteStateSetSQL applies one or many canonical states with one operator.
+func websiteStateSetSQL(operator, value string) (string, []any, error) {
+	switch operator {
+	case "", "eq", "is", "neq":
+		clause, arguments := websiteStateFilterSQL(value)
+		if operator == "neq" {
+			return "NOT (" + clause + ")", arguments, nil
+		}
+
+		return clause, arguments, nil
+	case "in", "not_in":
+		states := splitFilterValues(value)
+		parts := make([]string, 0, len(states))
+		arguments := make([]any, 0, len(states))
+		for _, state := range states {
+			if strings.TrimSpace(state) == "" {
+				continue
+			}
+			clause, values := websiteStateFilterSQL(state)
+			parts = append(parts, "("+clause+")")
+			arguments = append(arguments, values...)
+		}
+		if len(parts) == 0 || len(parts) > 50 {
+			return "", nil, fmt.Errorf("a website state set must contain between 1 and 50 states")
+		}
+		clause := "(" + strings.Join(parts, " OR ") + ")"
+		if operator == "not_in" {
+			clause = "NOT " + clause
+		}
+
+		return clause, arguments, nil
+	}
+
+	return "", nil, fmt.Errorf("unsupported website state operator %q", operator)
+}
+
+// weakWebsiteClauseSQL renders web.WeakWebsiteStates as a stored-value test.
+// The Go list stays the single definition of "weak", so a state added there
+// becomes filterable here without a second edit.
+func weakWebsiteClauseSQL() string {
+	states := web.WeakWebsiteStates()
+	quoted := make([]string, 0, len(states))
+	for _, state := range states {
+		// The list is a compile-time set of bare upper-case identifiers. The
+		// guard keeps it that way if one is ever edited by hand, so no SQL
+		// text can reach the statement through it.
+		if !validWebsiteStateLiteral(state) {
+			continue
+		}
+		quoted = append(quoted, "'"+state+"'")
+	}
+	if len(quoted) == 0 {
+		return "0"
+	}
+
+	return "businesses.prospect_status IN (" + strings.Join(quoted, ",") + ")"
+}
+
+// validWebsiteStateLiteral reports whether a state name is a bare upper-case
+// identifier, so it can never carry SQL text.
+func validWebsiteStateLiteral(value string) bool {
+	if value == "" || len(value) > 32 {
+		return false
+	}
+	for _, character := range value {
+		if character >= 'A' && character <= 'Z' || character == '_' {
+			continue
+		}
+
+		return false
+	}
+
+	return true
 }
 
 func validResultIdentifier(value string) bool {
@@ -2773,6 +3314,26 @@ func textFilterSQL(column, operator, value string) (string, []any, error) {
 		return "COALESCE(" + column + ", '') = ''", nil, nil
 	case "not_empty":
 		return "COALESCE(" + column + ", '') <> ''", nil, nil
+	case "in", "not_in":
+		values := splitFilterValues(value)
+		placeholders := make([]string, 0, len(values))
+		arguments := make([]any, 0, len(values))
+		for _, item := range values {
+			if item == "" {
+				continue
+			}
+			placeholders = append(placeholders, "?")
+			arguments = append(arguments, item)
+		}
+		if len(placeholders) == 0 || len(placeholders) > 100 {
+			return "", nil, fmt.Errorf("a set filter must contain between 1 and 100 values")
+		}
+		clause := column + " COLLATE NOCASE IN (" + strings.Join(placeholders, ",") + ")"
+		if operator == "not_in" {
+			clause = "NOT (" + clause + ")"
+		}
+
+		return clause, arguments, nil
 	default:
 		return "", nil, fmt.Errorf("unsupported text result operator %q", operator)
 	}

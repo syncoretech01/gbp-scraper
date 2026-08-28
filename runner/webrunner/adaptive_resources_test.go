@@ -60,7 +60,7 @@ func TestCountManagedBrowserProcessesReadsTheLocalProcessTable(t *testing.T) {
 
 	// The census must read the real process table without error on this
 	// host. This test asserts it is measurable, not that any browser runs.
-	count, err := countManagedBrowserProcesses(ctx, int32(os.Getpid()))
+	count, resident, err := countManagedBrowserProcesses(ctx, int32(os.Getpid()))
 	if err != nil {
 		t.Skipf("process enumeration is unavailable on this host: %v", err)
 	}
@@ -68,24 +68,39 @@ func TestCountManagedBrowserProcessesReadsTheLocalProcessTable(t *testing.T) {
 	if count < 0 {
 		t.Fatalf("browser census = %d, want a non-negative count", count)
 	}
+
+	// Resident memory is measured alongside the count so the per-browser
+	// planning cost can be an observation rather than an estimate. With no
+	// browser running it is legitimately zero; it may never be measured
+	// without also counting the process it belongs to.
+	if count == 0 && resident != 0 {
+		t.Fatalf("census measured %d bytes across zero browsers", resident)
+	}
 }
 
 func TestBrowserCensusCachesBetweenSamples(t *testing.T) {
 	t.Parallel()
 
-	census := &browserCensus{count: 7, sampledAt: time.Now()}
-	if got := census.countBrowsers(context.Background(), int32(os.Getpid())); got != 7 {
-		t.Fatalf("cached census = %d, want 7", got)
+	census := &browserCensus{count: 7, memoryBytes: 7 << 20, sampledAt: time.Now()}
+
+	got, resident := census.countBrowsers(context.Background(), int32(os.Getpid()))
+	if got != 7 || resident != 7<<20 {
+		t.Fatalf("cached census = (%d, %d), want (7, %d)", got, resident, uint64(7<<20))
 	}
 
 	// A cancelled context cannot produce a fresh value, so the previous one
-	// must survive rather than collapsing to zero.
-	stale := &browserCensus{count: 4, sampledAt: time.Now().Add(-2 * browserCensusInterval)}
+	// must survive rather than collapsing to zero. That matters for the
+	// memory reading too: a zeroed measurement would make browsers look free.
+	stale := &browserCensus{
+		count: 4, memoryBytes: 4 << 20, sampledAt: time.Now().Add(-2 * browserCensusInterval),
+	}
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if got := stale.countBrowsers(cancelled, int32(os.Getpid())); got != 4 {
-		t.Fatalf("census after a failed refresh = %d, want the previous 4", got)
+	got, resident = stale.countBrowsers(cancelled, int32(os.Getpid()))
+	if got != 4 || resident != 4<<20 {
+		t.Fatalf("census after a failed refresh = (%d, %d), want the previous (4, %d)",
+			got, resident, uint64(4<<20))
 	}
 }
 

@@ -31,6 +31,10 @@ import (
 // resort for a stalled run, not the normal way a run ends.
 const inactivitySafetyNet = 3 * time.Minute
 
+// defaultTargetRadiusMetres is the Fast-mode search radius a ZIP target uses
+// when the job did not set one; it matches the wizard's default radius.
+const defaultTargetRadiusMetres = 10000
+
 type webrunner struct {
 	srv             *web.Server
 	svc             *web.Service
@@ -50,6 +54,33 @@ type webrunner struct {
 	// pollInterval overrides the loop cadence (default one second); it is
 	// write-once before Run so the loops read it without synchronization.
 	pollInterval time.Duration
+	// supervisorInterval overrides how often a running pool samples resources
+	// and re-decides its capacity (default resourceSampleInterval). Like
+	// pollInterval it is write-once before Run and exists so a test can watch
+	// several adaptation windows without waiting real seconds for each.
+	supervisorInterval time.Duration
+	// workerScaleCooldown overrides how long auto capacity waits between
+	// worker-count changes (default autoWorkerScaleCooldown).
+	workerScaleCooldown time.Duration
+}
+
+// samplingInterval is how often a running pool re-measures and re-decides.
+func (w *webrunner) samplingInterval() time.Duration {
+	if w.supervisorInterval > 0 {
+		return w.supervisorInterval
+	}
+
+	return resourceSampleInterval
+}
+
+// scaleCooldown is how long auto capacity must leave a worker-count change
+// alone before making another.
+func (w *webrunner) scaleCooldown() time.Duration {
+	if w.workerScaleCooldown > 0 {
+		return w.workerScaleCooldown
+	}
+
+	return autoWorkerScaleCooldown
 }
 
 type mateRunner interface {
@@ -259,7 +290,11 @@ func (w *webrunner) jobLoop(ctx context.Context) error {
 			// above, and enrichment has not started yet.
 			w.sweepAbandonedEngines(ctx)
 
-			processed, enrichmentErr := w.svc.ProcessEnrichmentQueue(ctx, 1)
+			// The website-enrichment stage is a bounded pool with its own capacity;
+			// asking for one task per tick made 25 audits take 157 seconds. The pool
+			// still runs only here, after the job's engines have shut down, so it
+			// never overlaps scrape browser work.
+			processed, enrichmentErr := w.svc.ProcessEnrichmentQueue(ctx, web.EnrichmentPool().Workers)
 			if enrichmentErr != nil && !errors.Is(enrichmentErr, web.ErrEnrichmentUnsupported) {
 				log.Printf("website enrichment task failed; the worker will continue: %s",
 					jobruntime.RedactString(enrichmentErr.Error()))
@@ -405,7 +440,33 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) error {
 	var seedJobs []scrapemate.IJob
 	seedMetadata := make(map[string]seedTaskMetadata)
 
-	if job.Data.AreaGeoJSON != "" && !job.Data.FastMode {
+	if len(job.Data.QueryTargets) > 0 {
+		// A ZIP coverage plan executes every (synonym, ZIP) pair from that ZIP's
+		// own centroid. Before this branch the plan's geography lived only in
+		// the query text and every search ran from one population-weighted
+		// centre — "1 area, 75 searches".
+		targetRadius := float64(job.Data.Radius)
+		if targetRadius <= 0 {
+			targetRadius = defaultTargetRadiusMetres
+		}
+
+		seedJobs, err = runner.CreateTargetSeedJobs(
+			job.Data.FastMode, job.Data.Lang, job.Data.QueryTargets,
+			job.Data.Depth, job.Data.Email, job.Data.Zoom, targetRadius,
+			dedup, exitMonitor, w.cfg.ExtraReviews || job.Data.ExtraReviews,
+		)
+		// Provenance: the ZIP a row was found in is its source cell, so
+		// checkpoint/resume, coverage and exports can name it.
+		for index, target := range job.Data.QueryTargets {
+			if err != nil || index >= len(seedJobs) {
+				break
+			}
+
+			seedMetadata[seedJobs[index].GetID()] = seedTaskMetadata{
+				Query: target.Query, SourceCell: "zip:" + target.ZIP,
+			}
+		}
+	} else if job.Data.AreaGeoJSON != "" && !job.Data.FastMode {
 		seedJobs, seedMetadata, err = createAreaSeedJobs(
 			job,
 			dedup,

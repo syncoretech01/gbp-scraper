@@ -54,7 +54,7 @@ func TestResultsPageAndDetailDrawerRenderRepositoryData(t *testing.T) {
 	}
 	body := recorder.Body.String()
 	for _, expected := range []string{
-		"Bay Smile Dental", "2 source records", "dentists in San Francisco", "/app/results/biz_abcde/drawer",
+		"Bay Smile Dental", "2 Maps observations", "dentists in San Francisco", "/app/results/biz_abcde/drawer",
 		`data-results-workspace-view`, `data-column="name"`, `data-copy-value="Bay Smile Dental"`,
 		`data-results-map-frame`, `data-layout-select`,
 	} {

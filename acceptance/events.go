@@ -47,6 +47,12 @@ type concurrencyContext struct {
 	DesiredConcurrency   int `json:"desired_concurrency"`
 	EffectiveConcurrency int `json:"effective_concurrency"`
 	PreviousConcurrency  int `json:"previous_concurrency"`
+	// PreviousTaskWorkers and PlannedBrowsers come from the auto-capacity
+	// events. The width ladder needs the WORKER count a run settled at, not
+	// only the concurrency: workers are what hold browsers, so a rung that
+	// asked for six and settled at two has answered the ladder's question.
+	PreviousTaskWorkers int `json:"previous_task_workers"`
+	PlannedBrowsers     int `json:"planned_browsers"`
 }
 
 // concurrencyEvidence is the harness's reconstruction of how many simultaneous
@@ -55,13 +61,23 @@ type concurrencyContext struct {
 // performance settled on. AdaptiveReductions counts the adaptation events that
 // lowered the budget.
 type concurrencyEvidence struct {
-	Desired            int    `json:"desired"`
-	PlannedWorkers     int    `json:"planned_workers"`
-	PerTaskConcurrency int    `json:"per_task_concurrency"`
-	PlannedEffective   int    `json:"planned_effective"`
-	FinalEffective     int    `json:"final_effective"`
-	AdaptiveReductions int    `json:"adaptive_reductions"`
-	Source             string `json:"source"`
+	Desired            int `json:"desired"`
+	PlannedWorkers     int `json:"planned_workers"`
+	PerTaskConcurrency int `json:"per_task_concurrency"`
+	PlannedEffective   int `json:"planned_effective"`
+	FinalEffective     int `json:"final_effective"`
+	AdaptiveReductions int `json:"adaptive_reductions"`
+	// FinalWorkers is the parallel-task count auto capacity settled on, and
+	// PlannedBrowsers the Chromium processes the plan expected (zero in Fast
+	// mode). WorkerReductions and WorkerIncreases count the auto-capacity
+	// events in each direction. Together they say whether a width ladder rung
+	// actually ran at its label. A build without auto capacity leaves
+	// FinalWorkers equal to PlannedWorkers and the counts at zero.
+	FinalWorkers     int    `json:"final_workers"`
+	PlannedBrowsers  int    `json:"planned_browsers"`
+	WorkerReductions int    `json:"worker_reductions"`
+	WorkerIncreases  int    `json:"worker_increases"`
+	Source           string `json:"source"`
 }
 
 // taskPoolLogPattern matches the human task-pool log line, so effective
@@ -71,6 +87,11 @@ var taskPoolLogPattern = regexp.MustCompile(`Running (\d+) task\(s\) in parallel
 
 // adaptiveLogPattern matches the adaptive-performance budget-change log line.
 var adaptiveLogPattern = regexp.MustCompile(`changed the concurrency budget from (\d+) to (\d+)`)
+
+// autoWorkerLogPattern matches the auto-capacity worker-count log line, so the
+// width a run settled at survives even without structured event context.
+var autoWorkerLogPattern = regexp.MustCompile(
+	`Auto capacity (?:increased|reduced) parallel tasks from (\d+) to (\d+)`)
 
 // failureEventTypes are the worker event types that name a task failure cause.
 // The harness counts them into the fine failure-kind breakdown. This set is a
@@ -93,6 +114,9 @@ var failureEventTypes = map[string]struct{}{
 var nonFailureEventTypes = map[string]struct{}{
 	"task-pool":            {},
 	"adaptive-performance": {},
+	"adaptive-workers":     {},
+	"task-worker-retired":  {},
+	"capacity-capped":      {},
 	"coverage-disabled":    {},
 	"coverage-stop":        {},
 	"coverage-expansion":   {},
@@ -233,6 +257,27 @@ func concurrencyFromEvents(events []workerEvent, logText string) concurrencyEvid
 		evidence.PerTaskConcurrency = context.PerTaskConcurrency
 		evidence.PlannedEffective = context.EffectiveConcurrency
 		evidence.FinalEffective = context.EffectiveConcurrency
+		evidence.FinalWorkers = context.TaskWorkers
+		evidence.PlannedBrowsers = context.PlannedBrowsers
+		evidence.Source = "worker-events"
+	}
+
+	// Auto capacity moves the worker count during the run, so the last
+	// adaptive-workers event — not the plan — is what the run actually ran at.
+	for _, event := range events {
+		if event.Type != "adaptive-workers" {
+			continue
+		}
+		context, ok := decodeConcurrencyContext(event.Context)
+		if !ok || context.TaskWorkers == 0 {
+			continue
+		}
+		if context.TaskWorkers < context.PreviousTaskWorkers {
+			evidence.WorkerReductions++
+		} else if context.TaskWorkers > context.PreviousTaskWorkers {
+			evidence.WorkerIncreases++
+		}
+		evidence.FinalWorkers = context.TaskWorkers
 		evidence.Source = "worker-events"
 	}
 
@@ -284,6 +329,19 @@ func concurrencyFromLog(logText string) concurrencyEvidence {
 		evidence.PerTaskConcurrency = perTask
 		evidence.PlannedEffective = workers * perTask
 		evidence.FinalEffective = workers * perTask
+		evidence.FinalWorkers = workers
+		evidence.Source = "log-messages"
+	}
+
+	for _, match := range autoWorkerLogPattern.FindAllStringSubmatch(logText, -1) {
+		from, _ := strconv.Atoi(match[1])
+		to, _ := strconv.Atoi(match[2])
+		if to < from {
+			evidence.WorkerReductions++
+		} else if to > from {
+			evidence.WorkerIncreases++
+		}
+		evidence.FinalWorkers = to
 		evidence.Source = "log-messages"
 	}
 

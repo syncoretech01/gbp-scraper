@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -68,7 +69,11 @@ func (analyzer analyzerStub) Analyze(context.Context, string) (enrichment.Result
 	return analyzer.result, analyzer.err
 }
 
+// enrichmentRepositoryStub is shared by every queue test. The website
+// enrichment pass runs its tasks on a worker pool, so the stub has to be safe
+// for concurrent use even when a test queues a single task.
 type enrichmentRepositoryStub struct {
+	mutex         sync.Mutex
 	next          *EnrichmentTask
 	pending       []EnrichmentTask
 	stored        string
@@ -111,6 +116,9 @@ func (*enrichmentRepositoryStub) RecoverEnrichmentTasks(context.Context) (int, e
 }
 
 func (repository *enrichmentRepositoryStub) ClaimEnrichmentTask(context.Context) (EnrichmentTask, bool, error) {
+	repository.mutex.Lock()
+	defer repository.mutex.Unlock()
+
 	if len(repository.pending) > 0 {
 		task := repository.pending[0]
 		repository.pending = repository.pending[1:]
@@ -133,6 +141,9 @@ func (repository *enrichmentRepositoryStub) StoreWebsiteAudit(
 	_ time.Time,
 	_ time.Time,
 ) (int64, error) {
+	repository.mutex.Lock()
+	defer repository.mutex.Unlock()
+
 	repository.stored = task.ID
 
 	return 42, nil
@@ -144,6 +155,9 @@ func (repository *enrichmentRepositoryStub) FinishEnrichmentTask(
 	auditID *int64,
 	taskErr error,
 ) error {
+	repository.mutex.Lock()
+	defer repository.mutex.Unlock()
+
 	repository.finished = taskID
 	repository.finishedAudit = auditID
 	repository.finishErr = taskErr
@@ -164,6 +178,9 @@ func (repository *enrichmentRepositoryStub) AttachAuditScreenshot(
 	auditID int64,
 	relativePath string,
 ) error {
+	repository.mutex.Lock()
+	defer repository.mutex.Unlock()
+
 	repository.attachedAudit = auditID
 	repository.attachedPath = relativePath
 
@@ -177,6 +194,9 @@ func (repository *enrichmentRepositoryStub) AttachAuditErrorScreenshot(
 	auditID int64,
 	relativePath string,
 ) error {
+	repository.mutex.Lock()
+	defer repository.mutex.Unlock()
+
 	repository.errorAudit = auditID
 	repository.errorPath = relativePath
 
@@ -189,6 +209,9 @@ func (repository *enrichmentRepositoryStub) RecordScreenshotEvent(
 	_ string,
 	details string,
 ) error {
+	repository.mutex.Lock()
+	defer repository.mutex.Unlock()
+
 	repository.events = append(repository.events, action)
 	repository.eventDetails = append(repository.eventDetails, details)
 

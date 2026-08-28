@@ -32,6 +32,8 @@
        section.card.ops-hero        status header: identity, readouts,
                                     progress, pipeline, run controls
        .ops-collected               the counters a non-engineer reads
+         .ops-geography             where those businesses sit relative to the
+                                    area the run was configured to search
        .split-pane                  coverage + logs | failures, resume, labels
        details.card.ops-technical   every engine internal, demoted
        details.card.ops-config      configuration snapshot
@@ -277,6 +279,20 @@
 /* --- What this run collected ----------------------------------------------- */
 .ops-collected { display: grid; gap: var(--space-3); min-width: 0; }
 .ops-collected > h2 { margin: 0; }
+.ops-collected .stat[hidden] { display: none; }
+
+/* --- Where the results landed ----------------------------------------------
+   Geography is evidence, not an alarm: Maps routinely answers a grid-cell
+   query with businesses far outside the radius, and this panel says so instead
+   of hiding it. It is set apart from the counters above by a quiet sunken
+   surface rather than a tone, because nothing here is a fault. */
+.ops-geography { display: grid; gap: var(--space-3); padding: var(--space-4); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-muted); }
+.ops-geography-head { display: grid; gap: var(--space-1); }
+.ops-geography-head > h3 { margin: 0; }
+.ops-geography-head > p { margin: 0; max-width: 62ch; }
+.ops-geography .stat { background: var(--surface); }
+.ops-geography-action { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); margin: 0; }
+.ops-geography-action > span { max-width: 62ch; }
 
 /* --- Technical details -----------------------------------------------------
    Nothing is removed from the console, only demoted: the live worker frame,

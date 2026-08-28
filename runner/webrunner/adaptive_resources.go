@@ -51,27 +51,15 @@ const (
 	// ceiling in MB, so the evidence has to read back in the same unit.
 	bytesPerMebibyteShift = 20
 
-	// browserWorkerMemoryReservationBytes is the host memory one browser-mode
-	// task worker is budgeted. Each worker owns a SEPARATE scrapemate app and
-	// therefore a SEPARATE Playwright browser pool that never drops below a
-	// single --single-process Chromium, so the default fan-out multiplies
-	// browser processes one-for-one with workers. The reservation is
-	// deliberately generous — under-committing browsers costs throughput, but
-	// over-committing them is the exact failure the incident run showed (four
-	// independent single-process Chromium browsers cascading into
-	// browser-failure). The docker specialist's measured per-browser cost
-	// supersedes this estimate; keep the two reconciled. [harden/scheduler-adaptive]
-	browserWorkerMemoryReservationBytes uint64 = 3 << 30
-	// maxDefaultBrowserWorkers hard-caps the DEFAULT browser-mode fan-out. One
-	// worker is one scrapemate app managing its own browser pool with the
-	// engine's page/browser reuse limits — the engine-native, tested topology
-	// the controlled conc-1 test proved works. Two is the cautious upper bound
-	// a well-resourced host may take; the adaptive controller collapses it back
-	// to one on the first browser-failure or block burst. An operator who sets
-	// TaskWorkers explicitly opts out of this cap entirely.
-	maxDefaultBrowserWorkers = 2
 	// safeBrowserWorkerFallback is the browser-mode fan-out used when no memory
 	// measurement is available. It is the proven-safe single-app topology.
+	//
+	// The flat two-worker cap that used to live beside this constant, and the
+	// 3 GiB-per-worker reservation that fed it, were removed in the throughput
+	// phase: they priced one worker as five browsers and pinned every host,
+	// large or small, to the same number. autoWorkerCeiling replaces both with
+	// a measured memory + CPU derivation bounded by the same
+	// browser-denominated budget. [throughput/auto-capacity]
 	safeBrowserWorkerFallback = 1
 
 	// perBrowserPlanningCostBytes is the planning cost of ONE --single-process
@@ -122,47 +110,58 @@ var browserProcessNames = []string{
 	"chrome", "chromium", "headless_shell", "msedge", "firefox",
 }
 
-// browserCensus caches the most recent count of browser processes owned by
-// this application. The zero value is ready to use.
+// browserCensus caches the most recent measurement of the browser processes
+// owned by this application: how many there are and how much resident memory
+// they actually hold. The zero value is ready to use.
 type browserCensus struct {
-	mu        sync.Mutex
-	count     int
-	sampledAt time.Time
+	mu          sync.Mutex
+	count       int
+	memoryBytes uint64
+	sampledAt   time.Time
 }
 
-// count returns the cached browser-process count, refreshing it at most once
-// per browserCensusInterval. A failed census keeps the previous value: the
-// measurement is evidence for adaptation, never a reason to fail a run.
-func (census *browserCensus) countBrowsers(ctx context.Context, selfPID int32) int {
+// countBrowsers returns the cached browser-process count and their measured
+// total resident memory, refreshing at most once per browserCensusInterval. A
+// failed census keeps the previous values: the measurement is evidence for
+// adaptation, never a reason to fail a run.
+//
+// The measured memory is what turns the per-browser planning cost from an
+// estimate into an observation. It can only ever make a browser look more
+// expensive than the constant (see plannedBrowserCostBytes), so a census that
+// reads low — every browser mid-launch, say — cannot inflate any budget.
+func (census *browserCensus) countBrowsers(ctx context.Context, selfPID int32) (int, uint64) {
 	census.mu.Lock()
 	defer census.mu.Unlock()
 
 	if !census.sampledAt.IsZero() && time.Since(census.sampledAt) < browserCensusInterval {
-		return census.count
+		return census.count, census.memoryBytes
 	}
 
 	censusCtx, cancel := context.WithTimeout(ctx, browserCensusTimeout)
 	defer cancel()
 
-	observed, err := countManagedBrowserProcesses(censusCtx, selfPID)
+	observed, resident, err := countManagedBrowserProcesses(censusCtx, selfPID)
 	if err != nil {
-		return census.count
+		return census.count, census.memoryBytes
 	}
 
 	census.count = observed
+	census.memoryBytes = resident
 	census.sampledAt = time.Now()
 
-	return census.count
+	return census.count, census.memoryBytes
 }
 
 // countManagedBrowserProcesses counts the browser processes whose parent
-// chain reaches selfPID. Browsers the operator started themselves therefore
-// never inflate the measurement, and an unattributable process is skipped
-// rather than guessed at.
-func countManagedBrowserProcesses(ctx context.Context, selfPID int32) (int, error) {
+// chain reaches selfPID, and sums their resident memory. Browsers the operator
+// started themselves therefore never inflate the measurement, and an
+// unattributable process is skipped rather than guessed at. A process whose
+// memory cannot be read still counts toward the census; only its bytes are
+// missing, which understates the cost rather than inventing one.
+func countManagedBrowserProcesses(ctx context.Context, selfPID int32) (int, uint64, error) {
 	processes, err := process.ProcessesWithContext(ctx)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	if len(processes) > browserCensusMaxProcesses {
@@ -170,11 +169,11 @@ func countManagedBrowserProcesses(ctx context.Context, selfPID int32) (int, erro
 	}
 
 	parents := make(map[int32]int32, len(processes))
-	candidates := make([]int32, 0, 8)
+	candidates := make([]*process.Process, 0, 8)
 
 	for _, candidate := range processes {
 		if err := ctx.Err(); err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 
 		parent, parentErr := candidate.PpidWithContext(ctx)
@@ -190,19 +189,26 @@ func countManagedBrowserProcesses(ctx context.Context, selfPID int32) (int, erro
 		}
 
 		if isBrowserProcessName(name) {
-			candidates = append(candidates, candidate.Pid)
+			candidates = append(candidates, candidate)
 		}
 	}
 
 	owned := 0
+	resident := uint64(0)
 
-	for _, pid := range candidates {
-		if hasAncestor(parents, pid, selfPID) {
-			owned++
+	for _, candidate := range candidates {
+		if !hasAncestor(parents, candidate.Pid, selfPID) {
+			continue
+		}
+
+		owned++
+
+		if info, memErr := candidate.MemoryInfoWithContext(ctx); memErr == nil && info != nil {
+			resident += info.RSS
 		}
 	}
 
-	return owned, nil
+	return owned, resident, nil
 }
 
 // isBrowserProcessName reports whether an executable name belongs to a
@@ -324,40 +330,29 @@ func recoveryHasHeadroom(sample workerResourceSample, blocks, allowedBrowsers in
 }
 
 // browserModeWorkerBudget derives how many browser-mode task workers the
-// measured host memory can safely run at once. It exists because the task pool
-// gives every worker its own scrapemate app and therefore its own browser pool
-// that never shrinks below one browser: the number of simultaneous browsers a
+// measured host can safely run at once. It exists because the task pool gives
+// every worker its own scrapemate app and therefore its own browser pool that
+// never shrinks below one browser: the number of simultaneous browsers a
 // browser-mode job launches can never fall below its worker count, no matter
 // how the concurrency budget is divided or how far the adaptive controller
-// later lowers concurrency. Bounding the DEFAULT fan-out here is the only point
-// at which the browser total can be held to what the host can support.
+// later lowers concurrency. Bounding the fan-out here is the only point at
+// which the browser total can be held to what the host can support.
 //
-// The result is floored at one (a browser job always runs), capped at
-// maxDefaultBrowserWorkers, and falls back to the single-app topology when no
-// memory reading is available. It is a hard ceiling: planTaskPool lowers an
-// explicitly configured TaskWorkers past it too, because launching more
-// browsers than RAM holds crashes them regardless of who chose the number.
-// Fast mode (pure HTTP, no browser) never consults this budget at all.
+// It is now a thin alias for autoWorkerCeiling, which derives the number from
+// measured memory, the effective CPU core count and the same
+// browser-denominated budget instead of from a constant. The result is still
+// floored at one (a browser job always runs) and still falls back to the
+// single-app topology when no memory reading is available, and it is still a
+// hard ceiling: planTaskPool lowers an explicitly configured TaskWorkers past
+// it too, because launching more browsers than RAM holds crashes them
+// regardless of who chose the number. Fast mode (pure HTTP, no browser) never
+// consults it at all.
 //
 // This bounds the WORKER count. The browser TOTAL — workers multiplied by each
 // worker's derived pool — is bounded separately by browserProcessBudget, which
 // is denominated in browsers rather than workers.
 func browserModeWorkerBudget(sample workerResourceSample) int {
-	available := sample.MemoryAvailableBytes
-	if available == 0 {
-		return safeBrowserWorkerFallback
-	}
-
-	budget := int(available / browserWorkerMemoryReservationBytes)
-	if budget < 1 {
-		budget = 1
-	}
-
-	if budget > maxDefaultBrowserWorkers {
-		budget = maxDefaultBrowserWorkers
-	}
-
-	return budget
+	return autoWorkerCeiling(sample)
 }
 
 // browserProcessBudget derives how many simultaneous Chromium processes the
@@ -375,6 +370,12 @@ func browserModeWorkerBudget(sample workerResourceSample) int {
 // There is deliberately no upper constant: a large host earns a large budget
 // and is then clamped by actual demand, instead of being pinned to a number
 // sized for the smallest machine. Fast mode never consults this.
+//
+// The per-browser denominator is plannedBrowserCostBytes, which starts at the
+// planning constant and is raised — never lowered — by the RSS the live census
+// measured. Feeding the measurement in can therefore only ever SHRINK this
+// budget below the value the hardening phase set, never grow it.
+// [throughput/auto-capacity]
 func browserProcessBudget(sample workerResourceSample) int {
 	available := sample.MemoryAvailableBytes
 	if available == 0 {
@@ -383,7 +384,7 @@ func browserProcessBudget(sample workerResourceSample) int {
 
 	usable := available - min(available, browserBudgetReserveBytes)
 
-	budget := int(usable / perBrowserPlanningCostBytes)
+	budget := int(usable / plannedBrowserCostBytes(sample))
 	if budget < 1 {
 		budget = 1
 	}

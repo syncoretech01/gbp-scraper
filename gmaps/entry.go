@@ -131,6 +131,20 @@ type Entry struct {
 	UserReviews         []Review     `json:"user_reviews"`
 	UserReviewsExtended []Review     `json:"user_reviews_extended"`
 	Emails              []string     `json:"emails"`
+
+	// ReviewCountUnknown and ReviewRatingUnknown record that the source
+	// payload carried no value at all, as opposed to carrying a genuine
+	// zero. The Fast-mode search response no longer contains a review
+	// count, and a Go int is zero when a field is missing, so without these
+	// flags every uncaptured count was exported and imported as "0
+	// reviews" - a fabricated fact that filters, scoring and exports then
+	// treated as real. When set, CsvRow writes an empty cell, which the
+	// normalized importer stores as NULL/unknown rather than zero.
+	//
+	// Both use omitempty, so an entry that did capture the value marshals
+	// byte-identically to before.
+	ReviewCountUnknown  bool `json:"review_count_unknown,omitempty"`
+	ReviewRatingUnknown bool `json:"review_rating_unknown,omitempty"`
 }
 
 // entryAlias is used inside Marshal/UnmarshalJSON to avoid infinite recursion
@@ -285,8 +299,8 @@ func (e *Entry) CsvRow() []string {
 		e.WebSite,
 		e.Phone,
 		e.PlusCode,
-		stringify(e.ReviewCount),
-		stringify(e.ReviewRating),
+		optionalNumber(e.ReviewCountUnknown, e.ReviewCount),
+		optionalNumber(e.ReviewRatingUnknown, e.ReviewRating),
 		stringify(e.ReviewsPerRating),
 		stringify(e.Latitude),
 		stringify(e.Longtitude),
@@ -860,6 +874,56 @@ func getPopularTimes(darray []any) map[string]map[int]int {
 	return popularTimes
 }
 
+// getNthElementAndCastOK is getNthElementAndCast with an explicit
+// "was it there?" answer. Callers that must tell a captured zero from a
+// missing field use this instead of relying on the zero value.
+func getNthElementAndCastOK[T any](arr []any, indexes ...int) (T, bool) {
+	var (
+		defaultVal T
+		idx        int
+	)
+
+	if len(indexes) == 0 {
+		return defaultVal, false
+	}
+
+	for len(indexes) > 1 {
+		idx, indexes = indexes[0], indexes[1:]
+
+		if idx >= len(arr) {
+			return defaultVal, false
+		}
+
+		next := arr[idx]
+
+		if next == nil {
+			return defaultVal, false
+		}
+
+		var ok bool
+
+		arr, ok = next.([]any)
+		if !ok {
+			return defaultVal, false
+		}
+	}
+
+	if len(indexes) == 0 || len(arr) == 0 {
+		return defaultVal, false
+	}
+
+	if indexes[0] >= len(arr) {
+		return defaultVal, false
+	}
+
+	ans, ok := arr[indexes[0]].(T)
+	if !ok {
+		return defaultVal, false
+	}
+
+	return ans, true
+}
+
 func getNthElementAndCast[T any](arr []any, indexes ...int) T {
 	var (
 		defaultVal T
@@ -905,6 +969,18 @@ func getNthElementAndCast[T any](arr []any, indexes ...int) T {
 	}
 
 	return ans
+}
+
+// optionalNumber renders a numeric CSV cell that may not have been captured.
+// An uncaptured value becomes an empty cell: the normalized importer reads an
+// empty numeric column as NULL, so "not captured" never reaches the workspace
+// disguised as a real zero.
+func optionalNumber[T int | float64](unknown bool, value T) string {
+	if unknown {
+		return ""
+	}
+
+	return stringify(value)
 }
 
 func stringSliceToString(s []string) string {

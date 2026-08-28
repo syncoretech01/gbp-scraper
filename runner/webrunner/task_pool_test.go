@@ -70,6 +70,24 @@ func healthyResources(context.Context, string) (workerResourceSample, error) {
 	return workerResourceSample{
 		CPUPercent: 10, MemoryUsedBytes: 2 << 30,
 		MemoryAvailableBytes: 8 << 30, DiskFreeBytes: 32 << 30,
+		// Pinned so the auto worker ceiling is derived from the sample rather
+		// than from whatever core count the machine running the test happens
+		// to have. An unset value would be filled in from the real host and
+		// make every capacity assertion below machine-dependent.
+		CPUCores: 8,
+	}, nil
+}
+
+// constrainedResources reports a host with real but limited memory: 3.5 GiB
+// available leaves 2 GiB once the browser reserve is taken, which prices
+// exactly two workers (one browser plus one worker overhead each). It is the
+// sample the fan-out cap tests use, so the cap they assert is arithmetic rather
+// than a constant.
+func constrainedResources(context.Context, string) (workerResourceSample, error) {
+	return workerResourceSample{
+		CPUPercent: 10, MemoryUsedBytes: 4 << 30,
+		MemoryAvailableBytes: 3584 << 20, DiskFreeBytes: 32 << 30,
+		CPUCores: 8,
 	}, nil
 }
 
@@ -392,35 +410,93 @@ func TestPlanTaskPoolCapsBrowserModeDefaultFanout(t *testing.T) {
 	}
 }
 
-// TestBrowserModeWorkerBudgetIsMemoryDerivedAndBounded proves the budget floors
-// at one, is capped, and falls back safely when memory is unknown.
-func TestBrowserModeWorkerBudgetIsMemoryDerivedAndBounded(t *testing.T) {
+// TestBrowserModeWorkerBudgetScalesWithTheMeasuredHost proves the throughput
+// fix: the budget is derived from what the host reports rather than pinned to
+// one constant for every machine. The superseded rule returned exactly two on
+// every host from 6 GiB upward, which is why the 180-task acceptance run took
+// two workers on a machine whose own browser budget was eight.
+func TestBrowserModeWorkerBudgetScalesWithTheMeasuredHost(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name      string
 		available uint64
+		cores     int
 		want      int
 	}{
-		{name: "unknown memory falls back to one", available: 0, want: safeBrowserWorkerFallback},
-		{name: "tight memory floors at one", available: 1 << 30, want: 1},
-		{name: "abundant memory is capped", available: 64 << 30, want: maxDefaultBrowserWorkers},
-		{name: "reservation-sized memory yields one", available: browserWorkerMemoryReservationBytes, want: 1},
+		{name: "unknown memory falls back to one", available: 0, cores: 16, want: safeBrowserWorkerFallback},
+		{name: "tight memory floors at one", available: 1 << 30, cores: 16, want: 1},
+		// (3.5 GiB - 1.5 GiB reserve) / (600 MiB browser + 256 MiB worker) = 2.
+		{name: "a small host earns two", available: 3584 << 20, cores: 16, want: 2},
+		// (8 GiB - 1.5 GiB) / 856 MiB = 7, under a 16-core allowance.
+		{name: "a large host earns more than the old constant", available: 8 << 30, cores: 16, want: 7},
+		// The same host with two usable cores is bounded by CPU, not memory.
+		{name: "cpu bounds a memory-rich host", available: 8 << 30, cores: 2, want: 2},
+		// The product bound still wins over any host measurement.
+		{name: "the product maximum still binds", available: 512 << 30, cores: 64, want: web.MaximumJobTaskWorkers},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := browserModeWorkerBudget(workerResourceSample{MemoryAvailableBytes: test.available})
+			sample := workerResourceSample{MemoryAvailableBytes: test.available, CPUCores: test.cores}
+
+			got := browserModeWorkerBudget(sample)
 			if got != test.want {
-				t.Fatalf("browserModeWorkerBudget(%d) = %d, want %d", test.available, got, test.want)
+				t.Fatalf("browserModeWorkerBudget(%d bytes, %d cores) = %d, want %d",
+					test.available, test.cores, got, test.want)
 			}
 
-			if got < 1 || got > maxDefaultBrowserWorkers {
-				t.Fatalf("budget %d escaped the [1,%d] bound", got, maxDefaultBrowserWorkers)
+			if got < 1 || got > web.MaximumJobTaskWorkers {
+				t.Fatalf("budget %d escaped the [1,%d] bound", got, web.MaximumJobTaskWorkers)
+			}
+
+			// The browser-denominated invariant is still the outer bound: a
+			// worker always holds at least one browser, so the worker budget
+			// may never exceed the browser budget.
+			if browsers := browserProcessBudget(sample); got > browsers {
+				t.Fatalf("worker budget %d exceeded the browser budget %d", got, browsers)
 			}
 		})
+	}
+}
+
+// TestMeasuredBrowserMemoryOnlyEverShrinksTheBudget proves the measurement seam
+// is safe in one direction only: a census showing browsers heavier than the
+// planning constant tightens the budget, and one showing them lighter cannot
+// loosen it.
+func TestMeasuredBrowserMemoryOnlyEverShrinksTheBudget(t *testing.T) {
+	t.Parallel()
+
+	base := workerResourceSample{MemoryAvailableBytes: 8 << 30, CPUCores: 8}
+	baseline := browserProcessBudget(base)
+
+	lean := base
+	lean.BrowserProcesses = 4
+	lean.BrowserMemoryBytes = 4 * (200 << 20) // 200 MiB each, well under the constant
+
+	if got := browserProcessBudget(lean); got != baseline {
+		t.Fatalf("a lean census changed the budget to %d, want the conservative %d", got, baseline)
+	}
+
+	heavy := base
+	heavy.BrowserProcesses = 4
+	heavy.BrowserMemoryBytes = 4 * (1100 << 20) // 1.1 GiB each
+
+	got := browserProcessBudget(heavy)
+	if got >= baseline {
+		t.Fatalf("a heavy census left the budget at %d, want it below %d", got, baseline)
+	}
+
+	// An untrustworthy census (a single process, usually mid-launch) is
+	// ignored rather than treated as a measurement.
+	single := base
+	single.BrowserProcesses = 1
+	single.BrowserMemoryBytes = 4 << 30
+
+	if got := browserProcessBudget(single); got != baseline {
+		t.Fatalf("a one-process census changed the budget to %d, want %d", got, baseline)
 	}
 }
 
@@ -509,9 +585,22 @@ func TestBrowserModeGridJobCapsItsDefaultFanoutEndToEnd(t *testing.T) {
 	service, dataFolder := newPoolTestService(t)
 
 	// A browser-mode grid job that leaves TaskWorkers unset — the shape of the
-	// incident run. On a host reporting plenty of memory the browser-worker
-	// budget is maxDefaultBrowserWorkers (2), so the default fan-out of four is
-	// capped to two and the job never launches more than two browser pools.
+	// incident run — on a host with 3.5 GiB available. That prices exactly two
+	// workers, so the default fan-out of four is capped to two and the job
+	// never launches more than two browser pools. The cap is arithmetic from
+	// the sample, not a constant: the same job on a bigger host is allowed
+	// more, which is what TestBrowserModeWorkerBudgetScalesWithTheMeasuredHost
+	// covers.
+	sample, err := constrainedResources(context.Background(), "")
+	if err != nil {
+		t.Fatalf("constrained sample: %v", err)
+	}
+
+	cappedFanout := browserModeWorkerBudget(sample)
+	if cappedFanout != 2 {
+		t.Fatalf("constrained worker budget = %d, want 2 for this fixture", cappedFanout)
+	}
+
 	job := gridScrapeJob("99999999-9999-4999-8999-999999999999", 0)
 
 	if err := service.CreateWithState(context.Background(), &job, jobruntime.StateQueued); err != nil {
@@ -519,7 +608,7 @@ func TestBrowserModeGridJobCapsItsDefaultFanoutEndToEnd(t *testing.T) {
 	}
 
 	tracker := &poolTracker{}
-	barrier := newStartBarrier(maxDefaultBrowserWorkers, 5*time.Second)
+	barrier := newStartBarrier(cappedFanout, 5*time.Second)
 	worker := &webrunner{
 		svc: service,
 		cfg: &runner.Config{DataFolder: dataFolder, Concurrency: 8},
@@ -530,7 +619,7 @@ func TestBrowserModeGridJobCapsItsDefaultFanoutEndToEnd(t *testing.T) {
 				return nil
 			}}, nil
 		},
-		sampleResources: healthyResources,
+		sampleResources: constrainedResources,
 	}
 
 	if err := worker.scrapeJob(context.Background(), &job); err != nil {
@@ -553,14 +642,14 @@ func TestBrowserModeGridJobCapsItsDefaultFanoutEndToEnd(t *testing.T) {
 	// The default fan-out is bounded by the memory-derived browser budget: no
 	// more than two tasks — and therefore two browser pools — were ever in
 	// flight at once, down from the four the uncapped default would have run.
-	if peak := tracker.peak(); peak > maxDefaultBrowserWorkers {
-		t.Fatalf("peak concurrent browser-mode tasks = %d, want at most %d", peak, maxDefaultBrowserWorkers)
+	if peak := tracker.peak(); peak > cappedFanout {
+		t.Fatalf("peak concurrent browser-mode tasks = %d, want at most %d", peak, cappedFanout)
 	}
 
 	// Still genuinely parallel up to the cap: the two-way rendezvous only
 	// completes if two tasks ran together.
-	if peak := tracker.peak(); peak < maxDefaultBrowserWorkers {
-		t.Fatalf("peak concurrent browser-mode tasks = %d, want the cap to overlap %d", peak, maxDefaultBrowserWorkers)
+	if peak := tracker.peak(); peak < cappedFanout {
+		t.Fatalf("peak concurrent browser-mode tasks = %d, want the cap to overlap %d", peak, cappedFanout)
 	}
 }
 

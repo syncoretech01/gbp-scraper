@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -12,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gosom/google-maps-scraper/web/prospect"
 
 	"github.com/google/uuid"
 	"github.com/gosom/google-maps-scraper/web/jobruntime"
@@ -245,7 +248,22 @@ func parseWizardJob(r *http.Request) (Job, jobruntime.State, error) {
 	fastMode := r.FormValue("fastmode") == "on"
 
 	websiteEnrichment := r.FormValue("email") == "on"
+
+	// The wizard submits the ZIP coverage plan as JSON so the ZIP centroids
+	// survive into the job. Absent input is simply no plan; malformed input is
+	// rejected rather than silently collapsing 25 areas back to one centre.
+	var queryTargets []prospect.QueryTarget
+	if raw := strings.TrimSpace(r.FormValue("query_targets")); raw != "" {
+		if len(raw) > 1<<20 {
+			return Job{}, "", fmt.Errorf("the coverage plan is too large")
+		}
+		if err := json.Unmarshal([]byte(raw), &queryTargets); err != nil {
+			return Job{}, "", fmt.Errorf("the coverage plan could not be read")
+		}
+	}
+
 	data := JobData{
+		QueryTargets:  queryTargets,
 		Keywords:      keywords,
 		Lang:          strings.ToLower(strings.TrimSpace(r.FormValue("lang"))),
 		Zoom:          zoom,

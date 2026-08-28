@@ -41,7 +41,7 @@ nothing.
                 <button class="button button-sm" type="button" data-action="rerun-campaign" hidden data-campaign-rerun>Rerun as campaign</button>
             </div>
             {{if .Features.SavedSearches}}<a class="button button-sm" href="/app/saved-searches?tab=templates" data-endpoint="/app/saved-searches?tab=templates">Use a template</a>{{end}}
-            <button class="button button-sm" type="button" data-action="use-san-francisco-preset">San Francisco preset</button>
+            <button class="button button-sm" type="button" data-action="use-san-francisco-preset" title="Fills the map centre and radius only">Use San Francisco as the area</button>
         </div>
     </div>
 
@@ -62,6 +62,14 @@ nothing.
     <form class="card wizard-card" action="/app/scrapes" method="post" enctype="multipart/form-data">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <input type="hidden" name="template_id" value="{{.Page.TemplateID}}">
+        {{/*
+        ZIP coverage targets. The GBP generator produces one target per
+        (synonym, ZIP) carrying that ZIP's own centroid, city, state,
+        population and rank, plus a stable id for checkpoint and provenance.
+        Geography must never live only inside the query string, so the plan is
+        submitted here as JSON rather than being reconstructed from words.
+        */}}
+        <textarea name="query_targets" data-query-targets hidden></textarea>
 
         <section class="card-body wizard-panel" id="wizard-step-1" data-wizard-panel="1" aria-labelledby="wizard-step-1-title">
             <div class="wizard-panel-head">
@@ -95,11 +103,11 @@ nothing.
                         <input type="radio" name="scrape_mode_ui" value="fast" form="wizard-ui-only" data-run-mode="fast">
                         <span class="run-mode-body">
                             <span class="run-mode-title">Fast mode<span class="run-mode-tag run-mode-tag-fast">Quick, no map grid</span></span>
-                            <span class="run-mode-lede">One radius search per query, fetched over plain HTTP. Typically many times faster than Thorough mode.</span>
+                            <span class="run-mode-lede">One Maps search request per query, fetched over plain HTTP. Typically many times faster than Thorough mode.</span>
                             <span class="run-mode-points">
                                 <span class="run-mode-point run-mode-point-yes">Finishes in a fraction of the time and needs no browser</span>
-                                <span class="run-mode-point run-mode-point-no">One radius search per query &mdash; no grid walk of the area</span>
-                                <span class="run-mode-point run-mode-point-no">No JavaScript rendering, so fewer fields come back</span>
+                                <span class="run-mode-point run-mode-point-no">At most 20 listings per query, ranked by Maps around the centre, then trimmed to the radius &mdash; a sample of the area, not coverage of it</span>
+                                <span class="run-mode-point run-mode-point-no">No review count and no business status: the search payload does not carry them, so they are stored as not captured rather than as zero</span>
                             </span>
                         </span>
                     </label>
@@ -119,6 +127,7 @@ nothing.
                         <div class="wizard-preview-count"><span class="t-caption">Duplicates removed</span><strong class="num" data-duplicate-count>0</strong></div>
                     </div>
                     <ol class="query-preview" data-query-preview></ol>
+                    <p class="field-hint" data-coverage-echo hidden><span data-coverage-echo-text></span></p>
                 </aside>
             </div>
             {{if .Page.KeywordSetsSupported}}
@@ -127,7 +136,7 @@ nothing.
                  and its own advanced tools. */}}
             <details class="card disclosure"><summary>Saved keyword sets</summary><div class="card-body">
                 {{if .Page.KeywordSets}}<div class="field"><label for="keyword-set-picker">Insert saved set</label><div class="input-group"><select class="select" id="keyword-set-picker" data-keyword-set-picker><option value="">Choose a saved set&hellip;</option>{{range .Page.KeywordSets}}<option value="{{.ID}}">{{.Name}} ({{len .Keywords}} keywords, used {{.UseCount}}&times;)</option>{{end}}</select><button class="button" type="button" data-action="insert-keyword-set">Insert</button></div><p class="field-hint">New keywords are appended; lines already present are skipped.</p></div>{{end}}
-                <div class="field"><label for="keyword-set-name">Save current keywords as a set</label><div class="input-group"><input class="input" id="keyword-set-name" maxlength="64" placeholder="Bay Area dental queries" autocomplete="off" data-keyword-set-name><button class="button" type="button" data-action="save-keyword-set">Save set</button></div><p class="field-hint" data-keyword-set-status aria-live="polite"></p></div>
+                <div class="field"><label for="keyword-set-name">Save current keywords as a set</label><div class="input-group"><input class="input" id="keyword-set-name" maxlength="64" placeholder="Name this keyword set" autocomplete="off" data-keyword-set-name><button class="button" type="button" data-action="save-keyword-set">Save set</button></div><p class="field-hint" data-keyword-set-status aria-live="polite"></p></div>
             </div></details>
             {{end}}
             <details class="card disclosure" data-wizard-advanced><summary>Refine the list with include and exclude terms</summary><div class="card-body">
@@ -161,7 +170,7 @@ nothing.
                     <div class="category-groups" data-category-groups hidden>
                         <h4 class="t-overline">Reusable category groups</h4>
                         <div class="field"><label for="category-group-picker">Insert saved group</label><div class="input-group"><select class="select" id="category-group-picker" data-category-group-picker><option value="">Choose a saved group&hellip;</option></select><button class="button button-sm" type="button" data-action="insert-category-group">Insert</button><button class="button button-sm button-danger" type="button" data-action="delete-category-group">Delete</button></div></div>
-                        <div class="field"><label for="category-group-name">Save the selection as a group</label><div class="input-group"><input class="input" id="category-group-name" maxlength="64" autocomplete="off" placeholder="Dental practices" data-category-group-name><button class="button button-sm" type="button" data-action="save-category-group">Save group</button></div></div>
+                        <div class="field"><label for="category-group-name">Save the selection as a group</label><div class="input-group"><input class="input" id="category-group-name" maxlength="64" autocomplete="off" placeholder="Name this category group" data-category-group-name><button class="button button-sm" type="button" data-action="save-category-group">Save group</button></div></div>
                     </div>
                     <p class="field-hint" data-category-status aria-live="polite"></p>
                 </div>
@@ -200,7 +209,7 @@ nothing.
                 <label class="check-row"><input id="gbp-pipeline-preset" type="checkbox" checked data-gbp-pipeline><span>Prospecting pipeline preset<small>On generate, switches on website audits, email extraction, and MX checks (crawl scope homepage + contact + about), completing the standalone pipeline: coverage &rarr; scrape &rarr; dedupe &rarr; website pre-classification &rarr; email discovery &rarr; scoring &rarr; call openers.</small></span></label>
                 <div class="form-actions"><span class="field-hint" data-gbp-status aria-live="polite"></span><button class="button button-primary" type="button" data-action="generate-gbp-queries">Generate coverage queries</button></div>
             </div></details>{{end}}
-            {{if .Page.LocalAI.Enabled}}<details class="card disclosure" data-wizard-advanced><summary>Ask the enabled local model for keyword variations</summary><div class="card-body"><div class="field"><label for="local-ai-keyword-request">Research description</label><textarea class="textarea" id="local-ai-keyword-request" rows="3" maxlength="16384" placeholder="Independent dentists serving families in San Francisco; exclude orthodontists" data-local-ai-input></textarea></div><div class="form-actions"><span class="field-hint" data-local-ai-status aria-live="polite">Uses {{.Page.LocalAI.Model}} through {{.Page.LocalAI.Endpoint}}.</span><button class="button" type="button" data-action="local-ai-keywords">Generate locally</button></div></div></details>{{end}}
+            {{if .Page.LocalAI.Enabled}}<details class="card disclosure" data-wizard-advanced><summary>Ask the enabled local model for keyword variations</summary><div class="card-body"><div class="field"><label for="local-ai-keyword-request">Research description</label><textarea class="textarea" id="local-ai-keyword-request" rows="3" maxlength="16384" placeholder="Describe the businesses and the area, and anything to exclude" data-local-ai-input></textarea></div><div class="form-actions"><span class="field-hint" data-local-ai-status aria-live="polite">Uses {{.Page.LocalAI.Model}} through {{.Page.LocalAI.Endpoint}}.</span><button class="button" type="button" data-action="local-ai-keywords">Generate locally</button></div></div></details>{{end}}
             <div class="form-actions"><button class="button button-primary" type="button" data-action="wizard-next">Set location &rarr;</button></div>
         </section>
 
@@ -223,7 +232,7 @@ nothing.
             browser without JavaScript still submits every value.
             */}}
             <div class="form-grid form-grid-4 location-primary">
-                <div class="field"><label for="location-label">Place or area</label><input class="input" id="location-label" name="location_label" value="{{.Page.Initial.LocationLabel}}" placeholder="San Francisco, California" autocomplete="off" required><p class="field-hint">Names this job and its results. It does not move the map centre.</p></div>
+                <div class="field"><label for="location-label">Place or area</label><input class="input" id="location-label" name="location_label" value="{{.Page.Initial.LocationLabel}}" placeholder="Name the area you are searching" autocomplete="off" required><p class="field-hint">Names this job and its results. It does not move the map centre &mdash; set that in <em>Precise coordinates</em> below, or draw it in Map Explorer.</p></div>
                 <div class="field"><label for="radius-km">Search radius (km)</label><input class="input num" id="radius-km" type="number" min="0.1" max="100" step="0.1" inputmode="decimal" data-radius-km><p class="field-hint">How far out from the centre this run reaches.</p></div>
                 <div class="field" data-grid-field><label for="grid-cell">Size of each area to search (km)</label><input class="input num" id="grid-cell" name="grid_cell_km" type="number" min="0.1" max="50" step="0.1" value="{{.Page.Defaults.GridCellKM}}" required><p class="field-hint">Grid-cell size. 2.5 km is a practical first pass; smaller areas mean more searches.</p></div>
                 <div class="field"><label for="lang">Maps language</label><input class="input" id="lang" name="lang" value="{{.Page.Defaults.Language}}" minlength="2" maxlength="2" required><p class="field-hint">Two-letter code, such as <code>en</code>.</p></div>
@@ -233,7 +242,7 @@ nothing.
                 <div class="form-grid form-grid-4">
                     <div class="field"><label for="latitude">Centre latitude</label><input class="input num" id="latitude" name="latitude" type="number" min="-90" max="90" step="0.000001" value="{{.Page.Initial.Latitude}}" required></div>
                     <div class="field"><label for="longitude">Centre longitude</label><input class="input num" id="longitude" name="longitude" type="number" min="-180" max="180" step="0.000001" value="{{.Page.Initial.Longitude}}" required></div>
-                    <div class="field"><label for="radius">Coverage extent (metres)</label><input class="input num" id="radius" name="radius" type="number" min="100" max="100000" step="100" value="{{.Page.Defaults.Radius}}" required><p class="field-hint">Thorough mode bounds the grid with it; Fast mode uses it as a strict radius.</p></div>
+                    <div class="field"><label for="radius">Coverage extent (metres)</label><input class="input num" id="radius" name="radius" type="number" min="100" max="100000" step="100" value="{{.Page.Defaults.Radius}}" required><p class="field-hint">Thorough mode bounds the grid with it. Fast mode aims its single search at this distance and then discards anything outside it &mdash; an upper bound on the sample, not coverage of the circle.</p></div>
                     <div class="field"><label for="zoom">Maps zoom</label><input class="input num" id="zoom" name="zoom" type="number" min="1" max="21" value="{{.Page.Defaults.Zoom}}" required><p class="field-hint">Detail level Maps is asked for. Leave it alone unless a run comes back thin.</p></div>
                 </div>
             </div></details>
@@ -374,8 +383,8 @@ nothing.
                 <div class="field"><label for="filter-reviews-max">Maximum reviews</label><input class="input num" id="filter-reviews-max" name="filter_reviews_max" type="number" min="0" max="10000000" placeholder="any"></div>
             </div>
             <div class="grid grid-2">
-                <div class="field"><label for="filter-include-categories">Included categories</label><textarea class="textarea" id="filter-include-categories" name="filter_include_categories" rows="3" placeholder="Dentist&#10;Dental clinic" data-filter-include-categories></textarea><p class="field-hint">One per line or comma separated. A business matching any of them is kept; leave empty to keep every category.</p></div>
-                <div class="field"><label for="filter-exclude-categories">Excluded categories</label><textarea class="textarea" id="filter-exclude-categories" name="filter_exclude_categories" rows="3" placeholder="Orthodontist&#10;Dental laboratory" data-filter-exclude-categories></textarea><p class="field-hint">A business carrying any of them is dropped.</p></div>
+                <div class="field"><label for="filter-include-categories">Included categories</label><textarea class="textarea" id="filter-include-categories" name="filter_include_categories" rows="3" placeholder="Empty &mdash; every category is kept" data-filter-include-categories></textarea><p class="field-hint">Empty keeps every category. One per line or comma separated; a business matching any of them is kept. For example <code>Dentist</code> or <code>Plumber</code>.</p></div>
+                <div class="field"><label for="filter-exclude-categories">Excluded categories</label><textarea class="textarea" id="filter-exclude-categories" name="filter_exclude_categories" rows="3" placeholder="Empty &mdash; nothing is excluded" data-filter-exclude-categories></textarea><p class="field-hint">Empty excludes nothing. A business carrying any listed category is dropped.</p></div>
             </div>
             <fieldset class="fieldset">
                 <legend>Business status</legend>
@@ -385,11 +394,12 @@ nothing.
                     <label class="check-row"><input name="filter_status" type="checkbox" value="permanently_closed"><span>Permanently closed<small>Normalized status <code>permanently_closed</code>.</small></span></label>
                 </div>
                 <p class="field-hint">Leave all three unticked to keep every status, including listings Maps gives no status for.</p>
+                <div class="notice notice-warning"><div><strong>Maps is not returning a business status right now.</strong><p>Both collection modes read the status from the listing payload, and Google currently omits it: every business in this workspace has an empty <code>business_status</code>. Ticking any box here therefore narrows the result view to nothing until a status is captured again. The engine is unaffected &mdash; the per-job CSV still keeps every row.</p></div></div>
             </fieldset>
             <div class="form-grid form-grid-4">
                 <div class="field"><label for="filter-claimed">Listing ownership</label><select class="select" id="filter-claimed" name="filter_claimed"><option value="any" selected>Any</option><option value="claimed">Claimed only</option><option value="unclaimed">Unclaimed only</option></select><p class="field-hint">Maps does not publish ownership for every listing; unknown ones are excluded once you narrow this.</p></div>
-                <div class="field"><label for="filter-name-contains">Name contains</label><input class="input" id="filter-name-contains" name="filter_name_contains" maxlength="200" placeholder="dental" autocomplete="off"></div>
-                <div class="field"><label for="filter-name-excludes">Name does not contain</label><input class="input" id="filter-name-excludes" name="filter_name_excludes" maxlength="200" placeholder="clinic group" autocomplete="off"></div>
+                <div class="field"><label for="filter-name-contains">Name contains</label><input class="input" id="filter-name-contains" name="filter_name_contains" maxlength="200" placeholder="Empty &mdash; any name" autocomplete="off"><p class="field-hint">Case-insensitive substring of the business name.</p></div>
+                <div class="field"><label for="filter-name-excludes">Name does not contain</label><input class="input" id="filter-name-excludes" name="filter_name_excludes" maxlength="200" placeholder="Empty &mdash; nothing excluded" autocomplete="off"><p class="field-hint">Case-insensitive substring; a matching business is dropped.</p></div>
                 <div class="field"><label for="incremental-mode">Rescan mode</label><select class="select" id="incremental-mode" name="incremental_mode"><option value="">Full collection</option><option value="new_only">Only new listings</option><option value="new_changed">New and changed listings</option><option value="volatile_fields">Recheck volatile fields only</option><option value="stale_contacts">Re-enrich missing or stale contact data</option></select></div>
             </div>
             <p class="field-hint" data-incremental-note aria-live="polite">Full collection keeps every business this run observes.</p>
@@ -468,7 +478,7 @@ nothing.
                 <div class="preflight-check" data-preflight-enrichment><span class="preflight-mark" aria-hidden="true">&check;</span><span><strong data-preflight-enrichment-title>Enrichment off</strong><span data-preflight-enrichment-detail>Maps fields only</span></span></div>
             </div>
             <div class="grid grid-2">
-                <article class="card card-quiet"><div class="card-header"><h3>Search and geography</h3></div><div class="card-body"><dl class="key-value"><dt>Job</dt><dd data-review-name>San Francisco dentists</dd><dt>Search mode</dt><dd data-review-mode>Thorough mode — full map coverage</dd><dt>Place</dt><dd data-review-location>San Francisco, California</dd><dt>Centre</dt><dd class="num" data-review-coordinates>37.7749, -122.4194</dd><dt>Radius</dt><dd data-review-radius>10 km</dd><dt>Area size</dt><dd data-review-grid>2.5 km</dd></dl></div></article>
+                <article class="card card-quiet"><div class="card-header"><h3>Search and geography</h3></div><div class="card-body"><dl class="key-value"><dt>Job</dt><dd data-review-name>Untitled scrape</dd><dt>Search mode</dt><dd data-review-mode>Thorough mode — full map coverage</dd><dt>Place</dt><dd data-review-location>Not set</dd><dt>Centre</dt><dd class="num" data-review-coordinates>Not set</dd><dt>Radius</dt><dd data-review-radius>Not set</dd><dt>Area size</dt><dd data-review-grid>Not set</dd></dl></div></article>
                 <article class="card card-quiet"><div class="card-header"><h3>Execution</h3></div><div class="card-body"><dl class="key-value"><dt>Searches to run</dt><dd class="num" data-review-tasks>0</dd><dt>Stop after</dt><dd data-review-runtime>60m</dd><dt>Enrichment</dt><dd data-review-enrichment>Off</dd><dt>Proxy</dt><dd data-review-proxy>Direct connection</dd><dt>Output</dt><dd>Normalized local SQLite plus compatible CSV</dd><dt>Recovery</dt><dd>Committed rows are retained; retries merge without replacing earlier results.</dd></dl></div></article>
             </div>
             {{/* The retained-set card mirrors the collection plan the server
@@ -476,9 +486,10 @@ nothing.
                  so the wizard promises exactly what the job will deliver. */}}
             <article class="card card-quiet"><div class="card-header"><h3>Retained set</h3></div><div class="card-body">
                 <dl class="key-value"><dt>Data fields</dt><dd data-review-fields>All captured fields</dd><dt>Filters</dt><dd data-review-filters>None</dd><dt>Rescan mode</dt><dd data-review-incremental>Full collection</dd></dl>
+                <div class="notice notice-warning" data-hidden-narrowing hidden><div><strong>Rules on a step this mode hides</strong><p data-hidden-narrowing-text aria-live="polite"></p><p class="form-actions"><button class="button button-sm" type="button" data-action="open-filter-step">Show the Filters step</button><button class="button button-sm" type="button" data-action="clear-result-filters">Clear every filter</button></p></div></div>
                 <p class="field-hint" data-review-collection-note>Filters and rescan modes are applied to stored results after collection. Google Maps returns every listing the plan reaches and the per-job CSV keeps them all.</p>
             </div></article>
-            {{if .Features.SavedSearches}}<div class="grid grid-2"><label class="check-row"><input id="save-template" name="save_template" type="checkbox" value="on"><span>Save as reusable template</span></label><div class="field"><label for="template-name">Template name</label><input class="input" id="template-name" name="template_name" placeholder="San Francisco dental coverage"></div></div>{{end}}
+            {{if .Features.SavedSearches}}<div class="grid grid-2"><label class="check-row"><input id="save-template" name="save_template" type="checkbox" value="on"><span>Save as reusable template</span></label><div class="field"><label for="template-name">Template name</label><input class="input" id="template-name" name="template_name" placeholder="Name this reusable template"></div></div>{{end}}
             <label class="check-row"><input id="responsible-use" name="responsible_use" type="checkbox" value="accepted" required><span>I will use this scraper responsibly and comply with applicable terms, laws, privacy obligations, and outreach rules.</span></label>
             <div class="form-actions"><button class="button" type="button" data-action="wizard-back">Back</button><button class="button" type="submit" name="_action" value="draft">Save draft</button><button class="button button-primary" type="submit" name="_action" value="start">Start scraping</button></div>
         </section>

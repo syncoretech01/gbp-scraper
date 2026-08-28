@@ -15,6 +15,10 @@ const maximumQualityRequestBytes = 64 << 10
 
 type qualityRecalculationInput struct {
 	IDs []string `json:"ids"`
+	// AuditFirst queues the website audits the website-dependent components
+	// depend on before the pass runs. It defaults to true, so an explicit
+	// scoring request produces evidence instead of scoring from unknowns.
+	AuditFirst *bool `json:"audit_first,omitempty"`
 }
 
 func (s *Server) registerQualityRoutes(mux *http.ServeMux) {
@@ -23,6 +27,35 @@ func (s *Server) registerQualityRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/quality/rules", s.apiQualityRules)
 	mux.HandleFunc("POST /api/v1/quality/recalculate", s.apiRecalculateQuality)
 	mux.HandleFunc("GET /api/v1/results/{id}/quality", s.apiBusinessQuality)
+	mux.HandleFunc("GET /api/v1/quality/drift", s.apiQualityScoreDrift)
+	mux.HandleFunc("POST /api/v1/quality/drift/repair", s.apiRepairQualityScoreDrift)
+}
+
+// apiQualityScoreDrift reports stored record-quality scores that disagree
+// with their own stored breakdown. It is read-only.
+func (s *Server) apiQualityScoreDrift(w http.ResponseWriter, r *http.Request) {
+	report, err := s.svc.QualityScoreDrift(r.Context(), false)
+	if err != nil {
+		renderQualityAPIError(w, err)
+
+		return
+	}
+	renderJSON(w, http.StatusOK, localAPIEnvelope{Data: report})
+}
+
+// apiRepairQualityScoreDrift rescores every record whose stored score and
+// stored explanation disagree.
+func (s *Server) apiRepairQualityScoreDrift(w http.ResponseWriter, r *http.Request) {
+	if !s.requireCSRF(w, r) {
+		return
+	}
+	report, err := s.svc.QualityScoreDrift(r.Context(), true)
+	if err != nil {
+		renderQualityAPIError(w, err)
+
+		return
+	}
+	renderJSON(w, http.StatusOK, localAPIEnvelope{Data: report})
 }
 
 func (s *Server) apiQualityRules(w http.ResponseWriter, r *http.Request) {
@@ -139,12 +172,20 @@ func (s *Server) apiRecalculateQuality(w http.ResponseWriter, r *http.Request) {
 		renderQualityAPIError(w, fmt.Errorf("%w: too many selected businesses", ErrInvalidResultMutation))
 		return
 	}
-	count, err := s.svc.RecalculateQuality(r.Context(), input.IDs)
+	auditFirst := true
+	if input.AuditFirst != nil {
+		auditFirst = *input.AuditFirst
+	}
+	result, err := s.svc.RecalculateQualityWithAudit(r.Context(), input.IDs, auditFirst)
 	if err != nil {
 		renderQualityAPIError(w, err)
 		return
 	}
-	renderJSON(w, http.StatusOK, localAPIEnvelope{Data: map[string]any{"recalculated": count}})
+	payload := map[string]any{"recalculated": result.Scored}
+	if result.Prerequisite != nil {
+		payload["website_audit_prerequisite"] = result.Prerequisite
+	}
+	renderJSON(w, http.StatusOK, localAPIEnvelope{Data: payload})
 }
 
 func (s *Server) apiBusinessQuality(w http.ResponseWriter, r *http.Request) {

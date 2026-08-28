@@ -516,6 +516,14 @@ html[data-compact-tables="true"] .data-table th, html[data-compact-tables="true"
 .status-active { background: var(--state-success-bg); color: var(--state-success-fg); }
 .status-inactive { background: var(--state-warning-bg); color: var(--state-warning-fg); }
 .status-error { background: var(--state-danger-bg); color: var(--state-danger-fg); }
+/* Canonical website audit states (web/website_state.go). Never-checked and
+   social-only are deliberately neutral: neither is a health verdict. */
+.status-live { background: var(--state-success-bg); color: var(--state-success-fg); }
+.status-dead { background: var(--state-danger-bg); color: var(--state-danger-fg); }
+.status-checking { background: var(--state-info-bg, var(--surface-muted)); color: var(--state-info-fg, var(--text-muted)); }
+.status-never-checked,
+.status-no-website,
+.status-social-only { background: var(--surface-muted); color: var(--text-muted); }
 .status-unknown, .status-notchecked, .status-not-checked { background: var(--state-neutral-bg); color: var(--state-neutral-fg); }
 
 .field { display: grid; gap: .38rem; min-width: 0; }

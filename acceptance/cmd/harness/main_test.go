@@ -24,9 +24,19 @@ func TestResolveExperimentsGroups(t *testing.T) {
 	if err != nil || len(markets) != 3 {
 		t.Fatalf("markets = %d err=%v", len(markets), err)
 	}
+	widths, err := resolveExperiments("widths", catalog)
+	if err != nil || len(widths) != 4 {
+		t.Fatalf("widths = %d err=%v", len(widths), err)
+	}
+
 	all, err := resolveExperiments("all", catalog)
-	if err != nil || len(all) != 9 {
+	if err != nil || len(all) != 13 {
 		t.Fatalf("all = %d err=%v", len(all), err)
+	}
+
+	rung, err := resolveExperiments("W4", catalog)
+	if err != nil || len(rung) != 1 || rung[0].Job.TaskWorkers != 4 {
+		t.Fatalf("W4 = %+v err=%v", rung, err)
 	}
 	single, err := resolveExperiments("D", catalog)
 	if err != nil || len(single) != 1 || single[0].ID != "D" {

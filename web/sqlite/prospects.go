@@ -141,10 +141,23 @@ func (repo *repo) reclassifyProspectsForJob(ctx context.Context, jobID string, w
 }
 
 // reclassifyProspectsForBusiness refreshes one business after a stored
-// website audit. Like the job hook it is error-tolerant: a failure becomes a
+// website audit, together with every other business that shares its website
+// domain.
+//
+// One domain is one site, so an audit answers for every listing on it. Before
+// the domain fan-out the duplicate listings kept the classification they had
+// while their site was unknown, and the workspace showed two different
+// verdicts for one website.
+//
+// Like the job hook it is error-tolerant: a failure becomes a
 // prospects_recompute_failed audit row instead of failing the audit write.
 func (repo *repo) reclassifyProspectsForBusiness(ctx context.Context, businessID string) {
-	processed, changed, err := repo.recomputeProspects(ctx, prospect.DefaultScoreWeights(), []string{businessID})
+	ids := []string{businessID}
+	siblings, siblingErr := repo.DomainSiblingBusinessIDs(ctx, businessID)
+	if siblingErr == nil {
+		ids = append(ids, siblings...)
+	}
+	processed, changed, err := repo.recomputeProspects(ctx, prospect.DefaultScoreWeights(), ids)
 	if err != nil {
 		_ = repo.writeProspectAuditLog(ctx, "prospects_recompute_failed", map[string]any{
 			"business_id": businessID,
@@ -153,10 +166,22 @@ func (repo *repo) reclassifyProspectsForBusiness(ctx context.Context, businessID
 
 		return
 	}
+	// The siblings inherited new website evidence, so their record-quality
+	// scores are stale until they are rescored. The audited business itself is
+	// rescored by the enrichment worker.
+	if len(siblings) > 0 {
+		if _, qualityErr := repo.RecalculateQuality(ctx, siblings); qualityErr != nil {
+			_ = repo.writeProspectAuditLog(ctx, "prospects_recompute_failed", map[string]any{
+				"business_id": businessID,
+				"error":       qualityErr.Error(),
+			})
+		}
+	}
 	_ = repo.writeProspectAuditLog(ctx, "prospects_recomputed", map[string]any{
-		"processed":   processed,
-		"changed":     changed,
-		"business_id": businessID,
+		"processed":       processed,
+		"changed":         changed,
+		"business_id":     businessID,
+		"domain_siblings": len(siblings),
 	})
 }
 

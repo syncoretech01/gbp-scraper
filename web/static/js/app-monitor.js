@@ -43,6 +43,21 @@
         return STATE_WORDS[key] || state;
     }
 
+    /* Event signatures the honest-severity policy demotes to information.
+     * This list mirrors jobEventSeverityByType in web/job_event_severity.go and
+     * exists only because the evidence this file reads — the benchmark failure
+     * classes and the rendered log lines — carries a message rather than the
+     * event type. Once the emitter records these events at their honest
+     * severity they stop arriving as warnings at all and every use below
+     * becomes a no-op rather than double-counting: nothing here ever subtracts
+     * an entry it cannot see.
+     */
+    const INFORMATIONAL_EVENT_SIGNATURES = [
+        "found zero places",
+        "no new results",
+        "saturat"
+    ];
+
     function number(value) {
         const parsed = Number(value);
 
@@ -393,9 +408,43 @@
             if (logViewer && followingTail()) logViewer.scrollTop = logViewer.scrollHeight;
         }
 
+        /* One severity, one meaning. The worker records "this search found no
+         * places" at warning severity, so the viewer paints 117 warning lines
+         * on a run that failed nothing while the counter above now honestly
+         * says one. Re-levelling those lines keeps the page self-consistent
+         * and mirrors what the server will do once the emitter records them at
+         * their honest severity, after which this pass finds nothing to change.
+         *
+         * The severity dropdown is a server-side form and still classifies by
+         * the stored value, so filtering to "Warning" can list a line this pass
+         * shows as information. That is the emitter's to fix; see
+         * web/job_event_severity.go.
+         */
+        function honestLogLevel(level, message) {
+            if (level !== "warning") return level;
+            const text = String(message || "").toLowerCase();
+
+            return INFORMATIONAL_EVENT_SIGNATURES.some((signature) => text.indexOf(signature) >= 0)
+                ? "information"
+                : level;
+        }
+
+        function relevelRenderedLogLines() {
+            if (!logViewer) return;
+            logViewer.querySelectorAll("[data-log-line]").forEach((line) => {
+                const current = line.dataset.logLevel;
+                const honest = honestLogLevel(current, line.textContent);
+                if (honest === current) return;
+                line.dataset.logLevel = honest;
+                line.className = "log-line log-" + honest;
+                const label = line.querySelector(".log-level");
+                if (label) label.textContent = honest;
+            });
+        }
+
         function appendLog(entry) {
             if (!logViewer || !entry) return;
-            const level = entry.level || entry.severity || "information";
+            const level = honestLogLevel(entry.level || entry.severity || "information", entry.message);
             const line = element("div", "log-line log-" + level);
             line.dataset.logLine = "";
             line.dataset.logLevel = level;
@@ -423,6 +472,8 @@
             logViewer.appendChild(line);
             scrollLogToTail();
         }
+
+        relevelRenderedLogLines();
 
         if (autoscrollBox) {
             autoscrollBox.addEventListener("change", scrollLogToTail);
@@ -523,6 +574,86 @@
         const coverageEndpoint = monitor.dataset.coverageEndpoint;
         let coverageAvailable = Boolean(coveragePanel && coverageEndpoint);
 
+        /* ----------------------------------------------------------------
+         * Run counting tiles and honest severity.
+         *
+         * Both read the same durable evidence the coverage panel does, and
+         * both stay silent until it arrives. severityState is shared because
+         * the coverage poll and the benchmark load each supply one half of it.
+         * -------------------------------------------------------------- */
+        const severityState = { informational: 0, zeroResultSearches: 0, seenFailures: false };
+
+        function isInformationalFailure(failure) {
+            const text = String((failure && failure.sample) || "").toLowerCase();
+            if (!text) return false;
+
+            return INFORMATIONAL_EVENT_SIGNATURES.some((signature) => text.indexOf(signature) >= 0);
+        }
+
+        /* A run that failed no task, lost no data and was never blocked must
+         * not present a warning count in the hundreds. The server total counts
+         * every event the worker recorded at severity "warning", including one
+         * per search whose area simply held no businesses. That is information
+         * about the area, not a fault, so it is reported as information and
+         * taken out of the warning headline.
+         *
+         * The error count is read once, before the note is rewritten: the
+         * element carrying it lives inside the note and is replaced by the
+         * first render.
+         */
+        const warningValue = monitor.querySelector("[data-job-warnings]");
+        const severityNote = monitor.querySelector("[data-job-severity-note]");
+        const errorNode = monitor.querySelector("[data-job-errors]");
+        const errorCount = errorNode ? number(errorNode.textContent) : 0;
+
+        function renderSeverity() {
+            if (!warningValue || !severityState.seenFailures) return;
+            const raw = number(warningValue.dataset.rawWarnings);
+            const honest = Math.max(raw - severityState.informational, 0);
+            warningValue.textContent = String(honest);
+            if (!severityNote) return;
+            const parts = [errorCount + " errors recorded in the job log"];
+            if (severityState.informational > 0) {
+                const searches = severityState.zeroResultSearches;
+                parts.push(searches > 0
+                    ? severityState.informational + " information entries, mostly the " + searches +
+                        " searches whose area held no businesses"
+                    : severityState.informational + " entries reclassified as information");
+            }
+            severityNote.replaceChildren(document.createTextNode(parts.join(" · ")));
+        }
+
+        /* The two observation tiles ship hidden because the business count is
+         * the only figure the server can prove on its own. They appear the
+         * moment the coverage totals arrive, and never before.
+         */
+        function renderRunObservations(totals) {
+            const observations = number(totals.rows_added);
+            const repeats = number(totals.rows_replaced);
+            const observationCard = monitor.querySelector("[data-run-observations]");
+            const repeatCard = monitor.querySelector("[data-run-repeats]");
+            if (observationCard && observations > 0) {
+                const value = observationCard.querySelector("[data-run-observations-value]");
+                const note = observationCard.querySelector("[data-run-observations-note]");
+                if (value) value.textContent = String(observations);
+                if (note) {
+                    note.textContent = Math.max(observations - repeats, 0) +
+                        " of them were a business this run had not seen before";
+                }
+                observationCard.hidden = false;
+            }
+            if (repeatCard && observations > 0) {
+                const value = repeatCard.querySelector("[data-run-repeats-value]");
+                const note = repeatCard.querySelector("[data-run-repeats-note]");
+                if (value) value.textContent = String(repeats);
+                if (note) {
+                    const share = observations > 0 ? Math.round((repeats / observations) * 1000) / 10 : 0;
+                    note.textContent = share + "% of observations; the stored row was refreshed, not merged";
+                }
+                repeatCard.hidden = false;
+            }
+        }
+
         function totalTile(value, label, tone) {
             const tile = element("div", "ops-total");
             if (tone) tile.dataset.tone = tone;
@@ -532,17 +663,29 @@
             return tile;
         }
 
+        /* The run counting vocabulary is defined once, in web/run_metrics.go,
+         * and these are its words. "rows added" and "rows replaced" were the
+         * checkpoint field names leaking into the interface: an operator read
+         * "555 rows added, 224 rows replaced, 331 businesses" and had no way
+         * to reconcile the three. An observation is one time a search returned
+         * a business; a repeat is an observation of a business an earlier
+         * search already collected, so its stored row was refreshed rather
+         * than added. Neither is a merge, and nothing here may call them one.
+         */
         function renderCoverageTotals(totals) {
             const target = coveragePanel.querySelector("[data-coverage-totals]");
             if (!target) return;
             const done = number(totals.tasks_done);
             const failed = number(totals.tasks_failed);
             const skipped = number(totals.tasks_skipped);
+            const observations = number(totals.rows_added);
+            const repeats = number(totals.rows_replaced);
             const tiles = [
                 totalTile(done + " / " + number(totals.tasks_total), "searches finished"),
-                totalTile(number(totals.rows_added), "rows added"),
-                totalTile(number(totals.rows_replaced), "rows replaced"),
-                totalTile(number(totals.duplicates_skipped), "duplicates skipped"),
+                totalTile(observations, "Maps observations"),
+                totalTile(repeats, "repeated observations"),
+                totalTile(Math.max(observations - repeats, 0), "first-time observations"),
+                totalTile(number(totals.duplicates_skipped), "repeats inside one search"),
                 totalTile(failed, "searches failed", failed > 0 ? "danger" : ""),
                 totalTile(skipped, "searches skipped", skipped > 0 ? "warning" : ""),
                 totalTile(number(totals.expansions_added), "expansions added")
@@ -596,12 +739,12 @@
             const added = points.map((point) => number(point.rows_added));
             const duplicates = points.map((point) => number(point.duplicates_skipped));
             const labels = points.map((point, index) =>
-                "#" + number(point.seq || index + 1) + " · " + added[index] + " rows added · " +
-                duplicates[index] + " duplicates skipped");
+                "#" + number(point.seq || index + 1) + " · " + added[index] + " Maps observations · " +
+                duplicates[index] + " repeats inside this search");
             const chart = buildChart(
                 [{ values: added, kind: "added" }, { values: duplicates, kind: "duplicates" }],
                 labels,
-                { className: "ops-chart", label: "Rows added and duplicates skipped per finished query" }
+                { className: "ops-chart", label: "Maps observations and in-search repeats per finished query" }
             );
             if (!chart) {
                 frame.hidden = true;
@@ -790,6 +933,15 @@
             renderCoverageSaturation(data.saturation);
             renderCoverageTrend(data.trend);
             renderCoverageQueries(rows);
+            renderRunObservations(data.totals);
+            // A finished search that contributed neither a new business nor a
+            // repeat found nothing at all. That is durable plan evidence, not
+            // message matching, so it is what the severity note quotes.
+            severityState.zeroResultSearches = rows.filter((entry) => {
+                return String(entry.state || "") === "completed" &&
+                    number(entry.rows_added) === 0 && number(entry.duplicates_skipped) === 0;
+            }).length;
+            renderSeverity();
             coveragePanel.hidden = false;
         }
 
@@ -811,7 +963,17 @@
 
                 return;
             }
-            const failures = data && Array.isArray(data.failures) ? data.failures : [];
+            const all = data && Array.isArray(data.failures) ? data.failures : [];
+            // "What went wrong" must only list things that went wrong. A search
+            // whose area held no businesses is a fact about the area; it was
+            // recorded at warning severity, which is what put it here, and it
+            // is counted as information instead. See web/job_event_severity.go.
+            const failures = all.filter((failure) => !isInformationalFailure(failure));
+            severityState.informational = all
+                .filter(isInformationalFailure)
+                .reduce((total, failure) => total + number(failure.count), 0);
+            severityState.seenFailures = true;
+            renderSeverity();
             if (!failures.length) {
                 failurePanel.hidden = true;
 

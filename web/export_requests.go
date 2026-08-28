@@ -114,12 +114,32 @@ type exportCreationRequest struct {
 	PresetID       string
 	SavedViewID    string
 	SavePresetName string
+	// Scope is the canonical scope key this export was created with. It is
+	// stored on the record as "results_<scope>" so the history can say which
+	// businesses a file contains without re-running its query.
+	Scope string
+}
+
+// unfilteredExportScopeError explains, with the real workspace count, why a
+// filtered export that has no filter is refused.
+func (s *Server) unfilteredExportScopeError(r *http.Request) error {
+	total, err := s.countResultSearch(r.Context(), ResultSearch{})
+	if err != nil {
+		return fmt.Errorf(
+			"no filter is active, so %q would export every business. Choose %q instead, or filter the results first",
+			exportScopeLabel(ExportScopeFiltered), exportScopeLabel(ExportScopeWorkspace))
+	}
+
+	return fmt.Errorf(
+		"no filter is active, so %q would export all %d businesses. Choose %q instead, or filter the results first",
+		exportScopeLabel(ExportScopeFiltered), total, exportScopeLabel(ExportScopeWorkspace))
 }
 
 func (s *Server) registerExportRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/exports", s.listExportsAPI)
 	mux.HandleFunc("POST /api/v1/exports", s.createResultsExport)
 	mux.HandleFunc("GET /api/v1/exports/presets", s.listExportPresetsAPI)
+	mux.HandleFunc("GET /api/v1/exports/scopes", s.exportScopePreviewAPI)
 	mux.HandleFunc("GET /api/v1/exports/{id}", s.exportStatusAPI)
 	mux.HandleFunc("DELETE /api/v1/exports/{id}", s.deleteExport)
 	mux.HandleFunc("POST /api/v1/exports/{id}/delete", s.deleteExport)
@@ -155,47 +175,36 @@ func (s *Server) resolveExportCreation(r *http.Request) (exportCreationRequest, 
 	}
 	options.LegacyShape = legacyShape
 
-	scope := strings.ToLower(strings.TrimSpace(r.FormValue("source_scope")))
-	if scope == "" {
-		scope = "filtered"
+	scope, err := normalizeExportScope(r.FormValue("source_scope"))
+	if err != nil {
+		return exportCreationRequest{}, err
+	}
+	// A scope that would drop a submitted narrowing input is refused, never
+	// silently honoured. This is the guard that stops an export named after one
+	// job from quietly carrying the whole workspace.
+	if conflicts := conflictingExportScopeInputs(scope, r); len(conflicts) > 0 {
+		return exportCreationRequest{}, fmt.Errorf(
+			"%q ignores %s. Remove it, or choose the scope that uses it",
+			exportScopeLabel(scope), strings.Join(conflicts, " and "))
+	}
+	filtered, err := resultSearchFromForm(r)
+	if err != nil {
+		return exportCreationRequest{}, err
+	}
+	// A "current filtered view" export with nothing filtering it is the whole
+	// workspace under a narrower name. Refuse it and say so with the number, so
+	// the operator chooses the workspace scope on purpose or adds a filter.
+	if scope == ExportScopeFiltered && !searchIsNarrowed(filtered) {
+		return exportCreationRequest{}, s.unfilteredExportScopeError(r)
+	}
+	search, savedViewID, err := s.exportScopeSearch(r, scope, filtered)
+	if err != nil {
+		return exportCreationRequest{}, err
 	}
 	creation := exportCreationRequest{
 		Name: name, Format: format, SourceType: "results_" + scope,
-		Columns: columns, Options: options,
-	}
-	switch scope {
-	case "all":
-		creation.Search = ResultSearch{Sort: "updated_desc"}
-	case "filtered":
-		search, err := resultSearchFromForm(r)
-		if err != nil {
-			return exportCreationRequest{}, err
-		}
-		creation.Search = search
-	case "saved_view":
-		viewID := strings.TrimSpace(r.FormValue("saved_view_id"))
-		if !validBusinessID(viewID) {
-			return exportCreationRequest{}, fmt.Errorf("a valid saved view is required")
-		}
-		view, err := s.svc.GetSavedResultView(r.Context(), viewID)
-		if err != nil {
-			return exportCreationRequest{}, fmt.Errorf("saved view was not found")
-		}
-		creation.Search = view.Search
-		creation.SavedViewID = view.ID
-	case "selected":
-		ids, err := parseSelectedExportIDs(r.FormValue("selected_ids"))
-		if err != nil {
-			return exportCreationRequest{}, err
-		}
-		creation.Search = ResultSearch{
-			Sort: "updated_desc",
-			Filters: []ResultFilter{{
-				Field: "id", Operator: "in", Value: strings.Join(ids, ","),
-			}},
-		}
-	default:
-		return exportCreationRequest{}, fmt.Errorf("unsupported export source scope")
+		Columns: columns, Options: options, Search: search,
+		SavedViewID: savedViewID, Scope: scope,
 	}
 	creation.Search.IncludeDuplicates = !options.Deduplicate
 	creation.Search.Limit = 250
@@ -373,17 +382,73 @@ func (s *Server) deleteExportPresetFromBuilder(w http.ResponseWriter, r *http.Re
 	http.Redirect(w, r, "/app/exports?notice="+url.QueryEscape("Export preset deleted"), http.StatusSeeOther)
 }
 
+// exportRecordSource names, in the same words the builder used, which
+// businesses a stored export contains. History and the builder therefore
+// describe a scope identically instead of one saying "results filtered" while
+// the other said "Current filters".
 func exportRecordSource(record ExportRecord) string {
+	scope := strings.TrimSpace(record.SourceType)
+	label := ""
+	if trimmed := strings.TrimPrefix(scope, "results_"); trimmed != scope {
+		label = exportScopeLabel(trimmed)
+	}
 	switch {
 	case record.SavedViewID != "":
-		return "saved view " + record.SavedViewID
+		if label == "" {
+			label = exportScopeLabel(ExportScopeSavedView)
+		}
+
+		return label + " " + record.SavedViewID
 	case record.SourceID != "":
-		return "job " + record.SourceID
-	case record.SourceType != "":
-		return strings.ReplaceAll(record.SourceType, "_", " ")
+		if label == "" {
+			return "job " + record.SourceID
+		}
+
+		return label + " · job " + record.SourceID
+	case label != "":
+		return label
+	case scope != "":
+		return strings.ReplaceAll(scope, "_", " ")
 	default:
 		return "results"
 	}
+}
+
+// exportScopePreviewAPI answers "how many businesses would each scope export
+// right now?" for exactly the query on the request. The builder and the
+// Results export buttons both read it, so the number an operator sees before
+// pressing the button is produced by the same query that fills the file.
+func (s *Server) exportScopePreviewAPI(w http.ResponseWriter, r *http.Request) {
+	filtered, err := parseResultSearch(r)
+	if err != nil {
+		renderLocalAPIError(w, http.StatusUnprocessableEntity, "invalid_result_query", err.Error())
+
+		return
+	}
+	filtered.Limit = 1
+	filtered.Offset = 0
+	scopes := ExportScopes()
+	for index := range scopes {
+		scope := scopes[index].Key
+		search, _, scopeErr := s.exportScopeSearch(r, scope, filtered)
+		if scopeErr != nil {
+			scopes[index].Reason = scopeErr.Error()
+
+			continue
+		}
+		if scope == ExportScopeFiltered && !searchIsNarrowed(search) {
+			scopes[index].Reason = "no filter is active, so this is the entire workspace"
+		}
+		total, countErr := s.countResultSearch(r.Context(), search)
+		if countErr != nil {
+			scopes[index].Reason = "this scope could not be counted"
+
+			continue
+		}
+		scopes[index].Count = total
+		scopes[index].Available = scopes[index].Reason == ""
+	}
+	renderJSON(w, http.StatusOK, localAPIEnvelope{Data: scopes})
 }
 
 func exportOptionsSummary(options ExportBuildOptions) string {

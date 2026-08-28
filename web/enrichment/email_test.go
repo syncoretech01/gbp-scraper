@@ -16,7 +16,7 @@ func TestAnalyzeEmailsClassifiesChecksAndRanksDeterministically(t *testing.T) {
 	lookup := MXLookupFunc(func(_ context.Context, domain string) ([]*net.MX, error) {
 		calls[domain]++
 
-		if domain == "missing.example" {
+		if domain == "missing-mx.com" {
 			return nil, &net.DNSError{IsNotFound: true}
 		}
 
@@ -41,7 +41,7 @@ func TestAnalyzeEmailsClassifiesChecksAndRanksDeterministically(t *testing.T) {
 		{Address: "jane.doe@example.com", Source: contactText},
 		{Address: "throw@mailinator.com", Source: homepageMailto},
 		{Address: "bad-address", Source: homepageMailto},
-		{Address: "lost@missing.example", Source: homepageMailto},
+		{Address: "lost@missing-mx.com", Source: homepageMailto},
 	}
 	config := EmailAnalysisConfig{
 		WebsiteURL: "https://www.example.com",
@@ -86,14 +86,18 @@ func TestAnalyzeEmailsClassifiesChecksAndRanksDeterministically(t *testing.T) {
 		t.Fatalf("disposable classification = %#v", disposable)
 	}
 
-	missing := emailByAddress(t, first, "lost@missing.example")
+	missing := emailByAddress(t, first, "lost@missing-mx.com")
 	if missing.MXStatus != MXMissing {
 		t.Fatalf("missing MX status = %q", missing.MXStatus)
 	}
 
-	invalid := emailByAddress(t, first, "bad-address")
-	if invalid.ValidSyntax || invalid.Relevance != 0 || invalid.Rank != len(first) {
-		t.Fatalf("invalid address result = %#v", invalid)
+	// "bad-address" is no longer stored as a syntax-invalid contact: hygiene
+	// refuses it and the funnel reports why, so nothing that cannot be mailed
+	// reaches the workspace.
+	for _, email := range first {
+		if email.Address == "bad-address" {
+			t.Fatalf("unmailable candidate was kept: %#v", email)
+		}
 	}
 
 	for index, email := range first {
@@ -114,8 +118,8 @@ func TestAnalyzeEmailsCustomDisposableAndCancellation(t *testing.T) {
 	source := Source{PageURL: "https://example.test", PageKind: PageHomepage, Method: MethodVisibleText}
 
 	emails, err := AnalyzeEmails(context.Background(), []EmailCandidate{
-		{Address: "hello@temporary.example", Source: source},
-	}, EmailAnalysisConfig{DisposableDomains: []string{"temporary.example"}})
+		{Address: "hello@temporary-mailbox.com", Source: source},
+	}, EmailAnalysisConfig{DisposableDomains: []string{"temporary-mailbox.com"}})
 	if err != nil {
 		t.Fatalf("AnalyzeEmails() error = %v", err)
 	}

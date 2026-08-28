@@ -38,7 +38,7 @@ unique.
             {{else}}
             <span class="badge" title="No prospect score has been calculated for this business yet">prospect: not scored</span>
             {{end}}
-            <span class="status status-{{.Business.WebsiteState}}" title="Stored website audit status">{{if and .Business.WebsiteStatus (ne .Business.WebsiteStatus "unknown")}}{{.Business.WebsiteStatus}}{{else}}website never checked{{end}}</span>
+            <span class="status status-{{.Business.WebsiteState}}" title="{{.Business.WebsiteStateReason}}">{{.Business.WebsiteStateLabel}}</span>
             <span class="badge" title="How complete and well-evidenced the stored record is — not how good a prospect it is">data quality {{.Business.QualityLabel}}/100</span>
             {{if .Business.Reviewed}}<span class="badge badge-success">reviewed</span>{{else}}<span class="badge badge-warning">needs review</span>{{end}}
         </div>

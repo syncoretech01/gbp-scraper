@@ -115,16 +115,61 @@ func TestExperimentLookup(t *testing.T) {
 
 func TestCatalogContainsEverything(t *testing.T) {
 	configs := Catalog(DefaultCatalogOptions())
-	if len(configs) != 9 { // A-E (5) + fast (1) + markets (3)
-		t.Fatalf("catalog size = %d, want 9", len(configs))
+	if len(configs) != 13 { // A-E (5) + widths (4) + fast (1) + markets (3)
+		t.Fatalf("catalog size = %d, want 13", len(configs))
 	}
 	seen := map[string]bool{}
 	for _, config := range configs {
 		seen[config.ID] = true
 	}
-	for _, id := range []string{"A", "B", "C", "D", "E", "fast", "sparse", "medium", "dense"} {
+	for _, id := range []string{
+		"A", "B", "C", "D", "E",
+		"W1", "W2", "W4", "W6",
+		"fast", "sparse", "medium", "dense",
+	} {
 		if !seen[id] {
 			t.Errorf("catalog missing %q", id)
 		}
+	}
+}
+
+// TestWidthLadderVariesWorkersNotConcurrency proves the ladder isolates the
+// dimension that costs a browser process. Each rung must ask for exactly its
+// width in parallel tasks, with one Maps operation and one browser each, so a
+// rung's block rate and browser-failure rate are attributable to the width
+// alone rather than to pages sharing a browser.
+func TestWidthLadderVariesWorkersNotConcurrency(t *testing.T) {
+	options := DefaultCatalogOptions()
+	rungs := WidthLadder(options)
+
+	if len(rungs) != len(options.Widths) {
+		t.Fatalf("width ladder has %d rungs, want %d", len(rungs), len(options.Widths))
+	}
+
+	for index, rung := range rungs {
+		width := options.Widths[index]
+
+		if rung.Job.TaskWorkers != width {
+			t.Errorf("%s task_workers = %d, want %d", rung.ID, rung.Job.TaskWorkers, width)
+		}
+		if rung.Job.Concurrency != width {
+			t.Errorf("%s concurrency = %d, want %d so each worker runs one operation",
+				rung.ID, rung.Job.Concurrency, width)
+		}
+		if rung.Job.BrowserPool != width || rung.Job.PagesPerBrowser != 1 {
+			t.Errorf("%s pool/pages = %d/%d, want %d/1 so browsers equal the width",
+				rung.ID, rung.Job.BrowserPool, rung.Job.PagesPerBrowser, width)
+		}
+		if rung.Job.FastMode {
+			t.Errorf("%s ran in Fast mode, which launches no browser to measure", rung.ID)
+		}
+		if err := rung.Job.Validate(); err != nil {
+			t.Errorf("%s is not a valid job: %v", rung.ID, err)
+		}
+	}
+
+	// A rung is addressable by name, case-insensitively, like every other id.
+	if config, ok := Experiment("w4", options); !ok || config.Job.TaskWorkers != 4 {
+		t.Fatalf("Experiment(w4) = %+v ok=%t", config, ok)
 	}
 }

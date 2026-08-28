@@ -7,7 +7,10 @@ import (
 	"strings"
 	"time"
 
+	"strconv"
+
 	"github.com/gosom/google-maps-scraper/grid"
+	"github.com/gosom/google-maps-scraper/web/prospect"
 )
 
 var jobs []Job
@@ -152,11 +155,16 @@ type JobData struct {
 	LowDiskBytes       uint64   `json:"low_disk_bytes,omitempty"`
 	ProxyPoolID        string   `json:"proxy_pool_id,omitempty"`
 	Proxies            []string `json:"proxies"`
-	SavedAreaID        string   `json:"saved_area_id,omitempty"`
-	AreaGeoJSON        string   `json:"area_geojson,omitempty"`
-	GridBBox           string   `json:"grid_bbox,omitempty"`
-	GridCellKM         float64  `json:"grid_cell_km,omitempty"`
-	IncrementalMode    string   `json:"incremental_mode,omitempty"`
+	// QueryTargets are the ZIP coverage plan's geographic execution targets.
+	// Each carries the centroid its search runs from plus a stable id used by
+	// checkpoint/resume, rerun and provenance. Empty keeps exactly the
+	// historical behaviour: every query runs from Lat/Lon.
+	QueryTargets    []prospect.QueryTarget `json:"query_targets,omitempty"`
+	SavedAreaID     string                 `json:"saved_area_id,omitempty"`
+	AreaGeoJSON     string                 `json:"area_geojson,omitempty"`
+	GridBBox        string                 `json:"grid_bbox,omitempty"`
+	GridCellKM      float64                `json:"grid_cell_km,omitempty"`
+	IncrementalMode string                 `json:"incremental_mode,omitempty"`
 	// Fields is the wizard's data-field selection. An empty slice means
 	// "retain, display and export everything", which is exactly the
 	// behaviour every job had before the step existed. The engine always
@@ -313,6 +321,29 @@ func (d *JobData) Validate() error {
 	}
 	if d.TemplateID != "" && !validMapEntityID(d.TemplateID) {
 		return errors.New("template ID is invalid")
+	}
+	// A coverage plan's targets are executed from their own centroids, so a
+	// malformed one would silently scrape the wrong place.
+	if len(d.QueryTargets) > 5000 {
+		return errors.New("at most 5000 query targets are allowed")
+	}
+	for _, target := range d.QueryTargets {
+		if target.ID == "" || target.Query == "" {
+			return errors.New("every query target needs an id and a query")
+		}
+		if target.Latitude < -90 || target.Latitude > 90 ||
+			target.Longitude < -180 || target.Longitude > 180 {
+			return fmt.Errorf("query target %q has an out-of-range centroid", target.ID)
+		}
+	}
+	// The centre arrives as free text from the wizard and the REST API. Only
+	// browser validation stood between a typo and a job that scrapes nowhere.
+	if d.Lat != "" || d.Lon != "" {
+		lat, latErr := strconv.ParseFloat(strings.TrimSpace(d.Lat), 64)
+		lon, lonErr := strconv.ParseFloat(strings.TrimSpace(d.Lon), 64)
+		if latErr != nil || lonErr != nil || lat < -90 || lat > 90 || lon < -180 || lon > 180 {
+			return fmt.Errorf("centre %q,%q is not a valid coordinate", d.Lat, d.Lon)
+		}
 	}
 	if d.SavedAreaID != "" && !validMapEntityID(d.SavedAreaID) {
 		return errors.New("saved area ID is invalid")

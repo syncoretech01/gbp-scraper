@@ -15,6 +15,7 @@ import (
 	"github.com/gosom/google-maps-scraper/exiter"
 	"github.com/gosom/google-maps-scraper/gmaps"
 	"github.com/gosom/google-maps-scraper/grid"
+	"github.com/gosom/google-maps-scraper/web/prospect"
 	"github.com/gosom/scrapemate"
 )
 
@@ -371,4 +372,72 @@ func LoadCustomWriter(pluginDir, pluginName string) (scrapemate.ResultWriter, er
 	}
 
 	return nil, fmt.Errorf("no plugin found in %s", pluginDir)
+}
+
+// CreateTargetSeedJobs builds one seed job per geographic target. Fast mode
+// aims each request at that target's own centroid instead of the job centre;
+// Thorough mode grids around it. The seed id is derived from the target id so
+// a checkpoint can skip a completed target after a restart and provenance can
+// name the ZIP a row came from.
+//
+// It is a separate constructor rather than a change to CreateSeedJobs so every
+// existing CLI run mode keeps its exact signature and behaviour.
+func CreateTargetSeedJobs(
+	fastmode bool,
+	langCode string,
+	targets []prospect.QueryTarget,
+	maxDepth int,
+	email bool,
+	zoom int,
+	radius float64,
+	dedup deduper.Deduper,
+	exitMonitor exiter.Exiter,
+	extraReviews bool,
+) ([]scrapemate.IJob, error) {
+	jobs := make([]scrapemate.IJob, 0, len(targets))
+
+	for _, target := range targets {
+		geo := fmt.Sprintf("%f,%f", target.Latitude, target.Longitude)
+		id := deterministicSeedID("target", target.ID, target.Query, geo, strconv.Itoa(zoom))
+
+		if !fastmode {
+			opts := make([]gmaps.GmapJobOptions, 0, 3)
+			if dedup != nil {
+				opts = append(opts, gmaps.WithDeduper(dedup))
+			}
+
+			if exitMonitor != nil {
+				opts = append(opts, gmaps.WithExitMonitor(exitMonitor))
+			}
+
+			if extraReviews {
+				opts = append(opts, gmaps.WithExtraReviews())
+			}
+
+			jobs = append(jobs, gmaps.NewGmapJob(
+				id, langCode, target.Query, maxDepth, email, geo, zoom, opts...,
+			))
+
+			continue
+		}
+
+		params := gmaps.MapSearchParams{
+			Location: gmaps.MapLocation{
+				Lat: target.Latitude, Lon: target.Longitude,
+				ZoomLvl: float64(zoom), Radius: radius,
+			},
+			Query: target.Query, Hl: langCode,
+		}
+
+		opts := make([]gmaps.SearchJobOptions, 0, 1)
+		if exitMonitor != nil {
+			opts = append(opts, gmaps.WithSearchJobExitMonitor(exitMonitor))
+		}
+
+		searchJob := gmaps.NewSearchJob(&params, opts...)
+		searchJob.ID = id
+		jobs = append(jobs, searchJob)
+	}
+
+	return jobs, nil
 }

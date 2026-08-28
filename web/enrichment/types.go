@@ -84,6 +84,11 @@ type Config struct {
 	UnsafeAllowPrivateNetwork bool
 	UserAgent                 string
 	DisposableDomains         []string
+	// HostGate bounds how many requests this crawl may have in flight against
+	// one host, and how closely spaced they may be. It is shared across a whole
+	// worker pool so politeness is a property of the host, not of one task. A
+	// nil gate keeps the historical behaviour: no per-host limit at all.
+	HostGate HostGate
 	// URLPatterns is the operator's control over which same-origin candidate
 	// URLs the crawl may fetch beyond its entry page. The zero value filters
 	// nothing and reproduces the built-in heuristic exactly.
@@ -226,19 +231,46 @@ type PageResult struct {
 	Error           string        `json:"error,omitempty"`
 }
 
+// AuditVersion identifies the extraction and hygiene rules one stored audit
+// was produced with. It is what makes the domain cache safe: evidence written
+// by an older, worse extractor is never reused, so a fix to extraction reaches
+// every business the next time its domain is audited.
+//
+// Version 1 is every audit written before the version existed. Version 2 adds
+// element-boundary text separation and email hygiene.
+const AuditVersion = 2
+
+// CacheProvenance records that an audit was served from the domain cache
+// rather than crawled. It is present only on a reused audit, so an audit that
+// was genuinely fetched serialises exactly as it always did.
+type CacheProvenance struct {
+	// ReusedFromAuditID is the audit whose evidence was copied.
+	ReusedFromAuditID int64 `json:"reused_from_audit_id"`
+	// Domain is the normalized domain the two businesses share.
+	Domain string `json:"domain"`
+	// ObservedAt is when the original crawl completed. It is the honest
+	// "last checked" time for this evidence, not the reuse time.
+	ObservedAt time.Time `json:"observed_at"`
+}
+
 // Result contains a bounded website, contact, and quality analysis.
 type Result struct {
-	RequestedURL            string          `json:"requested_url"`
-	FinalURL                string          `json:"final_url,omitempty"`
-	Reachable               bool            `json:"reachable"`
-	StatusCode              int             `json:"status_code,omitempty"`
-	HTTPS                   bool            `json:"https"`
-	TLSValid                bool            `json:"tls_valid"`
-	CertificateError        string          `json:"certificate_error,omitempty"`
-	ResponseTime            time.Duration   `json:"response_time"`
-	RedirectChain           []Redirect      `json:"redirect_chain,omitempty"`
-	Pages                   []PageResult    `json:"pages"`
-	Emails                  []Email         `json:"emails"`
+	RequestedURL     string        `json:"requested_url"`
+	FinalURL         string        `json:"final_url,omitempty"`
+	Reachable        bool          `json:"reachable"`
+	StatusCode       int           `json:"status_code,omitempty"`
+	HTTPS            bool          `json:"https"`
+	TLSValid         bool          `json:"tls_valid"`
+	CertificateError string        `json:"certificate_error,omitempty"`
+	ResponseTime     time.Duration `json:"response_time"`
+	RedirectChain    []Redirect    `json:"redirect_chain,omitempty"`
+	Pages            []PageResult  `json:"pages"`
+	Emails           []Email       `json:"emails"`
+	// EmailFunnel is the candidate accounting behind Emails: how many
+	// candidates the crawl found, how many survived hygiene, and why the rest
+	// did not. It makes "emails discovered" and "emails exported" reconcilable
+	// instead of merely different numbers.
+	EmailFunnel             EmailFunnel     `json:"email_funnel"`
 	Phones                  []Phone         `json:"phones"`
 	Addresses               []PostalAddress `json:"addresses"`
 	SocialProfiles          []SocialProfile `json:"social_profiles"`
@@ -258,5 +290,11 @@ type Result struct {
 	// whenever no pattern was configured, so an unfiltered audit serialises
 	// exactly as it always did.
 	URLPatterns *URLPatternEvidence `json:"url_patterns,omitempty"`
-	Error       string              `json:"error,omitempty"`
+	// AuditVersion is the extraction ruleset that produced this result. Zero
+	// means the result predates versioning.
+	AuditVersion int `json:"audit_version,omitempty"`
+	// Cache is set when this evidence was reused from another business's audit
+	// of the same domain instead of being crawled again.
+	Cache *CacheProvenance `json:"cache,omitempty"`
+	Error string           `json:"error,omitempty"`
 }

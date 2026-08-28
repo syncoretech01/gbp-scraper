@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gosom/google-maps-scraper/web"
+	"github.com/gosom/google-maps-scraper/web/prospect"
 )
 
 type qualityInput struct {
@@ -39,6 +40,17 @@ type qualityInput struct {
 	emailCount      int64
 	validEmailCount int64
 	socialCount     int64
+	// websiteState is the canonical website state resolved from the same
+	// durable evidence the rest of the application reads. Quality scoring
+	// consumes the state rather than the raw transport status, so an
+	// unaudited site can never be scored as if it had been checked.
+	websiteState string
+	// socialPlatform names the network when the listed URL is a social
+	// profile rather than a site the business owns.
+	socialPlatform string
+	// sharedDomainEvidence reports that the website evidence came from
+	// another business on the same domain.
+	sharedDomainEvidence bool
 }
 
 // ActiveQualityRules returns the one active immutable scoring rule version.
@@ -253,6 +265,91 @@ func (repo *repo) RecalculateQuality(ctx context.Context, ids []string) (int64, 
 	return scored, nil
 }
 
+// maximumQualityDriftSamples bounds the sample list in a drift report.
+const maximumQualityDriftSamples = 25
+
+// qualityDriftTolerance is the rounding slack allowed between a stored score
+// and the sum of its stored components. Both are rounded to two decimals, so
+// anything past this is a real disagreement, not floating point noise.
+const qualityDriftTolerance = 0.05
+
+// QualityScoreDrift audits every stored record-quality score against its own
+// stored breakdown and, when repair is set, rescores the rows that disagree.
+//
+// The score and its components are written together by scoreBusiness, so they
+// can only come apart if some other writer touched the column afterwards. The
+// audit therefore doubles as a detector for exactly that: a foreign number
+// merged into the record-quality column.
+func (repo *repo) QualityScoreDrift(ctx context.Context, repair bool) (web.QualityScoreDriftReport, error) {
+	rows, err := repo.db.QueryContext(
+		ctx,
+		`SELECT businesses.id, businesses.name, businesses.quality_score,
+			ROUND(SUM(components.contribution), 2), businesses.scoring_rule_version, COUNT(*)
+		FROM businesses
+		JOIN business_score_components AS components
+			ON components.business_id = businesses.id
+			AND components.rule_version = businesses.scoring_rule_version
+		WHERE businesses.deleted_at IS NULL AND businesses.merged_into_id IS NULL
+		GROUP BY businesses.id
+		ORDER BY businesses.id`,
+	)
+	if err != nil {
+		return web.QualityScoreDriftReport{}, fmt.Errorf("audit quality score drift: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	report := web.QualityScoreDriftReport{
+		Applied: repair,
+		Samples: make([]web.QualityScoreDriftSample, 0, maximumQualityDriftSamples),
+	}
+	drifted := make([]string, 0)
+	for rows.Next() {
+		var sample web.QualityScoreDriftSample
+		if err := rows.Scan(
+			&sample.BusinessID, &sample.Name, &sample.StoredScore,
+			&sample.ExplainedSum, &sample.RuleVersion, &sample.ComponentRows,
+		); err != nil {
+			return web.QualityScoreDriftReport{}, fmt.Errorf("scan quality score drift: %w", err)
+		}
+		report.Checked++
+		if math.Abs(sample.StoredScore-sample.ExplainedSum) <= qualityDriftTolerance {
+			continue
+		}
+		report.Drifted++
+		drifted = append(drifted, sample.BusinessID)
+		if len(report.Samples) < maximumQualityDriftSamples {
+			report.Samples = append(report.Samples, sample)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return web.QualityScoreDriftReport{}, fmt.Errorf("audit quality score drift: %w", err)
+	}
+
+	if !repair || len(drifted) == 0 {
+		return report, nil
+	}
+	repaired, err := repo.RecalculateQuality(ctx, drifted)
+	if err != nil {
+		return web.QualityScoreDriftReport{}, err
+	}
+	report.Repaired = repaired
+	if _, err := repo.db.ExecContext(
+		ctx,
+		`INSERT INTO audit_logs(action, entity_type, entity_id, details, created_at)
+		VALUES ('quality_score_drift_repaired', 'business', '', ?, ?)`,
+		mustJSON(map[string]any{
+			"checked":  report.Checked,
+			"drifted":  report.Drifted,
+			"repaired": report.Repaired,
+		}, "{}"),
+		time.Now().UTC().Unix(),
+	); err != nil {
+		return web.QualityScoreDriftReport{}, fmt.Errorf("record quality drift repair: %w", err)
+	}
+
+	return report, nil
+}
+
 func ensureActiveQualityRules(ctx context.Context, tx *sql.Tx) (web.QualityRuleSet, error) {
 	var rulesJSON string
 	err := tx.QueryRowContext(
@@ -362,7 +459,13 @@ func scoreBusiness(
 }
 
 func readQualityInput(ctx context.Context, tx *sql.Tx, id string) (qualityInput, error) {
-	var input qualityInput
+	var (
+		input                                 qualityInput
+		mapsURL, legacyStatus, taskState      string
+		sharedStatus, sharedTitle, sharedMeta string
+		sharedHTTPS, sharedResponseMS         sql.NullInt64
+		sharedAudited                         int
+	)
 	err := tx.QueryRowContext(
 		ctx,
 		`SELECT businesses.business_status, businesses.website, businesses.normalized_phone,
@@ -375,11 +478,23 @@ func readQualityInput(ctx context.Context, tx *sql.Tx, id string) (qualityInput,
 			(SELECT COUNT(*) FROM emails WHERE emails.business_id = businesses.id),
 			(SELECT COUNT(*) FROM emails WHERE emails.business_id = businesses.id
 				AND disposable = 0 AND COALESCE(domain_has_mx, 1) = 1),
-			(SELECT COUNT(*) FROM social_profiles WHERE social_profiles.business_id = businesses.id)
+			(SELECT COUNT(*) FROM social_profiles WHERE social_profiles.business_id = businesses.id),
+			businesses.maps_url, businesses.website_status,
+			COALESCE(task.state, ''),
+			COALESCE(shared.status, ''), shared.https, shared.response_time_ms,
+			COALESCE(shared.page_title, ''), COALESCE(shared.meta_description, ''),
+			CASE WHEN shared.id IS NULL THEN 0 ELSE 1 END
 		FROM businesses
 		LEFT JOIN websites AS website ON website.id = (
 			SELECT id FROM websites WHERE websites.business_id = businesses.id
 			ORDER BY COALESCE(last_checked_at, 0) DESC, id DESC LIMIT 1
+		)
+		LEFT JOIN enrichment_tasks AS task
+			ON task.business_id = businesses.id AND task.state IN ('queued', 'running')
+		LEFT JOIN websites AS shared ON website.id IS NULL AND shared.id = (
+			SELECT peer.id FROM websites AS peer
+			WHERE peer.domain = businesses.domain AND businesses.domain <> ''
+			ORDER BY COALESCE(peer.last_checked_at, 0) DESC, peer.id DESC LIMIT 1
 		)
 		WHERE businesses.id = ? AND businesses.deleted_at IS NULL`,
 		id,
@@ -407,6 +522,15 @@ func readQualityInput(ctx context.Context, tx *sql.Tx, id string) (qualityInput,
 		&input.emailCount,
 		&input.validEmailCount,
 		&input.socialCount,
+		&mapsURL,
+		&legacyStatus,
+		&taskState,
+		&sharedStatus,
+		&sharedHTTPS,
+		&sharedResponseMS,
+		&sharedTitle,
+		&sharedMeta,
+		&sharedAudited,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return qualityInput{}, fmt.Errorf("%w: %s", web.ErrBusinessNotFound, id)
@@ -415,7 +539,85 @@ func readQualityInput(ctx context.Context, tx *sql.Tx, id string) (qualityInput,
 		return qualityInput{}, fmt.Errorf("read business quality inputs: %w", err)
 	}
 
+	resolveQualityWebsiteState(&input, qualityWebsiteEvidence{
+		mapsURL:          mapsURL,
+		legacyStatus:     legacyStatus,
+		taskState:        taskState,
+		sharedStatus:     sharedStatus,
+		sharedHTTPS:      sharedHTTPS,
+		sharedResponseMS: sharedResponseMS,
+		sharedTitle:      sharedTitle,
+		sharedMeta:       sharedMeta,
+		sharedAudited:    sharedAudited != 0,
+	})
+
 	return input, nil
+}
+
+// qualityWebsiteEvidence carries the extra columns readQualityInput needs to
+// resolve a canonical website state: the listing's Maps URL, the stored
+// transport status, the open enrichment task, and the audit another business
+// on the same domain already paid for.
+type qualityWebsiteEvidence struct {
+	mapsURL          string
+	legacyStatus     string
+	taskState        string
+	sharedStatus     string
+	sharedHTTPS      sql.NullInt64
+	sharedResponseMS sql.NullInt64
+	sharedTitle      string
+	sharedMeta       string
+	sharedAudited    bool
+}
+
+// resolveQualityWebsiteState fills in the canonical website state that drives
+// every website-dependent quality component.
+//
+// Two corrections matter here. A listed social profile is never treated as an
+// owned website, so no audit evidence - not the business's own and certainly
+// not another business that happens to share instagram.com - is allowed to
+// stand in for one. And a business with no audit of its own inherits the
+// audit of another business on the same domain, because one domain is one
+// site and probing it twice would answer the same question twice.
+func resolveQualityWebsiteState(input *qualityInput, evidence qualityWebsiteEvidence) {
+	input.socialPlatform = prospect.SocialPlatform(input.website)
+	if input.socialPlatform != "" {
+		// Nothing measured about a rented profile page describes a site the
+		// business owns, so the website evidence is cleared rather than
+		// scored.
+		input.websiteStatus = ""
+		input.websiteHTTPS = sql.NullInt64{}
+		input.responseTimeMS = sql.NullInt64{}
+		input.pageTitle = ""
+		input.metaDescription = ""
+		input.websiteAudited = 0
+		input.websiteState = web.WebsiteStateSocialOnly
+
+		return
+	}
+
+	if input.websiteAudited == 0 && evidence.sharedAudited {
+		input.websiteStatus = evidence.sharedStatus
+		input.websiteHTTPS = evidence.sharedHTTPS
+		input.responseTimeMS = evidence.sharedResponseMS
+		input.pageTitle = evidence.sharedTitle
+		input.metaDescription = evidence.sharedMeta
+		input.websiteAudited = 1
+		input.sharedDomainEvidence = true
+	}
+
+	stateEvidence := web.WebsiteStateEvidence{
+		Website:      input.website,
+		MapsURL:      evidence.mapsURL,
+		LegacyStatus: evidence.legacyStatus,
+		TaskState:    evidence.taskState,
+	}
+	if input.websiteAudited != 0 && strings.TrimSpace(input.websiteStatus) != "" {
+		// The websites row is the stored outcome of a completed audit, so it
+		// answers rules 4 and 5 of the resolver identically.
+		stateEvidence.LegacyStatus = input.websiteStatus
+	}
+	input.websiteState = web.ResolveWebsiteState(stateEvidence).State
 }
 
 func calculateQuality(
@@ -434,6 +636,20 @@ func calculateQuality(
 		}, known: known})
 	}
 
+	// readQualityInput resolves the canonical state from the full evidence.
+	// Callers that build a qualityInput straight from columns get the same
+	// answer derived from those columns, so the website components are never
+	// silently scored as "unknown" just because a field was left unset.
+	if input.socialPlatform == "" {
+		input.socialPlatform = prospect.SocialPlatform(input.website)
+	}
+	if input.websiteState == "" {
+		input.websiteState = web.ResolveWebsiteState(web.WebsiteStateEvidence{
+			Website:      input.website,
+			LegacyStatus: input.websiteStatus,
+		}).State
+	}
+
 	status := strings.ToLower(input.businessStatus)
 	switch {
 	case strings.Contains(status, "permanent") && strings.Contains(status, "closed"):
@@ -446,27 +662,50 @@ func calculateQuality(
 		add("business_open", 0, rules.OpenWeight, false, false, "Business status has not been confirmed")
 	}
 
-	websiteStatus := strings.ToLower(input.websiteStatus)
-	switch {
-	case input.website == "":
-		add("active_website", 0, rules.ActiveWebsiteWeight, false, true, "No website is listed")
-	case websiteStatus == "active" || websiteStatus == "reachable" || websiteStatus == "ok":
-		add("active_website", rules.ActiveWebsiteWeight, rules.ActiveWebsiteWeight, true, true, "Website is reachable")
-	case websiteStatus == "inactive" || websiteStatus == "blocked" || websiteStatus == "error":
-		add("active_website", -rules.ActiveWebsiteWeight/2, rules.ActiveWebsiteWeight, false, true, "Website is not reachable")
-	default:
-		add("active_website", rules.ActiveWebsiteWeight/2, rules.ActiveWebsiteWeight, true, false, "Website URL exists but has not been checked")
+	// The website components are driven by the canonical website state, never
+	// by the raw URL string. An unaudited website is worth exactly nothing in
+	// either direction and is marked unknown, so it lowers record confidence
+	// instead of inventing points: before this, a listing nobody had ever
+	// checked collected half the active-website weight and full HTTPS credit
+	// purely because its URL started with "https://".
+	reused := ""
+	if input.sharedDomainEvidence {
+		reused = " (evidence reused from another business on the same domain)"
 	}
-	if input.websiteHTTPS.Valid {
+	switch input.websiteState {
+	case web.WebsiteStateNoWebsite:
+		add("active_website", 0, rules.ActiveWebsiteWeight, false, true, "No website is listed")
+	case web.WebsiteStateSocialOnly:
+		add("active_website", 0, rules.ActiveWebsiteWeight, false, true,
+			fmt.Sprintf("The listed URL is a social profile (%s), not a website the business owns", input.socialPlatform))
+	case web.WebsiteStateLive:
+		add("active_website", rules.ActiveWebsiteWeight, rules.ActiveWebsiteWeight, true, true,
+			"An audit reached the website and it answered"+reused)
+	case web.WebsiteStateDead:
+		add("active_website", -rules.ActiveWebsiteWeight/2, rules.ActiveWebsiteWeight, false, true,
+			"An audit reached the server and the website returned an error"+reused)
+	case web.WebsiteStateError:
+		add("active_website", 0, rules.ActiveWebsiteWeight, false, false,
+			"The audit could not get an answer from the website, so its condition is unknown"+reused)
+	default:
+		add("active_website", 0, rules.ActiveWebsiteWeight, false, false,
+			"The website has not been audited yet, so it neither earns nor loses points")
+	}
+	switch {
+	case input.websiteState == web.WebsiteStateNoWebsite:
+		add("https", 0, rules.HTTPSWeight, false, true, "There is no website to secure")
+	case input.websiteState == web.WebsiteStateSocialOnly:
+		add("https", 0, rules.HTTPSWeight, false, true,
+			"Transport security of a social network is not the business's to fix")
+	case input.websiteHTTPS.Valid:
 		if input.websiteHTTPS.Int64 != 0 {
-			add("https", rules.HTTPSWeight, rules.HTTPSWeight, true, true, "Website uses HTTPS")
+			add("https", rules.HTTPSWeight, rules.HTTPSWeight, true, true, "Website uses HTTPS"+reused)
 		} else {
-			add("https", 0, rules.HTTPSWeight, false, true, "Website does not use HTTPS")
+			add("https", 0, rules.HTTPSWeight, false, true, "Website does not use HTTPS"+reused)
 		}
-	} else if strings.HasPrefix(strings.ToLower(input.website), "https://") {
-		add("https", rules.HTTPSWeight, rules.HTTPSWeight, true, false, "Listed website URL uses HTTPS; audit pending")
-	} else {
-		add("https", 0, rules.HTTPSWeight, false, input.website != "", "HTTPS has not been verified")
+	default:
+		add("https", 0, rules.HTTPSWeight, false, false,
+			"HTTPS has not been verified: no audit has reached this website")
 	}
 	add("phone", boolWeight(input.phone != "", rules.PhoneWeight), rules.PhoneWeight, input.phone != "", true,
 		chooseReason(input.phone != "", "Phone number is available", "No phone number is available"))
@@ -477,8 +716,19 @@ func calculateQuality(
 	} else {
 		add("email", 0, rules.EmailWeight, false, true, "No email address is available")
 	}
-	add("social_profiles", boolWeight(input.socialCount > 0, rules.SocialWeight), rules.SocialWeight, input.socialCount > 0, true,
-		chooseReason(input.socialCount > 0, "Social profile is available", "No social profile is available"))
+	// A social profile listed as the business's website is still a social
+	// profile, and counting it here is what keeps the same URL from being
+	// double-counted as a website above.
+	socialPresent := input.socialCount > 0 || input.socialPlatform != ""
+	socialReason := "No social profile is available"
+	switch {
+	case input.socialPlatform != "":
+		socialReason = fmt.Sprintf("The listing points at a social profile (%s)", input.socialPlatform)
+	case input.socialCount > 0:
+		socialReason = "Social profile is available"
+	}
+	add("social_profiles", boolWeight(socialPresent, rules.SocialWeight), rules.SocialWeight, socialPresent, true,
+		socialReason)
 	if input.rating.Valid {
 		ratio := min(1.0, max(0.0, input.rating.Float64/rules.RatingThreshold))
 		add("rating", rules.RatingWeight*ratio, rules.RatingWeight, input.rating.Float64 >= rules.RatingThreshold, true,
@@ -511,7 +761,13 @@ func calculateQuality(
 	fresh := age <= time.Duration(rules.FreshnessDays)*24*time.Hour
 	add("data_freshness", boolWeight(fresh, rules.FreshnessWeight), rules.FreshnessWeight, fresh, true,
 		fmt.Sprintf("Last observed %d days ago; target %d days", max(0, int(age.Hours()/24)), rules.FreshnessDays))
-	if input.websiteAudited != 0 {
+	switch {
+	case input.websiteState == web.WebsiteStateNoWebsite:
+		add("website_quality", 0, rules.WebsiteQualityWeight, false, true, "There is no website to grade")
+	case input.websiteState == web.WebsiteStateSocialOnly:
+		add("website_quality", 0, rules.WebsiteQualityWeight, false, true,
+			"A social profile is not a website whose quality the business controls")
+	case input.websiteAudited != 0:
 		websiteFields := 0
 		if input.pageTitle != "" {
 			websiteFields++
@@ -520,8 +776,8 @@ func calculateQuality(
 			websiteFields++
 		}
 		add("website_quality", rules.WebsiteQualityWeight*float64(websiteFields)/2, rules.WebsiteQualityWeight,
-			websiteFields == 2, true, fmt.Sprintf("%d of 2 basic metadata checks pass", websiteFields))
-	} else {
+			websiteFields == 2, true, fmt.Sprintf("%d of 2 basic metadata checks pass%s", websiteFields, reused))
+	default:
 		add("website_quality", 0, rules.WebsiteQualityWeight, false, false, "Website quality has not been audited")
 	}
 	if input.responseTimeMS.Valid {
@@ -534,6 +790,9 @@ func calculateQuality(
 		}
 		add("website_response", contribution, rules.ResponseTimeWeight, fast, true,
 			fmt.Sprintf("Response %d ms; target %d ms", input.responseTimeMS.Int64, rules.ResponseTimeMS))
+	} else if input.websiteState == web.WebsiteStateNoWebsite || input.websiteState == web.WebsiteStateSocialOnly {
+		add("website_response", 0, rules.ResponseTimeWeight, false, true,
+			"There is no owned website whose response time could be measured")
 	} else {
 		add("website_response", 0, rules.ResponseTimeWeight, false, false, "Website response time has not been measured")
 	}
